@@ -109,6 +109,14 @@ function mix(a: OklchColor, b: OklchColor, t: number): OklchColor {
   }
 }
 
+function paint(base: OklchColor, tone: OklchColor, c: number, max: number): OklchColor {
+  return fitOklch({
+    l: tone.l,
+    c: Math.min(max, Math.max(tone.c, base.c * c)),
+    h: base.h,
+  })
+}
+
 export function fitOklch(oklch: OklchColor): OklchColor {
   const base = {
     l: clamp(oklch.l, 0, 1),
@@ -142,41 +150,49 @@ export function oklchToHex(oklch: OklchColor): HexColor {
 export function generateScale(seed: HexColor, isDark: boolean): HexColor[] {
   const base = hexToOklch(seed)
   const tint = isDark
-    ? [0.032, 0.07, 0.118, 0.184, 0.274, 0.392, 0.548, 0.748]
+    ? [0.029, 0.064, 0.11, 0.174, 0.263, 0.382, 0.542, 0.746]
     : [0.018, 0.042, 0.082, 0.146, 0.238, 0.368, 0.542, 0.764]
-  const shade = isDark ? [0, 0.122, 0.548, 0.892] : [0, 0.124, 0.514, 0.83]
+  const shade = isDark ? [0, 0.115, 0.524, 0.871] : [0, 0.124, 0.514, 0.83]
+  const curve = isDark
+    ? [0.48, 0.58, 0.69, 0.82, 0.94, 1.05, 1.16, 1.23, 1.04, 0.97, 0.82, 0.6]
+    : [0.24, 0.32, 0.42, 0.56, 0.72, 0.88, 1.04, 1.14, 1, 0.94, 0.82, 0.64]
   const mid = fitOklch({
-    l: clamp(base.l, isDark ? 0.62 : 0.5, isDark ? 0.76 : 0.68),
-    c: clamp(base.c, 0, isDark ? 0.26 : 0.24),
+    l: clamp(base.l + (isDark ? 0.009 : 0), isDark ? 0.61 : 0.5, isDark ? 0.75 : 0.68),
+    c: clamp(base.c * (isDark ? 1.04 : 1), 0, isDark ? 0.29 : 0.26),
     h: base.h,
   })
   const bg = fitOklch({
-    l: isDark ? clamp(0.15 + base.c * 0.08, 0.13, 0.2) : clamp(0.995 - base.c * 0.1, 0.962, 0.995),
-    c: Math.min(base.c * (isDark ? 0.3 : 0.14), isDark ? 0.045 : 0.02),
+    l: isDark ? clamp(0.13 + base.c * 0.065, 0.11, 0.175) : clamp(0.995 - base.c * 0.1, 0.962, 0.995),
+    c: Math.min(base.c * (isDark ? 0.38 : 0.18), isDark ? 0.07 : 0.03),
     h: base.h,
   })
   const fg = fitOklch({
-    l: isDark ? 0.956 : 0.24,
-    c: Math.min(mid.c * (isDark ? 0.34 : 0.62), isDark ? 0.08 : 0.12),
+    l: isDark ? 0.952 : 0.24,
+    c: Math.min(mid.c * (isDark ? 0.55 : 0.72), isDark ? 0.13 : 0.14),
     h: base.h,
   })
 
-  return [...tint.map((step) => oklchToHex(mix(bg, mid, step))), ...shade.map((step) => oklchToHex(mix(mid, fg, step)))]
+  return [
+    ...tint.map((step, i) => oklchToHex(paint(base, mix(bg, mid, step), curve[i]!, isDark ? 0.32 : 0.28))),
+    ...shade.map((step, i) =>
+      oklchToHex(paint(base, mix(mid, fg, step), curve[i + tint.length]!, isDark ? 0.32 : 0.28)),
+    ),
+  ]
 }
 
 export function generateNeutralScale(seed: HexColor, isDark: boolean): HexColor[] {
   const base = hexToOklch(seed)
   const stop = isDark
-    ? [0, 0.022, 0.05, 0.092, 0.15, 0.228, 0.332, 0.468, 0.636, 0.782, 0.892, 0.978]
+    ? [0, 0.02, 0.046, 0.086, 0.142, 0.218, 0.322, 0.461, 0.631, 0.777, 0.889, 0.975]
     : [0, 0.016, 0.036, 0.064, 0.104, 0.158, 0.23, 0.336, 0.486, 0.668, 0.822, 0.984]
   const bg = fitOklch({
-    l: clamp(base.l, isDark ? 0.11 : 0.965, isDark ? 0.22 : 0.995),
-    c: Math.min(base.c, isDark ? 0.028 : 0.016),
+    l: isDark ? clamp(base.l * 0.79 + base.c * 0.02, 0.09, 0.19) : clamp(base.l, 0.965, 0.995),
+    c: Math.min(base.c * (isDark ? 1 : 1), isDark ? 0.05 : 0.02),
     h: base.h,
   })
   const fg = fitOklch({
     l: isDark ? 0.956 : 0.18,
-    c: Math.min(base.c * (isDark ? 0.42 : 0.46), 0.03),
+    c: Math.min(base.c * (isDark ? 0.75 : 0.54), isDark ? 0.055 : 0.04),
     h: base.h,
   })
 
