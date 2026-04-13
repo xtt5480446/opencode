@@ -3,6 +3,7 @@ import { describeRoute, validator, resolver } from "hono-openapi"
 import z from "zod"
 import { Config } from "../../config/config"
 import { Provider } from "../../provider/provider"
+import { AppRuntime } from "@/effect/app-runtime"
 import { mapValues } from "remeda"
 import { errors } from "../error"
 import { Log } from "../../util/log"
@@ -30,7 +31,7 @@ export const ConfigRoutes = lazy(() =>
         },
       }),
       async (c) => {
-        return c.json(await Config.get())
+        return c.json(await AppRuntime.runPromise(Config.Service.use((cfg) => cfg.get())))
       },
     )
     .patch(
@@ -54,7 +55,7 @@ export const ConfigRoutes = lazy(() =>
       validator("json", Config.Info),
       async (c) => {
         const config = c.req.valid("json")
-        await Config.update(config)
+        await AppRuntime.runPromise(Config.Service.use((cfg) => cfg.update(config)))
         return c.json(config)
       },
     )

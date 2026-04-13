@@ -40,7 +40,7 @@ export const ProviderRoutes = lazy(() =>
         },
       }),
       async (c) => {
-        const config = await Config.get()
+        const config = await AppRuntime.runPromise(Config.Service.use((cfg) => cfg.get()))
         const disabled = new Set(config.disabled_providers ?? [])
         const enabled = config.enabled_providers ? new Set(config.enabled_providers) : undefined
 

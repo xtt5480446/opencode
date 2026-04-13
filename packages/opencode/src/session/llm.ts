@@ -21,6 +21,7 @@ import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
 import { Installation } from "@/installation"
+import { AppRuntime } from "@/effect/app-runtime"
 
 export namespace LLM {
   const log = Log.create({ service: "llm" })
@@ -94,9 +95,9 @@ export namespace LLM {
       modelID: input.model.id,
       providerID: input.model.providerID,
     })
-    const [language, cfg, provider, auth] = await Promise.all([
+    const cfg = await AppRuntime.runPromise(Config.Service.use((cfg) => cfg.get()))
+    const [language, provider, auth] = await Promise.all([
       Provider.getLanguage(input.model),
-      Config.get(),
       Provider.getProvider(input.model.providerID),
       Auth.get(input.model.providerID),
     ])

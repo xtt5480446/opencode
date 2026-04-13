@@ -13,6 +13,7 @@ import { Instance } from "../../project/instance"
 import type { Hooks } from "@opencode-ai/plugin"
 import { Process } from "../../util/process"
 import { text } from "node:stream/consumers"
+import { AppRuntime } from "@/effect/app-runtime"
 
 type PluginAuth = NonNullable<Hooks["auth"]>
 
@@ -311,7 +312,7 @@ export const ProvidersLoginCommand = cmd({
         }
         await ModelsDev.refresh(true).catch(() => {})
 
-        const config = await Config.get()
+        const config = await AppRuntime.runPromise(Config.Service.use((cfg) => cfg.get()))
 
         const disabled = new Set(config.disabled_providers ?? [])
         const enabled = config.enabled_providers ? new Set(config.enabled_providers) : undefined
