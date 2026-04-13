@@ -25,7 +25,7 @@ const seed = async () => {
       init: () => AppRuntime.runPromise(InstanceBootstrap),
       fn: async () => {
         await Config.waitForDependencies()
-        await ToolRegistry.ids()
+        await AppRuntime.runPromise(ToolRegistry.Service.use((svc) => svc.ids()))
 
         const session = await Session.create({ title })
         const messageID = MessageID.ascending()
@@ -56,6 +56,7 @@ const seed = async () => {
     })
   } finally {
     await Instance.disposeAll().catch(() => {})
+    await AppRuntime.dispose().catch(() => {})
   }
 }
 
