@@ -108,11 +108,17 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const fs = yield* AppFileSystem.Service
     const network = yield* SimulationNetwork.Service
-    const state = yield* Ref.make<State>({ files: [], networkRegistrations: [], llmScripts: [], consumedLLMScripts: 0 })
+    const empty: State = {
+      files: [],
+      networkRegistrations: [],
+      llmScripts: [],
+      consumedLLMScripts: 0,
+    }
+    const state = yield* Ref.make<State>(empty)
 
     const reset = Effect.fn("Simulation.reset")(function* () {
       yield* network.reset()
-      yield* Ref.set(state, { files: [], networkRegistrations: [], llmScripts: [], consumedLLMScripts: 0 })
+      yield* Ref.set(state, empty)
     })
 
     const seedFilesystem = Effect.fn("Simulation.seedFilesystem")(function* (input: typeof FilesystemSeedInput.Type) {

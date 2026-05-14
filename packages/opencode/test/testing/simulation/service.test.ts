@@ -98,6 +98,36 @@ describe("Simulation", () => {
     }),
   )
 
+  it.effect("simulation provider returns a default response when no script is queued", () =>
+    Effect.gen(function* () {
+      const provider = yield* Provider.Service
+      const model = yield* provider.defaultModel().pipe(Effect.flatMap((item) => provider.getModel(item.providerID, item.modelID)))
+      const language = yield* provider.getLanguage(model)
+
+      const result = yield* Effect.promise(() => language.doGenerate({ prompt: [], abortSignal: undefined }))
+      expect(result.content).toEqual([{ type: "text", text: "Simulation mock response." }])
+    }),
+  )
+
+  it.effect("simulation provider streams a default response when no script is queued", () =>
+    Effect.gen(function* () {
+      const provider = yield* Provider.Service
+      const model = yield* provider.defaultModel().pipe(Effect.flatMap((item) => provider.getModel(item.providerID, item.modelID)))
+      const language = yield* provider.getLanguage(model)
+
+      const result = yield* Effect.promise(() => language.doStream({ prompt: [], abortSignal: undefined }))
+      const reader = result.stream.getReader()
+      const parts: unknown[] = []
+      while (true) {
+        const next = yield* Effect.promise(() => reader.read())
+        if (next.done) break
+        parts.push(next.value)
+      }
+
+      expect(parts).toContainEqual({ type: "text-delta", id: "simulation-text-1", delta: "Simulation mock response." })
+    }),
+  )
+
   it.effect("simulation provider streams queued script actions", () =>
     Effect.gen(function* () {
       const simulation = yield* Simulation.Service

@@ -1,4 +1,5 @@
-import type { LanguageModelV3, LanguageModelV3CallOptions, LanguageModelV3FinishReason } from "@ai-sdk/provider"
+import type { LanguageModelV3, LanguageModelV3CallOptions, LanguageModelV3FinishReason, LanguageModelV3StreamPart } from "@ai-sdk/provider"
+import { simulateReadableStream } from "ai"
 import { Effect, Layer } from "effect"
 import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
@@ -39,6 +40,15 @@ const provider: Provider.Info = {
   models: { [modelID]: model },
 }
 
+const defaultScript: LLMScript = {
+  steps: [[{ type: "text", content: "Simulation mock response." }]],
+  finish: "stop",
+}
+
+function nextScript(simulation: Simulation.Interface) {
+  return Effect.runPromise(simulation.nextLLM().pipe(Effect.catch(() => Effect.succeed(defaultScript))))
+}
+
 function text(script: LLMScript) {
   return script.steps[0]?.flatMap((item) => (item.type === "text" || item.type === "thinking" ? [item.content] : []))
     .join("") ?? ""
@@ -49,31 +59,33 @@ function error(script: LLMScript) {
 }
 
 function stream(script: LLMScript) {
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue({ type: "stream-start", warnings: [] })
-      let index = 0
-      for (const item of script.steps[0] ?? []) {
-        index++
-        if (item.type === "error") {
-          controller.enqueue({ type: "error", error: new Error(item.message) })
-          controller.close()
-          return
-        }
-        const id = `simulation-${item.type}-${index}`
-        if (item.type === "thinking") {
-          controller.enqueue({ type: "reasoning-start", id })
-          controller.enqueue({ type: "reasoning-delta", id, delta: item.content })
-          controller.enqueue({ type: "reasoning-end", id })
-          continue
-        }
-        controller.enqueue({ type: "text-start", id })
-        controller.enqueue({ type: "text-delta", id, delta: item.content })
-        controller.enqueue({ type: "text-end", id })
-      }
-      controller.enqueue({ type: "finish", finishReason: finishReason(script), usage: usage(script) })
-      controller.close()
-    },
+  const chunks: LanguageModelV3StreamPart[] = [{ type: "stream-start", warnings: [] }]
+  for (const [index, item] of (script.steps[0] ?? []).entries()) {
+    if (item.type === "error") {
+      chunks.push({ type: "error", error: new Error(item.message) })
+      continue
+    }
+    const id = `simulation-${item.type}-${index + 1}`
+    if (item.type === "thinking") {
+      chunks.push(
+        { type: "reasoning-start", id },
+        { type: "reasoning-delta", id, delta: item.content },
+        { type: "reasoning-end", id },
+      )
+      continue
+    }
+    chunks.push(
+      { type: "text-start", id },
+      { type: "text-delta", id, delta: item.content },
+      { type: "text-end", id },
+    )
+  }
+  chunks.push({ type: "finish", finishReason: finishReason(script), usage: usage(script) })
+
+  return simulateReadableStream({
+    chunks,
+    initialDelayInMs: 0,
+    chunkDelayInMs: 0,
   })
 }
 
@@ -105,7 +117,7 @@ function language(simulation: Simulation.Interface): LanguageModelV3 {
     modelId: modelID,
     supportedUrls: {},
     async doGenerate(_options: LanguageModelV3CallOptions) {
-      const script = await Effect.runPromise(simulation.nextLLM())
+      const script = await nextScript(simulation)
       const err = error(script)
       if (err?.type === "error") throw new Error(err.message)
       return {
@@ -116,7 +128,7 @@ function language(simulation: Simulation.Interface): LanguageModelV3 {
       }
     },
     async doStream(_options: LanguageModelV3CallOptions) {
-      const script = await Effect.runPromise(simulation.nextLLM())
+      const script = await nextScript(simulation)
       return { stream: stream(script) }
     },
   }
