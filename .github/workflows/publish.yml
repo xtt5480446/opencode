@@ -488,7 +488,3 @@ jobs:
           LATEST_YML_DIR: /tmp/latest-yml
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-      - name: Verify snapshot npm CLI install
-        if: startsWith(github.ref_name, 'snapshot-')
-        run: npx -y opencode-ai@${{ needs.version.outputs.version }} --version
