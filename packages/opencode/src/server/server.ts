@@ -30,7 +30,6 @@ export type TcpListener = {
 export type SocketListener = {
   type: "socket"
   socket: string
-  url: URL
   stop: (close?: boolean) => Promise<void>
 }
 
@@ -102,7 +101,6 @@ export async function listen(opts: ListenOptions): Promise<Listener> {
     return {
       type: "socket" as const,
       socket: listener.socket,
-      url: listener.url,
       stop,
     }
   }
@@ -119,13 +117,9 @@ const listenEffect: (opts: ListenOptions) => Effect.Effect<EffectListener, unkno
   function* (opts: ListenOptions) {
     const state = yield* startWithPortFallback(opts)
     if (opts.type === "socket") {
-      const listenerUrl = makeURL("localhost")
-      url = listenerUrl
-
       return {
         type: "socket" as const,
         socket: opts.socket,
-        url: listenerUrl,
         stop: yield* makeStop(state, Effect.void),
       }
     }
