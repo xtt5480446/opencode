@@ -1,12 +1,12 @@
-export * as ServerDiscovery from "./discovery"
+export * as ServerDiscovery from "./server-discovery"
 
-import { ServerAuth } from "@/server/auth"
 import { makeRuntime } from "@/effect/run-service"
+import { ServerAuth } from "@/server/auth"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Global } from "@opencode-ai/core/global"
 import { Context, Effect, Layer, Option, Schema } from "effect"
-import path from "path"
 import { readFileSync, unlinkSync } from "fs"
+import path from "path"
 
 export const file = path.join(Global.Path.state, "server.json")
 
@@ -23,36 +23,36 @@ export interface Interface {
   readonly find: () => Effect.Effect<string | undefined>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ServerDiscovery") {}
+export class Service extends Context.Service<Service, Interface>()("@opencode/CliServerDiscovery") {}
 
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const fs = yield* AppFileSystem.Service
 
-    const read = Effect.fn("ServerDiscovery.read")(function* () {
+    const read = Effect.fn("CliServerDiscovery.read")(function* () {
       const entry = yield* fs.readJson(file).pipe(Effect.catch(() => Effect.succeed(undefined)))
       return Option.getOrUndefined(decodeEntry(entry))
     })
 
-    const remove = Effect.fn("ServerDiscovery.remove")(function* () {
+    const remove = Effect.fn("CliServerDiscovery.remove")(function* () {
       const entry = yield* read()
       if (entry?.pid !== process.pid) return
       yield* fs.remove(file).pipe(Effect.ignore)
     })
 
-    const removeStale = Effect.fn("ServerDiscovery.removeStale")(function* (entry: Entry) {
+    const removeStale = Effect.fn("CliServerDiscovery.removeStale")(function* (entry: Entry) {
       const current = yield* read()
       if (current?.pid !== entry.pid || current.url !== entry.url) return
       yield* fs.remove(file).pipe(Effect.ignore)
     })
 
     return Service.of({
-      write: Effect.fn("ServerDiscovery.write")(function* (url) {
+      write: Effect.fn("CliServerDiscovery.write")(function* (url) {
         yield* fs.writeJson(file, { url: localURL(url).toString(), pid: process.pid }, 0o600).pipe(Effect.orDie)
       }),
       remove,
-      find: Effect.fn("ServerDiscovery.find")(function* () {
+      find: Effect.fn("CliServerDiscovery.find")(function* () {
         const entry = yield* read()
         if (!entry) return undefined
         const url = yield* healthy(entry.url)
