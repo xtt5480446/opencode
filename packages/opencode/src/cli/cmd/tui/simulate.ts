@@ -165,6 +165,10 @@ export const SimulateCommand = cmd({
           [OPENCODE_RUN_ID]: ensureRunID(),
           PWD: simulatedDirectory,
           [simulatedCwdEnv]: simulatedDirectory,
+          // Simulated filesystem lives in InMemoryFs — SQLite needs to be in-memory
+          // too, since real fs writes to `/opencode/.local/share/opencode/...` will
+          // fail (the directory only exists in the sim FS).
+          OPENCODE_DB: ":memory:",
         }),
       })
       worker.onerror = (e) => {

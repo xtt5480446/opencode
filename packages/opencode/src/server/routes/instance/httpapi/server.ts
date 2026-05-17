@@ -1,6 +1,11 @@
 import { Config as EffectConfig, Context, Effect, Layer, FileSystem, Path } from "effect"
 import { ChildProcessSpawner } from "effect/unstable/process"
 import { NodePath } from "@effect/platform-node"
+import { AppProcess } from "@opencode-ai/core/process"
+import { EventV2 } from "@opencode-ai/core/event"
+import { BackgroundJob } from "@/background/job"
+import { Image } from "@/image/image"
+import { Reference } from "@/reference/reference"
 import { Git } from "@/git"
 import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi"
 import {
@@ -318,8 +323,10 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     | Bus.Service
     | AccountRepo.Service
     | ShareNext.Service
-    | SyncEvent.Service
     | PtyTicket.Service
+    | RuntimeFlags.Service
+    | BackgroundJob.Service
+    | EventV2.Service
 
   const tier0: Layer.Layer<Tier0Services, never, never> = Layer.mergeAll(
     SimulationFileSystem.layer({
@@ -341,8 +348,10 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     Bus.layer,
     AccountRepo.layer,
     simulationShareNextLayer,
-    SyncEvent.layer,
     PtyTicket.layer,
+    RuntimeFlags.defaultLayer,
+    BackgroundJob.layer,
+    EventV2.layer,
   )
 
   // ─── Tier 1: services depending only on tier 0 ──────────────────────────
@@ -358,6 +367,8 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
   // Discovery → AppFileSystem, Path, HttpClient
   // Ripgrep → AppFileSystem, HttpClient, ChildProcessSpawner
   // Account → AccountRepo, HttpClient
+  // SyncEvent → RuntimeFlags, Bus
+  // AppProcess → ChildProcessSpawner
   const tier1: Layer.Layer<
     | Tier0Services
     | Git.Service
@@ -371,7 +382,9 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     | SessionStatus.Service
     | Discovery.Service
     | Ripgrep.Service
-    | Account.Service,
+    | Account.Service
+    | SyncEvent.Service
+    | AppProcess.Service,
     never,
     never
   > = Layer.mergeAll(
@@ -387,6 +400,8 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     Discovery.layer,
     Ripgrep.layer,
     Account.layer,
+    SyncEvent.layer,
+    AppProcess.layer,
   ).pipe(Layer.provideMerge(tier0))
 
   type Tier1Services =
@@ -403,15 +418,18 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     | Discovery.Service
     | Ripgrep.Service
     | Account.Service
+    | SyncEvent.Service
+    | AppProcess.Service
 
   // ─── Tier 2: services depending only on tier 0 + tier 1 ─────────────────
   // Npm → AppFileSystem, Global, FileSystem, EffectFlock
   // ModelsDev → AppFileSystem, HttpClient
-  // Project → AppFileSystem, Path, ChildProcessSpawner, Bus
-  // Installation → HttpClient, ChildProcessSpawner
+  // Project → AppFileSystem, Path, ChildProcessSpawner, Bus, RuntimeFlags
+  // Installation → HttpClient, AppProcess
   // Storage → AppFileSystem, Git
   // Vcs → Git, Bus
-  // SessionRunState → SessionStatus
+  // SessionRunState → BackgroundJob, SessionStatus
+  // EventV2Bridge → EventV2, Bus, SyncEvent
   const tier2: Layer.Layer<
     | Tier1Services
     | Npm.Service
@@ -420,7 +438,8 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     | Installation.Service
     | Storage.Service
     | Vcs.Service
-    | SessionRunState.Service,
+    | SessionRunState.Service
+    | EventV2Bridge.Service,
     never,
     never
   > = Layer.mergeAll(
@@ -431,6 +450,7 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     Storage.layer,
     Vcs.layer,
     SessionRunState.layer,
+    EventV2Bridge.layer,
   ).pipe(Layer.provideMerge(tier1))
 
   type Tier2Services =
@@ -442,6 +462,7 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     | Storage.Service
     | Vcs.Service
     | SessionRunState.Service
+    | EventV2Bridge.Service
 
   // ─── Tier 3: services depending only on tier 0-2 ────────────────────────
   // Config → AppFileSystem, Auth, Account, Env, Npm
@@ -457,15 +478,17 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
   type Tier3Services = Tier2Services | Config.Service | File.Service | Simulation.Service | Session.Service
 
   // ─── Tier 4: services depending on tier 0-3 (mostly Config) ─────────────
-  // Plugin → Bus, Config
+  // Plugin → Bus, Config, RuntimeFlags
   // FileWatcher → Config, Git
-  // Format → Config, ChildProcessSpawner
-  // Snapshot → AppFileSystem, ChildProcessSpawner, Config
-  // LSP → Config
+  // Format → Config, AppProcess, RuntimeFlags
+  // Snapshot → AppFileSystem, AppProcess, Config
+  // LSP → Config, RuntimeFlags
   // MCP → ChildProcessSpawner, McpAuth, Bus, Config
-  // Skill → Discovery, Config, Bus, AppFileSystem, Global
-  // Instruction → Config, AppFileSystem, Global, HttpClient
+  // Skill → Discovery, Config, Bus, AppFileSystem, Global, RuntimeFlags
+  // Instruction → Config, AppFileSystem, Global, HttpClient, RuntimeFlags
   // SimulationProvider → Simulation (provides Provider tag)
+  // Image → Config
+  // Reference → Config, AppFileSystem, Git, RuntimeFlags
   const tier4: Layer.Layer<
     | Tier3Services
     | Plugin.Service
@@ -476,7 +499,9 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     | MCP.Service
     | Skill.Service
     | Instruction.Service
-    | Provider.Service,
+    | Provider.Service
+    | Image.Service
+    | Reference.Service,
     never,
     never
   > = Layer.mergeAll(
@@ -489,6 +514,8 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     Skill.layer,
     Instruction.layer,
     SimulationProvider.layer,
+    Image.layer,
+    Reference.layer,
   ).pipe(Layer.provideMerge(tier3))
 
   type Tier4Services =
@@ -502,6 +529,8 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     | Skill.Service
     | Instruction.Service
     | Provider.Service
+    | Image.Service
+    | Reference.Service
 
   // ─── Tier 5: services depending on tier 0-4 ─────────────────────────────
   // Pty → Config, Bus, Plugin
