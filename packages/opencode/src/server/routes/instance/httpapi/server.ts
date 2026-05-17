@@ -80,6 +80,7 @@ import { SimulationNetworkRoutes } from "@/testing/simulation/network-routes"
 import { SimulationProvider } from "@/testing/simulation/provider"
 import { SimulationSpawner } from "@/testing/simulation/spawner"
 import { SimulationGit } from "@/testing/simulation/git"
+import { SimulationLsp } from "@/testing/simulation/lsp"
 import { Simulation } from "@/testing/simulation/service"
 import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@/server/cors"
 import { serveUIEffect } from "@/server/shared/ui"
@@ -483,7 +484,7 @@ export function createSimulatedRoutes(corsOptions?: CorsOptions): ReturnType<typ
     FileWatcher.layer,
     Format.layer,
     Snapshot.layer,
-    LSP.layer,
+    LSP.makeLayer(SimulationLsp.supportedServers),
     MCP.layer,
     Skill.layer,
     Instruction.layer,
