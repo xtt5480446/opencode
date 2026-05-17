@@ -17,6 +17,7 @@ import type { EventSource } from "./context/sdk"
 import type { SimulationMcpRuntimeState } from "./simulation-mcp"
 import type { rpc } from "./worker"
 import { SimulationDebugLog } from "../../../testing/simulation/debug-log"
+import { SimulationNetworkLog } from "./simulation-network-log"
 import { fileURLToPath } from "url"
 import { writeHeapSnapshot } from "v8"
 
@@ -49,18 +50,52 @@ function createWorkerFetch(client: RpcClient): typeof fetch {
   const fn = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init)
     const body = request.body ? await request.text() : undefined
+    const headers = Object.fromEntries(request.headers.entries())
     SimulationDebugLog.write("simulate.fetch.start", { method: request.method, url: request.url })
-    const result = await client.call("fetch", {
-      url: request.url,
-      method: request.method,
-      headers: Object.fromEntries(request.headers.entries()),
-      body,
-    })
-    SimulationDebugLog.write("simulate.fetch.end", { method: request.method, url: request.url, status: result.status })
-    return new Response(result.body, {
-      status: result.status,
-      headers: result.headers,
-    })
+    const startedAt = Date.now()
+    const startedAtIso = new Date(startedAt).toISOString()
+    try {
+      const result = await client.call("fetch", {
+        url: request.url,
+        method: request.method,
+        headers,
+        body,
+      })
+      SimulationDebugLog.write("simulate.fetch.end", {
+        method: request.method,
+        url: request.url,
+        status: result.status,
+      })
+      SimulationNetworkLog.record({
+        time: startedAtIso,
+        method: request.method,
+        url: request.url,
+        status: result.status,
+        durationMs: Date.now() - startedAt,
+        requestHeaders: headers,
+        requestBody: body,
+        responseHeaders: result.headers,
+        responseBody: result.body,
+      })
+      return new Response(result.body, {
+        status: result.status,
+        headers: result.headers,
+      })
+    } catch (err) {
+      SimulationNetworkLog.record({
+        time: startedAtIso,
+        method: request.method,
+        url: request.url,
+        status: 0,
+        durationMs: Date.now() - startedAt,
+        requestHeaders: headers,
+        requestBody: body,
+        responseHeaders: {},
+        responseBody: "",
+        error: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    }
   }
   return fn as typeof fetch
 }

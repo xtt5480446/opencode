@@ -12,16 +12,14 @@
               { "type": "text", "content": "Looking at `src/greeting.ts`, the function currently returns `\"Hi, …\"`. " },
               { "type": "text", "content": "You asked for a friendlier greeting, so I'll change the prefix from `Hi` to `Hello`. " },
               { "type": "text", "content": "I'll keep the template literal and the `name` interpolation untouched. " },
-              { "type": "text", "content": "Here's the plan: I'll use the `edit` tool to replace the single return line. " },
+              { "type": "text", "content": "Here's the plan: I'll use the `apply_patch` tool to replace the single return line. " },
               { "type": "text", "content": "Patching `src/greeting.ts` now." },
               {
                 "type": "tool-call",
                 "toolCallId": "patch-greeting-1",
-                "toolName": "edit",
+                "toolName": "apply_patch",
                 "input": {
-                  "filePath": "/opencode/src/greeting.ts",
-                  "oldString": "return `Hi, ${name}`",
-                  "newString": "return `Hello, ${name}`"
+                  "patchText": "*** Begin Patch\n*** Update File: /opencode/src/greeting.ts\n@@\n-  return `Hi, ${name}`\n+  return `Hello, ${name}`\n*** End Patch\n"
                 }
               }
             ]

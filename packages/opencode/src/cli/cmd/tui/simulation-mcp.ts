@@ -1,4 +1,5 @@
 import { SimulationActions } from "@/testing/simulation/actions"
+import { SimulationNetworkLog } from "./simulation-network-log"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
@@ -546,6 +547,39 @@ function createServer(options: Options) {
   )
   server.registerTool("simulation_control_snapshot", { description: "Get backend simulation state snapshot." }, async () =>
     toolResult(await control(options, "GET", "/experimental/simulation/snapshot")),
+  )
+
+  server.registerTool(
+    "simulation_network_log_get",
+    {
+      description:
+        "Return the persistent network log: every HTTP request the simulated TUI sent to the backend, with method, URL, status code, headers, and response body (body truncated at 32KB per entry). Capped to the last 500 entries.",
+      inputSchema: z.object({
+        limit: z.number().int().min(1).max(500).optional(),
+        urlIncludes: z.string().optional(),
+        statusMin: z.number().int().optional(),
+        statusMax: z.number().int().optional(),
+      }),
+    },
+    async (input) => {
+      let entries = SimulationNetworkLog.snapshot()
+      if (input.urlIncludes) entries = entries.filter((e) => e.url.includes(input.urlIncludes!))
+      if (typeof input.statusMin === "number") entries = entries.filter((e) => e.status >= input.statusMin!)
+      if (typeof input.statusMax === "number") entries = entries.filter((e) => e.status <= input.statusMax!)
+      if (typeof input.limit === "number") entries = entries.slice(-input.limit)
+      return toolResult({ entries, total: entries.length })
+    },
+  )
+
+  server.registerTool(
+    "simulation_network_log_clear",
+    {
+      description: "Clear the simulated TUI's persistent network log. Use between scripted runs to isolate observations.",
+    },
+    async () => {
+      SimulationNetworkLog.clear()
+      return toolResult({ cleared: true })
+    },
   )
 
   if (masterEnabled()) {

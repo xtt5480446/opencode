@@ -13,7 +13,10 @@ import { SimulationDebugLog } from "./debug-log"
 import { Simulation, type LLMScript } from "./service"
 
 const providerID = ProviderID.make("simulation")
-const modelID = ModelID.make("mock")
+// Use a model id that contains "gpt-" (and not "oss" / "gpt-4") so the tool
+// registry's GPT-style gate enables `apply_patch` in the simulated chain.
+// See registry.ts:319-322 for the gating logic.
+const modelID = ModelID.make("gpt-mock")
 
 const model: Provider.Model = {
   id: modelID,
