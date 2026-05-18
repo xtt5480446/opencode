@@ -405,6 +405,13 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
         const auth = await getAuth()
         if (auth.type !== "oauth") return {}
 
+        let refreshPromise:
+          | Promise<{
+              access: string
+              accountId: string | undefined
+            }>
+          | undefined
+
         return {
           apiKey: OAUTH_DUMMY_KEY,
           async fetch(requestInput: RequestInfo | URL, init?: RequestInit) {
@@ -429,21 +436,34 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
 
             // Check if token needs refresh
             if (!currentAuth.access || currentAuth.expires < Date.now()) {
-              log.info("refreshing codex access token")
-              const tokens = await refreshAccessToken(currentAuth.refresh)
-              const newAccountId = extractAccountId(tokens) || authWithAccount.accountId
-              await input.client.auth.set({
-                path: { id: "openai" },
-                body: {
-                  type: "oauth",
-                  refresh: tokens.refresh_token,
-                  access: tokens.access_token,
-                  expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
-                  ...(newAccountId && { accountId: newAccountId }),
-                },
-              })
-              currentAuth.access = tokens.access_token
-              authWithAccount.accountId = newAccountId
+              if (!refreshPromise) {
+                log.info("refreshing codex access token")
+                refreshPromise = refreshAccessToken(currentAuth.refresh)
+                  .then(async (tokens) => {
+                    const accountId = extractAccountId(tokens) || authWithAccount.accountId
+                    await input.client.auth.set({
+                      path: { id: "openai" },
+                      body: {
+                        type: "oauth",
+                        refresh: tokens.refresh_token,
+                        access: tokens.access_token,
+                        expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+                        ...(accountId && { accountId }),
+                      },
+                    })
+                    return {
+                      access: tokens.access_token,
+                      accountId,
+                    }
+                  })
+                  .finally(() => {
+                    refreshPromise = undefined
+                  })
+              }
+
+              const refreshed = await refreshPromise
+              currentAuth.access = refreshed.access
+              authWithAccount.accountId = refreshed.accountId
             }
 
             // Build headers

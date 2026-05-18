@@ -1,10 +1,17 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, mock, test } from "bun:test"
 import {
+  CodexAuthPlugin,
   parseJwtClaims,
   extractAccountIdFromClaims,
   extractAccountId,
   type IdTokenClaims,
 } from "../../src/plugin/codex"
+
+const originalFetch = globalThis.fetch
+
+afterEach(() => {
+  globalThis.fetch = originalFetch
+})
 
 function createTestJwt(payload: object): string {
   const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")
@@ -119,5 +126,77 @@ describe("plugin.codex", () => {
         }),
       ).toBe("acc-123")
     })
+  })
+
+  test("deduplicates concurrent Codex token refreshes", async () => {
+    let auth = {
+      type: "oauth" as const,
+      refresh: "refresh-old",
+      access: "",
+      expires: 0,
+    }
+    const authUpdates: unknown[] = []
+    let resolveRefresh: (() => void) | undefined
+    const refreshReady = new Promise<void>((resolve) => {
+      resolveRefresh = resolve
+    })
+    let refreshRequests = 0
+
+    globalThis.fetch = mock(async (request: RequestInfo | URL) => {
+      const url = request instanceof URL ? request.href : typeof request === "string" ? request : request.url
+      if (url === "https://auth.openai.com/oauth/token") {
+        refreshRequests += 1
+        await refreshReady
+        return new Response(
+          JSON.stringify({
+            id_token: createTestJwt({ chatgpt_account_id: "acc-123" }),
+            access_token: "access-new",
+            refresh_token: "refresh-new",
+            expires_in: 3600,
+          }),
+          { status: 200 },
+        )
+      }
+
+      return new Response("{}", { status: 200 })
+    }) as unknown as typeof fetch
+
+    const hooks = await CodexAuthPlugin({
+      client: {
+        auth: {
+          async set(input: { body: { refresh: string; access: string; expires: number } }) {
+            authUpdates.push(input)
+            auth = {
+              type: "oauth",
+              refresh: input.body.refresh,
+              access: input.body.access,
+              expires: input.body.expires,
+            }
+          },
+        },
+      } as never,
+      project: {} as never,
+      directory: "",
+      worktree: "",
+      experimental_workspace: {
+        register() {},
+      },
+      serverUrl: new URL("https://example.com"),
+      $: {} as never,
+    })
+    const loaded = await hooks.auth!.loader!(async () => auth as never, {} as never)
+
+    const first = loaded.fetch!("https://api.openai.com/v1/responses")
+    const second = loaded.fetch!("https://api.openai.com/v1/responses")
+
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(refreshRequests).toBe(1)
+
+    resolveRefresh!()
+    await Promise.all([first, second])
+
+    expect(refreshRequests).toBe(1)
+    expect(authUpdates).toHaveLength(1)
   })
 })
