@@ -36,6 +36,7 @@ import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionV2 } from "../../src/v2/session"
+import { SessionStorageSql } from "../../src/v2/session/storage-sql"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
 import { Shell } from "../../src/shell/shell"
@@ -507,6 +508,7 @@ noLLMServer.instance(
 
       const messages = yield* SessionV2.Service.use((session) => session.messages({ sessionID: chat.id })).pipe(
         Effect.provide(SessionV2.layer),
+        Effect.provide(SessionStorageSql.defaultLayer),
       )
       const row = Database.use((db) =>
         db.select().from(SessionMessageTable).where(Database.eq(SessionMessageTable.session_id, chat.id)).get(),

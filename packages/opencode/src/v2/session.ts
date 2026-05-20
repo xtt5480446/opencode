@@ -1,9 +1,6 @@
-import { SessionMessageTable, SessionTable } from "@/session/session.sql"
 import { SessionID } from "@/session/schema"
 import { WorkspaceID } from "@/control-plane/schema"
-import { and, asc, desc, eq, gt, gte, isNull, like, lt, or, type SQL } from "@/storage/db"
-import * as Database from "@/storage/db"
-import { Context, DateTime, Effect, Layer, Option, Schema } from "effect"
+import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { SessionMessage } from "@opencode-ai/core/session-message"
 import type { Prompt } from "@opencode-ai/core/session-prompt"
 import { ProjectID } from "@/project/schema"
@@ -13,7 +10,8 @@ import { optionalOmitUndefined } from "@opencode-ai/core/schema"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { SessionStorage } from "./session/storage"
+import { SessionStorageSql } from "./session/storage-sql"
 
 export const Delivery = Schema.Literals(["immediate", "deferred"]).annotate({
   identifier: "Session.Delivery",
@@ -73,40 +71,17 @@ export interface Interface {
     workspaceID?: WorkspaceID
   }) => Effect.Effect<Info>
   readonly get: (sessionID: SessionID) => Effect.Effect<Info, NotFoundError>
-  readonly list: (input: {
-    limit?: number
-    order?: "asc" | "desc"
-    directory?: string
-    path?: string
-    workspaceID?: WorkspaceID
-    roots?: boolean
-    start?: number
-    search?: string
-    cursor?: {
-      id: SessionID
-      time: number
-      direction: "previous" | "next"
-    }
-  }) => Effect.Effect<Info[], never>
-  readonly messages: (input: {
-    sessionID: SessionID
-    limit?: number
-    order?: "asc" | "desc"
-    cursor?: {
-      id: SessionMessage.ID
-      time: number
-      direction: "previous" | "next"
-    }
-  }) => Effect.Effect<SessionMessage.Message[], never>
-  readonly context: (sessionID: SessionID) => Effect.Effect<SessionMessage.Message[], never>
+  readonly list: (input: SessionStorage.SessionListInput) => Effect.Effect<Info[]>
+  readonly messages: (input: SessionStorage.MessageListInput) => Effect.Effect<SessionMessage.Message[]>
+  readonly context: (sessionID: SessionID) => Effect.Effect<SessionMessage.Message[]>
   readonly prompt: (input: {
     id?: EventV2.ID
     sessionID: SessionID
     prompt: Prompt
     delivery?: Delivery
-  }) => Effect.Effect<SessionMessage.User, never>
-  readonly shell: (input: { id?: EventV2.ID; sessionID: SessionID; command: string }) => Effect.Effect<void, never>
-  readonly skill: (input: { id?: EventV2.ID; sessionID: SessionID; skill: string }) => Effect.Effect<void, never>
+  }) => Effect.Effect<SessionMessage.User>
+  readonly shell: (input: { id?: EventV2.ID; sessionID: SessionID; command: string }) => Effect.Effect<void>
+  readonly skill: (input: { id?: EventV2.ID; sessionID: SessionID; skill: string }) => Effect.Effect<void>
   readonly subagent: (input: {
     id?: EventV2.ID
     parentID: SessionID
@@ -114,10 +89,10 @@ export interface Interface {
     agent: string
     model?: ModelV2.Ref
   }) => Effect.Effect<void, NotFoundError>
-  readonly switchAgent: (input: { sessionID: SessionID; agent: string }) => Effect.Effect<void, never>
-  readonly switchModel: (input: { sessionID: SessionID; model: ModelV2.Ref }) => Effect.Effect<void, never>
-  readonly compact: (sessionID: SessionID) => Effect.Effect<void, never>
-  readonly wait: (sessionID: SessionID) => Effect.Effect<void, never>
+  readonly switchAgent: (input: { sessionID: SessionID; agent: string }) => Effect.Effect<void>
+  readonly switchModel: (input: { sessionID: SessionID; model: ModelV2.Ref }) => Effect.Effect<void>
+  readonly compact: (sessionID: SessionID) => Effect.Effect<void>
+  readonly wait: (sessionID: SessionID) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Session") {}
@@ -126,170 +101,28 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
-    const decodeMessage = Schema.decodeUnknownSync(SessionMessage.Message)
-
-    const decode = (row: typeof SessionMessageTable.$inferSelect) =>
-      decodeMessage({ ...row.data, id: row.id, type: row.type })
-
-    function fromRow(row: typeof SessionTable.$inferSelect): Info {
-      return new Info({
-        id: SessionID.make(row.id),
-        projectID: ProjectID.make(row.project_id),
-        workspaceID: row.workspace_id ? WorkspaceID.make(row.workspace_id) : undefined,
-        title: row.title,
-        parentID: row.parent_id ? SessionID.make(row.parent_id) : undefined,
-        path: row.path ?? "",
-        agent: row.agent ?? undefined,
-        model: row.model
-          ? {
-              id: ModelV2.ID.make(row.model.id),
-              providerID: ProviderV2.ID.make(row.model.providerID),
-              variant: ModelV2.VariantID.make(row.model.variant ?? "default"),
-            }
-          : undefined,
-        cost: row.cost,
-        tokens: {
-          input: row.tokens_input,
-          output: row.tokens_output,
-          reasoning: row.tokens_reasoning,
-          cache: {
-            read: row.tokens_cache_read,
-            write: row.tokens_cache_write,
-          },
-        },
-        time: {
-          created: DateTime.makeUnsafe(row.time_created),
-          updated: DateTime.makeUnsafe(row.time_updated),
-          archived: row.time_archived ? DateTime.makeUnsafe(row.time_archived) : undefined,
-        },
-      })
-    }
+    const storage = yield* SessionStorage.Service
 
     const result = Service.of({
       create: Effect.fn("V2Session.create")(function* (_input) {
-        return {} as any
+        return yield* Effect.die(new Error("V2Session.create is not implemented"))
       }),
       get: Effect.fn("V2Session.get")(function* (sessionID) {
-        const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())
+        const row = yield* storage.get(sessionID).pipe(Effect.orDie)
         if (!row) return yield* new NotFoundError({ sessionID })
-        return fromRow(row)
+        return new Info(row)
       }),
       list: Effect.fn("V2Session.list")(function* (input) {
-        const direction = input.cursor?.direction ?? "next"
-        let order = input.order ?? "desc"
-        // This is a load bearing sort, desktop relies on this
-        const sortColumn = SessionTable.time_updated
-        // Query the adjacent rows in reverse, then flip them back into the requested order below.
-        if (direction === "previous" && order === "asc") order = "desc"
-        if (direction === "previous" && order === "desc") order = "asc"
-        const conditions: SQL[] = []
-        if (input.directory) conditions.push(eq(SessionTable.directory, input.directory))
-        if (input.path)
-          conditions.push(or(eq(SessionTable.path, input.path), like(SessionTable.path, `${input.path}/%`))!)
-        if (input.workspaceID) conditions.push(eq(SessionTable.workspace_id, input.workspaceID))
-        if (input.roots) conditions.push(isNull(SessionTable.parent_id))
-        if (input.start) conditions.push(gte(sortColumn, input.start))
-        if (input.search) conditions.push(like(SessionTable.title, `%${input.search}%`))
-        if (input.cursor) {
-          conditions.push(
-            order === "asc"
-              ? or(
-                  gt(sortColumn, input.cursor.time),
-                  and(eq(sortColumn, input.cursor.time), gt(SessionTable.id, input.cursor.id)),
-                )!
-              : or(
-                  lt(sortColumn, input.cursor.time),
-                  and(eq(sortColumn, input.cursor.time), lt(SessionTable.id, input.cursor.id)),
-                )!,
-          )
-        }
-        const query = Database.Client()
-          .select()
-          .from(SessionTable)
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(
-            order === "asc" ? asc(sortColumn) : desc(sortColumn),
-            order === "asc" ? asc(SessionTable.id) : desc(SessionTable.id),
-          )
-
-        const rows = input.limit === undefined ? query.all() : query.limit(input.limit).all()
-        return (direction === "previous" ? rows.toReversed() : rows).map((row) => fromRow(row))
+        return (yield* storage.list(input).pipe(Effect.orDie)).map((row) => new Info(row))
       }),
       messages: Effect.fn("V2Session.messages")(function* (input) {
-        const direction = input.cursor?.direction ?? "next"
-        let order = input.order ?? "desc"
-        // Query the adjacent rows in reverse, then flip them back into the requested order below.
-        if (direction === "previous" && order === "asc") order = "desc"
-        if (direction === "previous" && order === "desc") order = "asc"
-        const boundary = input.cursor
-          ? order === "asc"
-            ? or(
-                gt(SessionMessageTable.time_created, input.cursor.time),
-                and(
-                  eq(SessionMessageTable.time_created, input.cursor.time),
-                  gt(SessionMessageTable.id, input.cursor.id),
-                ),
-              )
-            : or(
-                lt(SessionMessageTable.time_created, input.cursor.time),
-                and(
-                  eq(SessionMessageTable.time_created, input.cursor.time),
-                  lt(SessionMessageTable.id, input.cursor.id),
-                ),
-              )
-          : undefined
-        const where = boundary
-          ? and(eq(SessionMessageTable.session_id, input.sessionID), boundary)
-          : eq(SessionMessageTable.session_id, input.sessionID)
-
-        const rows = Database.use((db) => {
-          const query = db
-            .select()
-            .from(SessionMessageTable)
-            .where(where)
-            .orderBy(
-              order === "asc" ? asc(SessionMessageTable.time_created) : desc(SessionMessageTable.time_created),
-              order === "asc" ? asc(SessionMessageTable.id) : desc(SessionMessageTable.id),
-            )
-          const rows = input.limit === undefined ? query.all() : query.limit(input.limit).all()
-          return direction === "previous" ? rows.toReversed() : rows
-        })
-        return rows.map((row) => decode(row))
+        return yield* storage.messages(input).pipe(Effect.orDie)
       }),
       context: Effect.fn("V2Session.context")(function* (sessionID) {
-        const rows = Database.use((db) => {
-          const compaction = db
-            .select()
-            .from(SessionMessageTable)
-            .where(and(eq(SessionMessageTable.session_id, sessionID), eq(SessionMessageTable.type, "compaction")))
-            .orderBy(desc(SessionMessageTable.time_created), desc(SessionMessageTable.id))
-            .limit(1)
-            .get()
-
-          return db
-            .select()
-            .from(SessionMessageTable)
-            .where(
-              and(
-                eq(SessionMessageTable.session_id, sessionID),
-                compaction
-                  ? or(
-                      gt(SessionMessageTable.time_created, compaction.time_created),
-                      and(
-                        eq(SessionMessageTable.time_created, compaction.time_created),
-                        gte(SessionMessageTable.id, compaction.id),
-                      ),
-                    )
-                  : undefined,
-              ),
-            )
-            .orderBy(asc(SessionMessageTable.time_created), asc(SessionMessageTable.id))
-            .all()
-        })
-        return rows.map((row) => decode(row))
+        return yield* storage.context(sessionID).pipe(Effect.orDie)
       }),
       prompt: Effect.fn("V2Session.prompt")(function* (_input) {
-        return {} as any
+        return yield* Effect.die(new Error("V2Session.prompt is not implemented"))
       }),
       shell: Effect.fn("V2Session.shell")(function* (_input) {}),
       skill: Effect.fn("V2Session.skill")(function* (_input) {}),
@@ -336,6 +169,8 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(EventV2Bridge.defaultLayer))
+export const defaultLayer = layer.pipe(
+  Layer.provide(Layer.mergeAll(EventV2Bridge.defaultLayer, SessionStorageSql.defaultLayer)),
+)
 
 export * as SessionV2 from "./session"
