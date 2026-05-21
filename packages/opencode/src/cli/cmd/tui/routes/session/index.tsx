@@ -546,6 +546,7 @@ export function Session() {
       slash: {
         name: "compact",
         aliases: ["summarize"],
+        input: true,
       },
       run: () => {
         const selectedModel = local.model.current()
@@ -1046,6 +1047,7 @@ export function Session() {
       desc: "description" in command ? command.description : undefined,
       slashName: "slash" in command ? command.slash?.name : undefined,
       slashAliases: "slash" in command ? command.slash?.aliases : undefined,
+      slashInput: "slash" in command ? command.slash?.input : undefined,
       ...command,
     })),
   )

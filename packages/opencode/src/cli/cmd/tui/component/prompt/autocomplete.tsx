@@ -553,11 +553,10 @@ export function Autocomplete(props: {
 
   const commands = createMemo((): AutocompleteOption[] => {
     const results: AutocompleteOption[] = slashes().map((command) => {
-      const name = command.display.trim().slice(1)
-      if (name !== "compact") return command
+      if (!command.input) return command
       return {
         ...command,
-        onSelect: () => insertSlashCommand(name),
+        onSelect: () => insertSlashCommand(command.name),
       }
     })
 

@@ -25,9 +25,11 @@ export { useBindings, useKeymapSelector }
 export type OpenTuiKeymap = ReturnType<typeof useKeymap>
 type OpencodeModeStack = ReturnType<typeof createOpencodeModeStack>
 type CommandSlashEntry = {
+  name: string
   display: string
   description?: string
   aliases?: string[]
+  input?: boolean
   onSelect: () => void
 }
 type Command = ReturnType<OpenTuiKeymap["getCommands"]>[number]
@@ -256,6 +258,7 @@ export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
       if (typeof slashName !== "string" || !slashName) return []
       const slashAliases = entry.command.slashAliases
       return {
+        name: slashName,
         display: `/${slashName}`,
         description:
           typeof entry.command.desc === "string"
@@ -266,6 +269,7 @@ export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
         aliases: Array.isArray(slashAliases)
           ? slashAliases.filter((alias): alias is string => typeof alias === "string").map((alias) => `/${alias}`)
           : undefined,
+        input: entry.command.slashInput === true,
         onSelect: () => keymap.dispatchCommand(entry.command.name),
       }
     }),
