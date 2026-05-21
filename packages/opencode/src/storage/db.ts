@@ -1,5 +1,6 @@
 import { type SQLiteBunDatabase } from "drizzle-orm/bun-sqlite"
 import { migrate } from "drizzle-orm/bun-sqlite/migrator"
+import type { MigrationsJournal } from "drizzle-orm/migrator"
 import { type SQLiteTransaction } from "drizzle-orm/sqlite-core"
 export * from "drizzle-orm"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -47,13 +48,19 @@ export type Transaction = SQLiteTransaction<"sync", void>
 
 type Client = ReturnType<typeof init>
 
-type Journal = { sql: string; timestamp: number; name: string }[]
-
-// Drizzle's migrate overloads trigger expensive variance checks here; narrow to the journal overload we actually use.
-const migrateFromJournal = migrate as unknown as (db: SQLiteBunDatabase, entries: Journal) => void
+export type Journal = MigrationsJournal
 
 function applyMigrations(db: SQLiteBunDatabase, entries: Journal) {
-  migrateFromJournal(db, entries)
+  migrate(db, entries)
+}
+
+export function migrationJournal(flags: Pick<DatabaseFlags, "skipMigrations"> = readRuntimeFlags()) {
+  const entries =
+    typeof OPENCODE_MIGRATIONS !== "undefined"
+      ? OPENCODE_MIGRATIONS
+      : migrations(path.join(import.meta.dirname, "../../migration"))
+  if (!flags.skipMigrations) return entries
+  return entries.map((item) => ({ ...item, sql: "select 1;" }))
 }
 
 function time(tag: string) {
@@ -74,17 +81,17 @@ function migrations(dir: string): Journal {
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
 
-  const sql = dirs
+  const sql: Journal = dirs
     .map((name) => {
       const file = path.join(dir, name, "migration.sql")
-      if (!existsSync(file)) return
+      if (!existsSync(file)) return undefined
       return {
         sql: readFileSync(file, "utf-8"),
         timestamp: time(name),
         name,
       }
     })
-    .filter(Boolean) as Journal
+    .filter((entry) => entry !== undefined)
 
   return sql.sort((a, b) => a.timestamp - b.timestamp)
 }
@@ -94,7 +101,7 @@ let loaded = false
 
 export const Client = Object.assign(
   (flags: DatabaseFlags = readRuntimeFlags()): Client => {
-    if (loaded) return client as Client
+    if (loaded && client) return client
 
     const dbPath = getPath(flags)
     log.info("opening database", { path: dbPath })
@@ -109,20 +116,12 @@ export const Client = Object.assign(
     db.run("PRAGMA wal_checkpoint(PASSIVE)")
 
     // Apply schema migrations
-    const entries =
-      typeof OPENCODE_MIGRATIONS !== "undefined"
-        ? OPENCODE_MIGRATIONS
-        : migrations(path.join(import.meta.dirname, "../../migration"))
+    const entries = migrationJournal(flags)
     if (entries.length > 0) {
       log.info("applying migrations", {
         count: entries.length,
         mode: typeof OPENCODE_MIGRATIONS !== "undefined" ? "bundled" : "dev",
       })
-      if (flags.skipMigrations) {
-        for (const item of entries) {
-          item.sql = "select 1;"
-        }
-      }
       applyMigrations(db, entries)
     }
 
@@ -159,19 +158,19 @@ export function use<T>(callback: (trx: TxOrDb) => T): T {
     if (err instanceof LocalContext.NotFound) {
       const effects: (() => void | Promise<void>)[] = []
       const result = ctx.provide({ effects, tx: Client() }, () => callback(Client()))
-      for (const effect of effects) effect()
+      for (const effect of effects) void effect()
       return result
     }
     throw err
   }
 }
 
-export function effect(fn: () => any | Promise<any>) {
+export function effect(fn: () => void | Promise<void>) {
   const bound = EffectBridge.bind(fn)
   try {
     ctx.use().effects.push(bound)
   } catch {
-    bound()
+    void bound()
   }
 }
 
@@ -190,7 +189,9 @@ export function transaction<T>(
       const effects: (() => void | Promise<void>)[] = []
       const txCallback = EffectBridge.bind((tx: TxOrDb) => ctx.provide({ tx, effects }, () => callback(tx)))
       const result = Client().transaction(txCallback, { behavior: options?.behavior })
-      for (const effect of effects) effect()
+      for (const effect of effects) void effect()
+      // Drizzle's transaction type does not preserve our NotPromise<T> constraint through the callback wrapper.
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
       return result as NotPromise<T>
     }
     throw err

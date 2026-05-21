@@ -3,7 +3,6 @@ import { ProjectID } from "@/project/schema"
 import { ProjectTable } from "@/project/project.sql"
 import { SessionID } from "@/session/schema"
 import { SessionMessageTable, SessionTable } from "@/session/session.sql"
-import { Database } from "@/storage/db"
 import { SessionStorage } from "@/v2/storage/session"
 import { SessionStorageMemory } from "@/v2/storage/session-memory"
 import { SessionStorageSql } from "@/v2/storage/session-sql"
@@ -157,15 +156,17 @@ function sessionStorageContract<R, E>(name: string, layer: Layer.Layer<SessionSt
   )
 }
 
-const sqlSeeds: Seeds<never> = {
-  reset: Effect.sync(resetSqlSeeds),
-  project: Effect.sync(seedProject),
-  session: (input) => Effect.sync(() => seedSession(input)),
-  userMessage: (input) => Effect.sync(() => seedUserMessage(input)),
-  compaction: (input) => Effect.sync(() => seedCompaction(input)),
+const sqlLayer = SessionStorageSql.layer.pipe(Layer.provideMerge(SessionStorageSql.databaseLayer))
+
+const sqlSeeds: Seeds<SessionStorageSql.Database> = {
+  reset: resetSqlSeeds(),
+  project: seedProject(),
+  session: seedSession,
+  userMessage: seedUserMessage,
+  compaction: seedCompaction,
 }
 
-sessionStorageContract("SessionStorageSql", SessionStorageSql.defaultLayer, sqlSeeds)
+sessionStorageContract("SessionStorageSql", sqlLayer, sqlSeeds)
 
 const memorySeeds: Seeds<never> = {
   reset: Effect.sync(() => {
@@ -190,8 +191,9 @@ const memorySeeds: Seeds<never> = {
 sessionStorageContract("SessionStorageMemory", memoryLayer, memorySeeds)
 
 function seedProject() {
-  Database.use((db) =>
-    db
+  return Effect.gen(function* () {
+    const db = yield* SessionStorageSql.Database
+    yield* db
       .insert(ProjectTable)
       .values({
         id: projectID,
@@ -201,14 +203,17 @@ function seedProject() {
         sandboxes: [],
       })
       .onConflictDoNothing()
-      .run(),
-  )
+      .run()
+      .pipe(Effect.orDie)
+  })
 }
 
 function resetSqlSeeds() {
-  Database.use((db) => {
-    db.delete(SessionMessageTable).where(eq(SessionMessageTable.session_id, sessionA)).run()
-    db.delete(SessionTable)
+  return Effect.gen(function* () {
+    const db = yield* SessionStorageSql.Database
+    yield* db.delete(SessionMessageTable).where(eq(SessionMessageTable.session_id, sessionA)).run().pipe(Effect.orDie)
+    yield* db
+      .delete(SessionTable)
       .where(
         or(
           eq(SessionTable.id, sessionA),
@@ -218,13 +223,15 @@ function resetSqlSeeds() {
         ),
       )
       .run()
-    db.delete(ProjectTable).where(eq(ProjectTable.id, projectID)).run()
+      .pipe(Effect.orDie)
+    yield* db.delete(ProjectTable).where(eq(ProjectTable.id, projectID)).run().pipe(Effect.orDie)
   })
 }
 
 function seedSession(input: { id: SessionID; title: string; directory?: string; path: string; updated: number }) {
-  Database.use((db) =>
-    db
+  return Effect.gen(function* () {
+    const db = yield* SessionStorageSql.Database
+    yield* db
       .insert(SessionTable)
       .values({
         id: input.id,
@@ -243,20 +250,21 @@ function seedSession(input: { id: SessionID; title: string; directory?: string; 
         time_created: input.updated,
         time_updated: input.updated,
       })
-      .run(),
-  )
+      .run()
+      .pipe(Effect.orDie)
+  })
 }
 
 function seedUserMessage(input: { id: SessionMessage.ID; text: string; time: number }) {
   const encoded = encodeMessage(makeUserMessage(input))
   const { id: _, type: __, ...data } = encoded
-  seedMessage(input.id, "user", input.time, data)
+  return seedMessage(input.id, "user", input.time, data)
 }
 
 function seedCompaction(input: { id: SessionMessage.ID; summary: string; time: number }) {
   const encoded = encodeMessage(makeCompaction(input))
   const { id: _, type: __, ...data } = encoded
-  seedMessage(input.id, "compaction", input.time, data)
+  return seedMessage(input.id, "compaction", input.time, data)
 }
 
 function makeSessionRow(input: { id: SessionID; title: string; directory?: string; path: string; updated: number }) {
@@ -311,8 +319,9 @@ function seedMessage(
   time: number,
   data: typeof SessionMessageTable.$inferInsert.data,
 ) {
-  Database.use((db) =>
-    db
+  return Effect.gen(function* () {
+    const db = yield* SessionStorageSql.Database
+    yield* db
       .insert(SessionMessageTable)
       .values({
         id,
@@ -322,8 +331,9 @@ function seedMessage(
         time_updated: time,
         data,
       })
-      .run(),
-  )
+      .run()
+      .pipe(Effect.orDie)
+  })
 }
 
 function appendMemoryMessage(message: SessionMessage.Message) {
