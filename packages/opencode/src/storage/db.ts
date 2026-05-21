@@ -48,19 +48,10 @@ export type Transaction = SQLiteTransaction<"sync", void>
 
 type Client = ReturnType<typeof init>
 
-export type Journal = MigrationsJournal
+type Journal = MigrationsJournal
 
 function applyMigrations(db: SQLiteBunDatabase, entries: Journal) {
   migrate(db, entries)
-}
-
-export function migrationJournal(flags: Pick<DatabaseFlags, "skipMigrations"> = readRuntimeFlags()) {
-  const entries =
-    typeof OPENCODE_MIGRATIONS !== "undefined"
-      ? OPENCODE_MIGRATIONS
-      : migrations(path.join(import.meta.dirname, "../../migration"))
-  if (!flags.skipMigrations) return entries
-  return entries.map((item) => ({ ...item, sql: "select 1;" }))
 }
 
 function time(tag: string) {
@@ -116,12 +107,20 @@ export const Client = Object.assign(
     db.run("PRAGMA wal_checkpoint(PASSIVE)")
 
     // Apply schema migrations
-    const entries = migrationJournal(flags)
+    const entries =
+      typeof OPENCODE_MIGRATIONS !== "undefined"
+        ? OPENCODE_MIGRATIONS
+        : migrations(path.join(import.meta.dirname, "../../migration"))
     if (entries.length > 0) {
       log.info("applying migrations", {
         count: entries.length,
         mode: typeof OPENCODE_MIGRATIONS !== "undefined" ? "bundled" : "dev",
       })
+      if (flags.skipMigrations) {
+        for (const item of entries) {
+          item.sql = "select 1;"
+        }
+      }
       applyMigrations(db, entries)
     }
 

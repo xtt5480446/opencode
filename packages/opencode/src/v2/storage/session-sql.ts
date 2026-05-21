@@ -1,47 +1,25 @@
 import { SessionMessageTable, SessionTable } from "@/session/session.sql"
-import { and, asc, Database as LegacyDatabase, desc, eq, gt, gte, isNull, like, lt, or, type SQL } from "@/storage/db"
-import { SqliteClient } from "@effect/sql-sqlite-bun"
+import { and, asc, desc, eq, gt, gte, isNull, like, lt, or, type SQL } from "@/storage/db"
 import { SessionMessage } from "@opencode-ai/core/session-message"
-import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
-import { Context, Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
+import { StorageDatabase } from "./database"
 import { SessionStorage } from "./session"
 
 const decodeMessage = Schema.decodeUnknownSync(SessionMessage.Message)
 const decodeSessionRow = Schema.decodeUnknownSync(SessionStorage.SessionRow)
-const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
-type DatabaseShape = Effect.Success<typeof makeDatabase>
-
-export class Database extends Context.Service<Database, DatabaseShape>()("@opencode/v2/session/StorageSql/Database") {}
-
-export const databaseLayer = Layer.unwrap(
-  Effect.sync(() => {
-    const filename = LegacyDatabase.getPath()
-    return Layer.effect(
-      Database,
-      Effect.gen(function* () {
-        const db = yield* makeDatabase
-        yield* db.run("PRAGMA journal_mode = WAL")
-        yield* db.run("PRAGMA synchronous = NORMAL")
-        yield* db.run("PRAGMA busy_timeout = 5000")
-        yield* db.run("PRAGMA cache_size = -64000")
-        yield* db.run("PRAGMA foreign_keys = ON")
-        yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")
-        yield* EffectDrizzleSqlite.migrateFromJournal(db, LegacyDatabase.migrationJournal())
-        return db
-      }),
-    ).pipe(Layer.provide(SqliteClient.layer({ filename, disableWAL: filename === ":memory:" })))
-  }),
+const mapStorageError = Effect.mapError(
+  (cause) => new SessionStorage.StorageError({ message: "Session storage SQL operation failed", cause }),
 )
 
 export const layer = Layer.effect(
   SessionStorage.Service,
   Effect.gen(function* () {
-    const db = yield* Database
+    const db = yield* StorageDatabase.Service
 
     const get: SessionStorage.Interface["get"] = Effect.fn("SessionStorageSql.get")(function* (sessionID) {
-      const row = yield* attempt(db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
       return row ? fromSessionRow(row) : undefined
-    })
+    }, mapStorageError)
 
     const list: SessionStorage.Interface["list"] = Effect.fn("SessionStorageSql.list")(function* (input) {
       const direction = input.cursor?.direction ?? "next"
@@ -65,9 +43,9 @@ export const layer = Layer.effect(
           order === "asc" ? asc(sortColumn) : desc(sortColumn),
           order === "asc" ? asc(SessionTable.id) : desc(SessionTable.id),
         )
-      const rows = yield* attempt(input.limit === undefined ? query : query.limit(input.limit))
+      const rows = yield* input.limit === undefined ? query : query.limit(input.limit)
       return (direction === "previous" ? rows.toReversed() : rows).map(fromSessionRow)
-    })
+    }, mapStorageError)
 
     const messages: SessionStorage.Interface["messages"] = Effect.fn("SessionStorageSql.messages")(function* (input) {
       const direction = input.cursor?.direction ?? "next"
@@ -85,62 +63,50 @@ export const layer = Layer.effect(
           order === "asc" ? asc(SessionMessageTable.time_created) : desc(SessionMessageTable.time_created),
           order === "asc" ? asc(SessionMessageTable.id) : desc(SessionMessageTable.id),
         )
-      const rows = yield* attempt(input.limit === undefined ? query : query.limit(input.limit))
+      const rows = yield* input.limit === undefined ? query : query.limit(input.limit)
       return (direction === "previous" ? rows.toReversed() : rows).map((row) =>
         decodeMessage({ ...row.data, id: row.id, type: row.type }),
       )
-    })
+    }, mapStorageError)
 
     const context: SessionStorage.Interface["context"] = Effect.fn("SessionStorageSql.context")((sessionID) =>
       Effect.gen(function* () {
-        const compaction = yield* attempt(
-          db
-            .select()
-            .from(SessionMessageTable)
-            .where(and(eq(SessionMessageTable.session_id, sessionID), eq(SessionMessageTable.type, "compaction")))
-            .orderBy(desc(SessionMessageTable.time_created), desc(SessionMessageTable.id))
-            .limit(1)
-            .get(),
-        )
+        const compaction = yield* db
+          .select()
+          .from(SessionMessageTable)
+          .where(and(eq(SessionMessageTable.session_id, sessionID), eq(SessionMessageTable.type, "compaction")))
+          .orderBy(desc(SessionMessageTable.time_created), desc(SessionMessageTable.id))
+          .limit(1)
+          .get()
 
-        const rows = yield* attempt(
-          db
-            .select()
-            .from(SessionMessageTable)
-            .where(
-              and(
-                eq(SessionMessageTable.session_id, sessionID),
-                compaction
-                  ? or(
-                      gt(SessionMessageTable.time_created, compaction.time_created),
-                      and(
-                        eq(SessionMessageTable.time_created, compaction.time_created),
-                        gte(SessionMessageTable.id, compaction.id),
-                      ),
-                    )
-                  : undefined,
-              ),
-            )
-            .orderBy(asc(SessionMessageTable.time_created), asc(SessionMessageTable.id)),
-        )
+        const rows = yield* db
+          .select()
+          .from(SessionMessageTable)
+          .where(
+            and(
+              eq(SessionMessageTable.session_id, sessionID),
+              compaction
+                ? or(
+                    gt(SessionMessageTable.time_created, compaction.time_created),
+                    and(
+                      eq(SessionMessageTable.time_created, compaction.time_created),
+                      gte(SessionMessageTable.id, compaction.id),
+                    ),
+                  )
+                : undefined,
+            ),
+          )
+          .orderBy(asc(SessionMessageTable.time_created), asc(SessionMessageTable.id))
 
         return rows.map((row) => decodeMessage({ ...row.data, id: row.id, type: row.type }))
-      }),
+      }).pipe(mapStorageError),
     )
 
     return SessionStorage.Service.of({ get, list, messages, context })
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(databaseLayer.pipe(Layer.orDie)))
-
-function attempt<A, E, R>(effect: Effect.Effect<A, E, R>) {
-  return effect.pipe(
-    Effect.mapError(
-      (cause) => new SessionStorage.StorageError({ message: "Session storage SQL operation failed", cause }),
-    ),
-  )
-}
+export const defaultLayer = layer.pipe(Layer.provide(StorageDatabase.defaultLayer.pipe(Layer.orDie)))
 
 function sessionCursorBoundary(cursor: SessionStorage.SessionCursor, order: SessionStorage.SortOrder) {
   if (order === "asc")

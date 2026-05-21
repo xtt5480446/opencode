@@ -4,6 +4,7 @@ import { ProjectTable } from "@/project/project.sql"
 import { SessionID } from "@/session/schema"
 import { SessionMessageTable, SessionTable } from "@/session/session.sql"
 import { SessionStorage } from "@/v2/storage/session"
+import { StorageDatabase } from "@/v2/storage/database"
 import { SessionStorageMemory } from "@/v2/storage/session-memory"
 import { SessionStorageSql } from "@/v2/storage/session-sql"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -156,9 +157,9 @@ function sessionStorageContract<R, E>(name: string, layer: Layer.Layer<SessionSt
   )
 }
 
-const sqlLayer = SessionStorageSql.layer.pipe(Layer.provideMerge(SessionStorageSql.databaseLayer))
+const sqlLayer = SessionStorageSql.layer.pipe(Layer.provideMerge(StorageDatabase.defaultLayer))
 
-const sqlSeeds: Seeds<SessionStorageSql.Database> = {
+const sqlSeeds: Seeds<StorageDatabase.Service> = {
   reset: resetSqlSeeds(),
   project: seedProject(),
   session: seedSession,
@@ -192,7 +193,7 @@ sessionStorageContract("SessionStorageMemory", memoryLayer, memorySeeds)
 
 function seedProject() {
   return Effect.gen(function* () {
-    const db = yield* SessionStorageSql.Database
+    const db = yield* StorageDatabase.Service
     yield* db
       .insert(ProjectTable)
       .values({
@@ -210,7 +211,7 @@ function seedProject() {
 
 function resetSqlSeeds() {
   return Effect.gen(function* () {
-    const db = yield* SessionStorageSql.Database
+    const db = yield* StorageDatabase.Service
     yield* db.delete(SessionMessageTable).where(eq(SessionMessageTable.session_id, sessionA)).run().pipe(Effect.orDie)
     yield* db
       .delete(SessionTable)
@@ -230,7 +231,7 @@ function resetSqlSeeds() {
 
 function seedSession(input: { id: SessionID; title: string; directory?: string; path: string; updated: number }) {
   return Effect.gen(function* () {
-    const db = yield* SessionStorageSql.Database
+    const db = yield* StorageDatabase.Service
     yield* db
       .insert(SessionTable)
       .values({
@@ -320,7 +321,7 @@ function seedMessage(
   data: typeof SessionMessageTable.$inferInsert.data,
 ) {
   return Effect.gen(function* () {
-    const db = yield* SessionStorageSql.Database
+    const db = yield* StorageDatabase.Service
     yield* db
       .insert(SessionMessageTable)
       .values({
