@@ -230,6 +230,32 @@ it.instance(
 )
 
 it.instance(
+  "wait - returns rejected when pending ask is interrupted",
+  () =>
+    Effect.gen(function* () {
+      const fiber = yield* askEffect({
+        sessionID: SessionID.make("ses_test"),
+        questions: [
+          {
+            question: "What would you like to do?",
+            header: "Action",
+            options: [{ label: "Option 1", description: "First option" }],
+          },
+        ],
+      }).pipe(Effect.forkScoped)
+
+      const pending = yield* waitForPending(1)
+      const waiter = yield* waitEffect(pending[0].id).pipe(Effect.forkScoped)
+
+      yield* Fiber.interrupt(fiber)
+
+      expect(yield* Fiber.join(waiter)).toEqual({ status: "rejected" })
+      expect(yield* waitEffect(pending[0].id)).toEqual({ status: "rejected" })
+    }),
+  { git: true },
+)
+
+it.instance(
   "reply - fails for unknown requestID",
   () =>
     Effect.gen(function* () {

@@ -218,7 +218,15 @@ export const layer = Layer.effect(
         wait(request.id).pipe(Effect.orDie),
         Effect.gen(function* () {
           const info = yield* InstanceState.get(state)
+          const existing = info.pending.get(request.id)
+          if (!existing) return
+          yield* Cache.set(info.completed, request.id, { status: "rejected" })
           info.pending.delete(request.id)
+          yield* bus.publish(Event.Rejected, {
+            sessionID: existing.info.sessionID,
+            requestID: existing.info.id,
+          })
+          yield* Deferred.succeed(existing.deferred, { status: "rejected" })
         }),
       )
       if (result.status === "answered") return result.answers

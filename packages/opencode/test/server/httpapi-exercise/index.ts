@@ -236,6 +236,34 @@ const scenarios: Scenario[] = [
     .json(404, object, "status"),
   http.protected.get("/question", "question.list").json(200, array),
   http.protected
+    .post("/question", "question.ask")
+    .mutating()
+    .at((ctx) => ({
+      path: "/question",
+      headers: ctx.headers(),
+      body: {
+        sessionID: "ses_httpapi_question",
+        questions: [
+          {
+            question: "Proceed?",
+            header: "Proceed",
+            options: [{ label: "Yes", description: "Continue" }],
+          },
+        ],
+      },
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(typeof body.id === "string" && body.id.startsWith("que_"), "question ask should return request id")
+    }),
+  http.protected
+    .get("/question/{requestID}/wait", "question.wait.missing")
+    .at((ctx) => ({
+      path: route("/question/{requestID}/wait", { requestID: "que_httpapi_wait" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
     .post("/question/{requestID}/reply", "question.reply.invalid")
     .at((ctx) => ({
       path: route("/question/{requestID}/reply", { requestID: "que_httpapi_reply" }),
