@@ -151,12 +151,17 @@ import type {
   PtyUpdateErrors,
   PtyUpdateResponses,
   QuestionAnswer,
+  QuestionAskErrors,
+  QuestionAskResponses,
+  QuestionInfo,
   QuestionListErrors,
   QuestionListResponses,
   QuestionRejectErrors,
   QuestionRejectResponses,
   QuestionReplyErrors,
   QuestionReplyResponses,
+  QuestionWaitErrors,
+  QuestionWaitResponses,
   SessionAbortErrors,
   SessionAbortResponses,
   SessionChildrenErrors,
@@ -2682,6 +2687,77 @@ export class Question extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<QuestionListResponses, QuestionListErrors, ThrowOnError>({
       url: "/question",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Ask questions
+   *
+   * Create a question request and return its id.
+   */
+  public ask<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      sessionID?: string
+      questions?: Array<QuestionInfo>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "sessionID" },
+            { in: "body", key: "questions" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<QuestionAskResponses, QuestionAskErrors, ThrowOnError>({
+      url: "/question",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Wait for question result
+   *
+   * Wait for a question request to be answered or rejected.
+   */
+  public wait<ThrowOnError extends boolean = false>(
+    parameters: {
+      requestID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "requestID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<QuestionWaitResponses, QuestionWaitErrors, ThrowOnError>({
+      url: "/question/{requestID}/wait",
       ...options,
       ...params,
     })

@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { QuestionNotFoundError } from "../errors"
+import { AskPayload } from "../groups/question"
 
 export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question", (handlers) =>
   Effect.gen(function* () {
@@ -11,6 +12,24 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
 
     const list = Effect.fn("QuestionHttpApi.list")(function* () {
       return yield* svc.list()
+    })
+
+    const ask = Effect.fn("QuestionHttpApi.ask")(function* (ctx: { payload: typeof AskPayload.Type }) {
+      const request = yield* svc.create(ctx.payload)
+      return { id: request.id }
+    })
+
+    const wait = Effect.fn("QuestionHttpApi.wait")(function* (ctx: { params: { requestID: QuestionID } }) {
+      return yield* svc.wait(ctx.params.requestID).pipe(
+        Effect.catchTag("Question.NotFoundError", (error) =>
+          Effect.fail(
+            new QuestionNotFoundError({
+              requestID: String(error.requestID),
+              message: `Question request not found: ${error.requestID}`,
+            }),
+          ),
+        ),
+      )
     })
 
     const reply = Effect.fn("QuestionHttpApi.reply")(function* (ctx: {
@@ -49,6 +68,11 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
       return true
     })
 
-    return handlers.handle("list", list).handle("reply", reply).handle("reject", reject)
+    return handlers
+      .handle("ask", ask)
+      .handle("list", list)
+      .handle("wait", wait)
+      .handle("reply", reply)
+      .handle("reject", reject)
   }),
 )

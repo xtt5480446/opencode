@@ -1,4 +1,4 @@
-import { Deferred, Effect, Layer, Schema, Context } from "effect"
+import { Cache, Context, Deferred, Duration, Effect, Layer, Schema } from "effect"
 import { Bus } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
@@ -75,6 +75,19 @@ export const Reply = Schema.Struct({
 }).annotate({ identifier: "QuestionReply" })
 export type Reply = Schema.Schema.Type<typeof Reply>
 
+export const Result = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("answered"),
+    answers: Schema.Array(Answer).annotate({
+      description: "User answers in order of questions (each answer is an array of selected labels)",
+    }),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("rejected"),
+  }),
+]).annotate({ discriminator: "status", identifier: "QuestionResult" })
+export type Result = Schema.Schema.Type<typeof Result>
+
 const Replied = Schema.Struct({
   sessionID: SessionID,
   requestID: QuestionID,
@@ -104,21 +117,28 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Que
 
 interface PendingEntry {
   info: Request
-  deferred: Deferred.Deferred<ReadonlyArray<Answer>, RejectedError>
+  deferred: Deferred.Deferred<Result>
 }
 
 interface State {
   pending: Map<QuestionID, PendingEntry>
+  completed: Cache.Cache<QuestionID, Result, NotFoundError>
 }
 
 // Service
 
 export interface Interface {
+  readonly create: (input: {
+    sessionID: SessionID
+    questions: ReadonlyArray<Info>
+    tool?: Tool
+  }) => Effect.Effect<Request>
   readonly ask: (input: {
     sessionID: SessionID
     questions: ReadonlyArray<Info>
     tool?: Tool
   }) => Effect.Effect<ReadonlyArray<Answer>, RejectedError>
+  readonly wait: (requestID: QuestionID) => Effect.Effect<Result, NotFoundError>
   readonly reply: (input: {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
@@ -137,12 +157,17 @@ export const layer = Layer.effect(
       Effect.fn("Question.state")(function* () {
         const state = {
           pending: new Map<QuestionID, PendingEntry>(),
+          completed: yield* Cache.make<QuestionID, Result, NotFoundError>({
+            capacity: 10_000,
+            timeToLive: Duration.minutes(30),
+            lookup: (requestID) => Effect.fail(new NotFoundError({ requestID })),
+          }),
         }
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             for (const item of state.pending.values()) {
-              yield* Deferred.fail(item.deferred, new RejectedError())
+              yield* Deferred.succeed(item.deferred, { status: "rejected" })
             }
             state.pending.clear()
           }),
@@ -152,7 +177,7 @@ export const layer = Layer.effect(
       }),
     )
 
-    const ask = Effect.fn("Question.ask")(function* (input: {
+    const create = Effect.fn("Question.create")(function* (input: {
       sessionID: SessionID
       questions: ReadonlyArray<Info>
       tool?: Tool
@@ -161,7 +186,7 @@ export const layer = Layer.effect(
       const id = QuestionID.ascending()
       log.info("asking", { id, questions: input.questions.length })
 
-      const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
+      const deferred = yield* Deferred.make<Result>()
       const info: Request = {
         id,
         sessionID: input.sessionID,
@@ -170,49 +195,74 @@ export const layer = Layer.effect(
       }
       pending.set(id, { info, deferred })
       yield* bus.publish(Event.Asked, info)
+      return info
+    })
 
-      return yield* Effect.ensuring(
-        Deferred.await(deferred),
-        Effect.sync(() => {
-          pending.delete(id)
+    const wait = Effect.fn("Question.wait")(function* (requestID: QuestionID) {
+      const info = yield* InstanceState.get(state)
+      const pending = info.pending.get(requestID)
+      if (pending) return yield* Deferred.await(pending.deferred)
+      return yield* Cache.get(info.completed, requestID)
+    })
+
+    const ask = Effect.fn("Question.ask")(function* (input: {
+      sessionID: SessionID
+      questions: ReadonlyArray<Info>
+      tool?: Tool
+    }) {
+      const request = yield* create(input)
+
+      const result = yield* Effect.ensuring(
+        wait(request.id).pipe(Effect.orDie),
+        Effect.gen(function* () {
+          const info = yield* InstanceState.get(state)
+          info.pending.delete(request.id)
         }),
       )
+      if (result.status === "answered") return result.answers
+      return yield* new RejectedError()
     })
 
     const reply = Effect.fn("Question.reply")(function* (input: {
       requestID: QuestionID
       answers: ReadonlyArray<Answer>
     }) {
-      const pending = (yield* InstanceState.get(state)).pending
-      const existing = pending.get(input.requestID)
+      const info = yield* InstanceState.get(state)
+      const existing = info.pending.get(input.requestID)
       if (!existing) {
         log.warn("reply for unknown request", { requestID: input.requestID })
         return yield* new NotFoundError({ requestID: input.requestID })
       }
-      pending.delete(input.requestID)
+      const result: Result = {
+        status: "answered",
+        answers: input.answers.map((a) => [...a]),
+      }
+      yield* Cache.set(info.completed, input.requestID, result)
+      info.pending.delete(input.requestID)
       log.info("replied", { requestID: input.requestID, answers: input.answers })
       yield* bus.publish(Event.Replied, {
         sessionID: existing.info.sessionID,
         requestID: existing.info.id,
-        answers: input.answers.map((a) => [...a]),
+        answers: result.answers,
       })
-      yield* Deferred.succeed(existing.deferred, input.answers)
+      yield* Deferred.succeed(existing.deferred, result)
     })
 
     const reject = Effect.fn("Question.reject")(function* (requestID: QuestionID) {
-      const pending = (yield* InstanceState.get(state)).pending
-      const existing = pending.get(requestID)
+      const info = yield* InstanceState.get(state)
+      const existing = info.pending.get(requestID)
       if (!existing) {
         log.warn("reject for unknown request", { requestID })
         return yield* new NotFoundError({ requestID })
       }
-      pending.delete(requestID)
+      yield* Cache.set(info.completed, requestID, { status: "rejected" })
+      info.pending.delete(requestID)
       log.info("rejected", { requestID })
       yield* bus.publish(Event.Rejected, {
         sessionID: existing.info.sessionID,
         requestID: existing.info.id,
       })
-      yield* Deferred.fail(existing.deferred, new RejectedError())
+      yield* Deferred.succeed(existing.deferred, { status: "rejected" })
     })
 
     const list = Effect.fn("Question.list")(function* () {
@@ -220,7 +270,7 @@ export const layer = Layer.effect(
       return Array.from(pending.values(), (x) => x.info)
     })
 
-    return Service.of({ ask, reply, reject, list })
+    return Service.of({ create, ask, wait, reply, reject, list })
   }),
 )
 

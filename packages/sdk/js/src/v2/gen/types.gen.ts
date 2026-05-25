@@ -1717,6 +1717,18 @@ export type PtyForbiddenError = {
   message: string
 }
 
+export type QuestionResult =
+  | {
+      status: "answered"
+      /**
+       * User answers in order of questions (each answer is an array of selected labels)
+       */
+      answers: Array<QuestionAnswer>
+    }
+  | {
+      status: "rejected"
+    }
+
 export type QuestionNotFoundError = {
   _tag: "QuestionNotFoundError"
   requestID: string
@@ -5742,6 +5754,76 @@ export type QuestionListResponses = {
 }
 
 export type QuestionListResponse = QuestionListResponses[keyof QuestionListResponses]
+
+export type QuestionAskData = {
+  body?: {
+    sessionID: string
+    /**
+     * Questions to ask
+     */
+    questions: Array<QuestionInfo>
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/question"
+}
+
+export type QuestionAskErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type QuestionAskError = QuestionAskErrors[keyof QuestionAskErrors]
+
+export type QuestionAskResponses = {
+  /**
+   * Created question request
+   */
+  200: {
+    id: string
+  }
+}
+
+export type QuestionAskResponse = QuestionAskResponses[keyof QuestionAskResponses]
+
+export type QuestionWaitData = {
+  body?: never
+  path: {
+    requestID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/question/{requestID}/wait"
+}
+
+export type QuestionWaitErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * QuestionNotFoundError
+   */
+  404: QuestionNotFoundError
+}
+
+export type QuestionWaitError = QuestionWaitErrors[keyof QuestionWaitErrors]
+
+export type QuestionWaitResponses = {
+  /**
+   * Question result
+   */
+  200: QuestionResult
+}
+
+export type QuestionWaitResponse = QuestionWaitResponses[keyof QuestionWaitResponses]
 
 export type QuestionReplyData = {
   body?: {

@@ -23,6 +23,20 @@ const askEffect = Effect.fn("QuestionTest.ask")(function* (input: {
   return yield* question.ask(input)
 })
 
+const createEffect = Effect.fn("QuestionTest.create")(function* (input: {
+  sessionID: SessionID
+  questions: ReadonlyArray<Question.Info>
+  tool?: Question.Tool
+}) {
+  const question = yield* Question.Service
+  return yield* question.create(input)
+})
+
+const waitEffect = Effect.fn("QuestionTest.wait")(function* (requestID: QuestionID) {
+  const question = yield* Question.Service
+  return yield* question.wait(requestID)
+})
+
 const listEffect = Question.Service.use((svc) => svc.list())
 
 const replyEffect = Effect.fn("QuestionTest.reply")(function* (input: {
@@ -184,6 +198,38 @@ it.instance(
 )
 
 it.instance(
+  "wait - returns answers for pending and completed requests",
+  () =>
+    Effect.gen(function* () {
+      const request = yield* createEffect({
+        sessionID: SessionID.make("ses_test"),
+        questions: [
+          {
+            question: "What would you like to do?",
+            header: "Action",
+            options: [
+              { label: "Option 1", description: "First option" },
+              { label: "Option 2", description: "Second option" },
+            ],
+          },
+        ],
+      })
+
+      const fiber = yield* waitEffect(request.id).pipe(Effect.forkScoped)
+
+      yield* replyEffect({
+        requestID: request.id,
+        answers: [["Option 1"]],
+      })
+
+      const result = { status: "answered" as const, answers: [["Option 1"]] }
+      expect(yield* Fiber.join(fiber)).toEqual(result)
+      expect(yield* waitEffect(request.id)).toEqual(result)
+    }),
+  { git: true },
+)
+
+it.instance(
   "reply - fails for unknown requestID",
   () =>
     Effect.gen(function* () {
@@ -255,6 +301,28 @@ it.instance(
 
       const after = yield* listEffect
       expect(after.length).toBe(0)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "wait - returns rejected for completed rejected requests",
+  () =>
+    Effect.gen(function* () {
+      const request = yield* createEffect({
+        sessionID: SessionID.make("ses_test"),
+        questions: [
+          {
+            question: "What would you like to do?",
+            header: "Action",
+            options: [{ label: "Option 1", description: "First option" }],
+          },
+        ],
+      })
+
+      yield* rejectEffect(request.id)
+
+      expect(yield* waitEffect(request.id)).toEqual({ status: "rejected" })
     }),
   { git: true },
 )

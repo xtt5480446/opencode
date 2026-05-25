@@ -1,5 +1,6 @@
 import { Question } from "@/question"
 import { QuestionID } from "@/question/schema"
+import { SessionID } from "@/session/schema"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { QuestionNotFoundError } from "../errors"
@@ -15,10 +16,32 @@ const ReplyPayload = Schema.Struct({
   }),
 })
 
+export const AskPayload = Schema.Struct({
+  sessionID: SessionID,
+  questions: Schema.Array(Question.Info).annotate({
+    description: "Questions to ask",
+  }),
+})
+
+const AskResponse = Schema.Struct({
+  id: QuestionID,
+})
+
 export const QuestionApi = HttpApi.make("question")
   .add(
     HttpApiGroup.make("question")
       .add(
+        HttpApiEndpoint.post("ask", root, {
+          query: WorkspaceRoutingQuery,
+          payload: AskPayload,
+          success: described(AskResponse, "Created question request"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "question.ask",
+            summary: "Ask questions",
+            description: "Create a question request and return its id.",
+          }),
+        ),
         HttpApiEndpoint.get("list", root, {
           query: WorkspaceRoutingQuery,
           success: described(Schema.Array(Question.Request), "List of pending questions"),
@@ -27,6 +50,18 @@ export const QuestionApi = HttpApi.make("question")
             identifier: "question.list",
             summary: "List pending questions",
             description: "Get all pending question requests across all sessions.",
+          }),
+        ),
+        HttpApiEndpoint.get("wait", `${root}/:requestID/wait`, {
+          params: { requestID: QuestionID },
+          query: WorkspaceRoutingQuery,
+          success: described(Question.Result, "Question result"),
+          error: [QuestionNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "question.wait",
+            summary: "Wait for question result",
+            description: "Wait for a question request to be answered or rejected.",
           }),
         ),
         HttpApiEndpoint.post("reply", `${root}/:requestID/reply`, {
