@@ -207,6 +207,29 @@ export const layer = Layer.effect(
       )
     })
 
+    const settle = Effect.fn("Question.settle")(function* (requestID: QuestionID, result: Result) {
+      const info = yield* InstanceState.get(state)
+      const existing = info.pending.get(requestID)
+      if (!existing) return false
+
+      yield* Cache.set(info.completed, requestID, result)
+      info.pending.delete(requestID)
+      if (result.status === "answered") {
+        yield* bus.publish(Event.Replied, {
+          sessionID: existing.info.sessionID,
+          requestID: existing.info.id,
+          answers: result.answers,
+        })
+      } else {
+        yield* bus.publish(Event.Rejected, {
+          sessionID: existing.info.sessionID,
+          requestID: existing.info.id,
+        })
+      }
+      yield* Deferred.succeed(existing.deferred, result)
+      return true
+    })
+
     const ask = Effect.fn("Question.ask")(function* (input: {
       sessionID: SessionID
       questions: ReadonlyArray<Info>
@@ -216,18 +239,7 @@ export const layer = Layer.effect(
 
       const result = yield* Effect.ensuring(
         wait(request.id).pipe(Effect.orDie),
-        Effect.gen(function* () {
-          const info = yield* InstanceState.get(state)
-          const existing = info.pending.get(request.id)
-          if (!existing) return
-          yield* Cache.set(info.completed, request.id, { status: "rejected" })
-          info.pending.delete(request.id)
-          yield* bus.publish(Event.Rejected, {
-            sessionID: existing.info.sessionID,
-            requestID: existing.info.id,
-          })
-          yield* Deferred.succeed(existing.deferred, { status: "rejected" })
-        }),
+        settle(request.id, { status: "rejected" }).pipe(Effect.asVoid),
       )
       if (result.status === "answered") return result.answers
       return yield* new RejectedError()
@@ -237,42 +249,25 @@ export const layer = Layer.effect(
       requestID: QuestionID
       answers: ReadonlyArray<Answer>
     }) {
-      const info = yield* InstanceState.get(state)
-      const existing = info.pending.get(input.requestID)
-      if (!existing) {
-        log.warn("reply for unknown request", { requestID: input.requestID })
-        return yield* new NotFoundError({ requestID: input.requestID })
-      }
       const result: Result = {
         status: "answered",
         answers: input.answers.map((a) => [...a]),
       }
-      yield* Cache.set(info.completed, input.requestID, result)
-      info.pending.delete(input.requestID)
+      const ok = yield* settle(input.requestID, result)
+      if (!ok) {
+        log.warn("reply for unknown request", { requestID: input.requestID })
+        return yield* new NotFoundError({ requestID: input.requestID })
+      }
       log.info("replied", { requestID: input.requestID, answers: input.answers })
-      yield* bus.publish(Event.Replied, {
-        sessionID: existing.info.sessionID,
-        requestID: existing.info.id,
-        answers: result.answers,
-      })
-      yield* Deferred.succeed(existing.deferred, result)
     })
 
     const reject = Effect.fn("Question.reject")(function* (requestID: QuestionID) {
-      const info = yield* InstanceState.get(state)
-      const existing = info.pending.get(requestID)
-      if (!existing) {
+      const ok = yield* settle(requestID, { status: "rejected" })
+      if (!ok) {
         log.warn("reject for unknown request", { requestID })
         return yield* new NotFoundError({ requestID })
       }
-      yield* Cache.set(info.completed, requestID, { status: "rejected" })
-      info.pending.delete(requestID)
       log.info("rejected", { requestID })
-      yield* bus.publish(Event.Rejected, {
-        sessionID: existing.info.sessionID,
-        requestID: existing.info.id,
-      })
-      yield* Deferred.succeed(existing.deferred, { status: "rejected" })
     })
 
     const list = Effect.fn("Question.list")(function* () {
