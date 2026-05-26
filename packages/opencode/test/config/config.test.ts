@@ -1307,6 +1307,42 @@ test("tool_output only accepts thresholds when truncation is enabled", () => {
   ).toThrow()
 })
 
+it.effect("project tool_output limits replace disabled global truncation", () =>
+  withConfigTree(
+    {
+      global: { tool_output: { truncate: false } },
+      project: { tool_output: { max_lines: 200 } },
+    },
+    Effect.gen(function* () {
+      expect((yield* Config.use.get()).tool_output).toEqual({ max_lines: 200 })
+    }),
+  ),
+)
+
+it.effect("project disabled tool_output replaces global limits", () =>
+  withConfigTree(
+    {
+      global: { tool_output: { max_lines: 200, max_bytes: 8192 } },
+      project: { tool_output: { truncate: false } },
+    },
+    Effect.gen(function* () {
+      expect((yield* Config.use.get()).tool_output).toEqual({ truncate: false })
+    }),
+  ),
+)
+
+it.effect("enabled tool_output limits still merge across layers", () =>
+  withConfigTree(
+    {
+      global: { tool_output: { max_bytes: 8192 } },
+      project: { tool_output: { max_lines: 200 } },
+    },
+    Effect.gen(function* () {
+      expect((yield* Config.use.get()).tool_output).toEqual({ max_bytes: 8192, max_lines: 200 })
+    }),
+  ),
+)
+
 // MCP config merging tests
 
 it.instance("project config can override MCP server enabled status", () =>

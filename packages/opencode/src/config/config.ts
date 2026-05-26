@@ -49,7 +49,13 @@ const log = Log.create({ service: "config" })
 // Custom merge function that concatenates array fields instead of replacing them
 // Keep remeda's deep conditional merge type out of hot config-loading paths; TS profiling showed it dominates here.
 function mergeConfig(target: Info, source: Info): Info {
-  return mergeDeep(target, source) as Info
+  const merged = mergeDeep(target, source) as Info
+  if (!target.tool_output || !source.tool_output) return merged
+  if (target.tool_output.truncate !== false && source.tool_output.truncate !== false) return merged
+
+  // Disabled truncation and custom limits are separate config modes; the later layer selects the mode.
+  merged.tool_output = source.tool_output
+  return merged
 }
 
 function mergeConfigConcatArrays(target: Info, source: Info): Info {
