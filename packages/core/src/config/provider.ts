@@ -2,7 +2,7 @@ export * as ConfigProvider from "./provider"
 
 import { Effect, Schema } from "effect"
 import { Catalog } from "../catalog"
-import { Config } from "./config"
+import { Config } from "../config"
 import { ProviderV2 } from "../provider"
 import { ModelV2 } from "../model"
 import { PluginV2 } from "../plugin"

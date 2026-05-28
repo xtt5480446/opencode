@@ -3,7 +3,7 @@ import { Location } from "./location"
 import { Catalog } from "./catalog"
 import { PluginBoot } from "./plugin/boot"
 import { Policy } from "./policy"
-import { Config } from "./config/config"
+import { Config } from "./config"
 
 export class LocationServiceMap extends LayerMap.Service<LocationServiceMap>()("@opencode/example/LocationServiceMap", {
   lookup: (ref: Location.Ref) => {

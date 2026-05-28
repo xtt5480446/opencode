@@ -36,20 +36,71 @@ Settings that affect process startup, shell execution, or network serving. Revie
 
 Configuration that introduces location-scoped project resources or discoverable content.
 
-| Field          | Current Purpose                         | Status  | Notes |
-| -------------- | --------------------------------------- | ------- | ----- |
-| `command`      | User-defined commands                   | pending |       |
-| `skills`       | Additional skill locations              | pending |       |
-| `reference`    | Named git or local directory references | pending |       |
-| `instructions` | Additional instruction file patterns    | pending |       |
+| Field          | Current Purpose                         | Status | Notes                                                                                                         |
+| -------------- | --------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------- |
+| `command`      | User-defined commands                   | remove | Do not port as v2 config; named reusable user workflows belong to skills.                                   |
+| `skills`       | Additional skill locations              | redesign | Replace `{ paths?, urls? }` with a single array of local path or remote URL discovery sources.                           |
+| `reference`    | Named git or local directory references | redesign | Rename to plural `references`; retain named local path and Git repository external-context entries.        |
+| `instructions` | Additional ambient instruction sources  | keep     | Keep as one array of local paths, glob patterns, or remote URLs supplying automatically included context.   |
+
+V2 does not expose separate user-authored command configuration. Skills should cover named reusable prompt workflows, whether invoked directly by the user or loaded by an agent. Internal command routing and built-in commands may remain runtime concerns without creating a `command` or `commands` config field.
+
+This intentionally does not port legacy command-only behavior such as per-command `model`, `agent`, `subtask`, prompt shell expansion, or positional/template substitution. If a related capability is needed in v2, it should be designed in the owning domain rather than preserved through a second workflow definition system.
+
+Keep `skills` as discovery-source configuration rather than inline workflow definitions. Skill content remains owned by `SKILL.md`; each `skills` entry is either a local search root or a remote discovery URL. Direct invocation behavior can be designed separately without expanding the config shape.
+
+```jsonc
+{
+  "skills": ["./team-skills", "~/shared-skills", "https://example.com/.well-known/skills/"],
+}
+```
+
+Keep ambient instructions separate from skills. Instructions are automatically included as model context, while skills are loaded or invoked intentionally. Each source is unambiguously either a local path/glob or a URL, so v2 keeps the simple array shape:
+
+```jsonc
+{
+  "instructions": ["CONTRIBUTING.md", "docs/guidelines.md", ".cursor/rules/*.md", "https://example.com/shared-rules.md"],
+}
+```
+
+Keep named external context references as a v2 configuration capability, renamed to plural `references` because it is a collection keyed by alias. References declare local directories or Git repositories that can later be addressed as `@alias` or `@alias/path` when the v2 runtime implements this behavior.
+
+```jsonc
+{
+  "references": {
+    "design-system": { "path": "../ui-library" },
+    "sdk": { "repository": "github.com/example/sdk", "branch": "main" },
+  },
+}
+```
+
+Retain the compact string entry form as well: values starting with `.`, `/`, or `~` represent local paths, and other strings represent Git repositories.
 
 ## Group 4: Plugins
 
 Plugin loading has source-path and scope-sensitive behavior, so it should be reviewed separately from other project resources.
 
-| Field    | Current Purpose               | Status  | Notes                                                  |
-| -------- | ----------------------------- | ------- | ------------------------------------------------------ |
-| `plugin` | User-specified plugin modules | pending | Existing loader records origin and global/local scope. |
+| Field    | Current Purpose               | Status   | Notes                                                                                                                 |
+| -------- | ----------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------- |
+| `plugin` | User-specified plugin modules | redesign | Rename to plural `plugins`; retain ordered loading with package strings or `{ package, options? }` entries.         |
+
+Plugin order remains part of the v2 configuration contract because hook registration and execution can depend on load order. Replace legacy option tuples with readable object entries:
+
+```jsonc
+{
+  "plugins": [
+    "opencode-helicone-session",
+    {
+      "package": "@my-org/audit-plugin",
+      "options": {
+        "endpoint": "https://audit.example.com",
+      },
+    },
+  ],
+}
+```
+
+The configured `plugins` list represents package-loaded plugins only. Local plugin code remains discovered from plugin directories such as `.opencode/plugins/`; v2 does not port arbitrary configured local paths or file URLs into this field.
 
 ## Group 5: Filesystem And Tool Runtime
 
@@ -57,8 +108,8 @@ Settings controlling local file observation, snapshots, language tooling, and to
 
 | Field         | Current Purpose                         | Status  | Notes |
 | ------------- | --------------------------------------- | ------- | ----- |
-| `watcher`     | Ignore patterns for filesystem watching | pending |       |
-| `snapshot`    | Enable filesystem snapshot tracking     | pending |       |
+| `watcher`     | Ignore patterns for filesystem watching | keep     | Keep `{ ignore?: string[] }`; this configures the filesystem watcher subsystem. |
+| `snapshot`    | Enable filesystem snapshot tracking     | redesign | Rename to plural `snapshots`; controls creation of snapshots used for undo and revert behavior. |
 | `formatter`   | Configure formatters                    | pending |       |
 | `lsp`         | Configure language servers              | pending |       |
 | `attachment`  | Configure attachment/image processing   | pending |       |
@@ -79,13 +130,13 @@ Settings affecting sharing behavior or user/account identity rather than model e
 
 Provider catalog customization and model-choice configuration. The new core work has started here.
 
-| Field                | Current Purpose                                   | Status   | Notes                                                                                   |
-| -------------------- | ------------------------------------------------- | -------- | --------------------------------------------------------------------------------------- |
-| `provider`           | Custom provider configuration and model overrides | pending  | New core schema currently uses `providers`; decide public key compatibility.            |
-| `disabled_providers` | Disable automatically loaded providers            | redesign | Replace with `experimental.policies: [{ effect: "deny", action: "provider.use", resource: "..." }]`. |
-| `enabled_providers`  | Restrict enabled providers to an allowlist        | redesign | Replace with ordered `provider.use` allow/deny statements and wildcard resources.       |
-| `model`              | Default model selection                           | pending  |                                                                                         |
-| `small_model`        | Small/utility model selection                     | pending  |                                                                                         |
+| Field                | Current Purpose                                   | Status   | Notes                                                                                                                   |
+| -------------------- | ------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `provider`           | Custom provider configuration and model overrides | redesign | Rename to plural `providers` in v2; do not preserve the legacy singular key. Review nested provider/model fields separately. |
+| `disabled_providers` | Disable automatically loaded providers            | redesign | Replace with `experimental.policies: [{ effect: "deny", action: "provider.use", resource: "..." }]`.               |
+| `enabled_providers`  | Restrict enabled providers to an allowlist        | redesign | Replace with ordered `provider.use` allow/deny statements and wildcard resources.                                       |
+| `model`              | Default model selection                           | keep     | Keep as the fallback model when an active session or agent does not specify a model.                                   |
+| `small_model`        | Small/utility model selection                     | remove   | Do not port; its only runtime consumer is title generation, which can use an explicit `title` agent model override.    |
 
 Provider selection rules belong in `experimental.policies` rather than provider entries or repeated top-level provider fields. Initial proposed shape:
 
@@ -111,6 +162,12 @@ Provider selection rules belong in `experimental.policies` rather than provider 
 See [provider-policy.md](./provider-policy.md) for the provider policy semantics and precedence rules.
 
 Policy evaluation will consume authored config documents in reverse order while preserving statement order inside each document. The precedence of `.opencode` policy sources remains open until `.opencode` configuration is reviewed.
+
+Provider configuration uses the plural `providers` key in v2. This intentionally differs from the legacy singular `provider` key; v2 does not add a compatibility alias while its configuration surface is still being defined.
+
+Keep `model` as the default model fallback. It is application-wide behavior used when an active session or agent has no explicit model selection, so it does not belong inside any individual provider configuration.
+
+Do not port `small_model`. In the current runtime it is only consulted while generating a session title: the `title` agent model wins first, then `small_model`, then automatic/current-model fallback. In v2, users who need a specific title model should configure the `title` agent directly rather than use a separate top-level model setting.
 
 ## Group 8: Agents And Permissions
 

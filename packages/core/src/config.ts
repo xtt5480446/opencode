@@ -3,18 +3,74 @@ export * as Config from "./config"
 import path from "path"
 import { type ParseError, parse } from "jsonc-parser"
 import { Context, Effect, Layer, Option, Schema } from "effect"
-import { AppFileSystem } from "../filesystem"
-import { Global } from "../global"
-import { Location } from "../location"
-import { Policy } from "../policy"
-import { AbsolutePath } from "../schema"
-import { ConfigV2 } from "./schema"
+import { AppFileSystem } from "./filesystem"
+import { Global } from "./global"
+import { Location } from "./location"
+import { Policy } from "./policy"
+import { AbsolutePath } from "./schema"
+import { ConfigExperimental } from "./config/experimental"
+import { ConfigPlugin } from "./config/plugin"
+import { ConfigProvider } from "./config/provider"
+import { ConfigReference } from "./config/reference"
+import { ConfigWatcher } from "./config/watcher"
+
+export class Info extends Schema.Class<Info>("Config.Info")({
+  $schema: Schema.optional(Schema.String).annotate({
+    description: "JSON schema reference for configuration validation",
+  }),
+  shell: Schema.String.pipe(Schema.optional).annotate({
+    description: "Default shell to use for terminal and shell tool execution",
+  }),
+  model: Schema.String.pipe(Schema.optional).annotate({
+    description: "Default model to use when no session or agent model is selected",
+  }),
+  autoupdate: Schema.Union([Schema.Boolean, Schema.Literal("notify")]).pipe(Schema.optional).annotate({
+    description: "Automatically update or notify when a new version is available",
+  }),
+  snapshots: Schema.Boolean.pipe(Schema.optional).annotate({
+    description: "Enable snapshots used for undo and revert behavior",
+  }),
+  watcher: ConfigWatcher.Info.pipe(Schema.optional).annotate({
+    description: "Filesystem watcher configuration",
+  }),
+  skills: Schema.String.pipe(Schema.Array, Schema.optional).annotate({
+    description: "Additional paths or URLs to discover skills from",
+  }),
+  instructions: Schema.String.pipe(Schema.Array, Schema.optional).annotate({
+    description: "Additional paths or URLs supplying ambient instructions",
+  }),
+  references: ConfigReference.Info.pipe(Schema.optional).annotate({
+    description: "Named local directories or Git repositories available as external context",
+  }),
+  plugins: ConfigPlugin.Plugins.pipe(Schema.optional).annotate({
+    description: "Ordered external plugin packages to load",
+  }),
+  experimental: ConfigExperimental.Experimental.pipe(Schema.optional),
+  providers: Schema.Record(Schema.String, ConfigProvider.Info).pipe(Schema.optional),
+}) {}
+
+export class FileSource extends Schema.Class<FileSource>("Config.FileSource")({
+  type: Schema.Literal("file"),
+  path: Schema.String,
+}) {}
+
+export class MemorySource extends Schema.Class<MemorySource>("Config.MemorySource")({
+  type: Schema.Literal("memory"),
+}) {}
+
+export const Source = Schema.Union([FileSource, MemorySource]).pipe(Schema.toTaggedUnion("type"))
+export type Source = typeof Source.Type
+
+export class Loaded extends Schema.Class<Loaded>("Config.Loaded")({
+  source: Source,
+  info: Info,
+}) {}
 
 export interface Interface {
   /** Returns supplemental config directories from lowest to highest priority. */
   readonly directories: () => Effect.Effect<AbsolutePath[]>
   /** Loads location config files from lowest to highest priority. */
-  readonly get: () => Effect.Effect<ConfigV2.Loaded[]>
+  readonly get: () => Effect.Effect<Loaded[]>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Config") {}
@@ -39,15 +95,15 @@ export const layer = Layer.effect(
       // Accept legacy fields while v2 is migrated incrementally; recognized
       // fields still have to satisfy the v2 schema.
       const info = Option.getOrUndefined(
-        Schema.decodeUnknownOption(ConfigV2.Info)(input, { errors: "all", onExcessProperty: "ignore" }),
+        Schema.decodeUnknownOption(Info)(input, { errors: "all", onExcessProperty: "ignore" }),
       )
       if (!info) return
-      return new ConfigV2.Loaded({ source: new ConfigV2.FileSource({ type: "file", path: filepath }), info })
+      return new Loaded({ source: new FileSource({ type: "file", path: filepath }), info })
     })
 
     const loadDirectory = Effect.fnUntraced(function* (directory: AbsolutePath) {
       return yield* Effect.forEach(names, (file) => loadFile(path.join(directory, file))).pipe(
-        Effect.map((configs) => configs.filter((config): config is ConfigV2.Loaded => config !== undefined)),
+        Effect.map((configs) => configs.filter((config): config is Loaded => config !== undefined)),
       )
     })
 
@@ -74,7 +130,7 @@ export const layer = Layer.effect(
           .pipe(Effect.orDie)).toReversed()
     const direct = yield* Effect.forEach(directPaths, loadFile).pipe(
       Effect.orDie,
-      Effect.map((configs) => configs.filter((config): config is ConfigV2.Loaded => config !== undefined)),
+      Effect.map((configs) => configs.filter((config): config is Loaded => config !== undefined)),
     )
     const supplementary = yield* Effect.forEach(directories, loadDirectory).pipe(Effect.orDie)
     // Apply general settings first and more specific settings last:

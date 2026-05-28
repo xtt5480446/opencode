@@ -2,9 +2,8 @@ import path from "path"
 import fs from "fs/promises"
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { Config } from "@opencode-ai/core/config/config"
+import { Config } from "@opencode-ai/core/config"
 import { ConfigProvider } from "@opencode-ai/core/config/provider"
-import { ConfigV2 } from "@opencode-ai/core/config/schema"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Global } from "@opencode-ai/core/global"
 import { Location } from "@opencode-ai/core/location"
@@ -105,8 +104,8 @@ describe("Config", () => {
             expect(documents).toHaveLength(3)
             expect(documents.map((document) => document.source.type)).toEqual(["file", "file", "file"])
             expect(documents.map((document) => document.info.$schema)).toEqual(["base", "middle", "last"])
-            expect(documents[0]).toBeInstanceOf(ConfigV2.Loaded)
-            expect(documents[0]?.source).toBeInstanceOf(ConfigV2.FileSource)
+            expect(documents[0]).toBeInstanceOf(Config.Loaded)
+            expect(documents[0]?.source).toBeInstanceOf(Config.FileSource)
             expect(documents[0]?.source.type === "file" ? documents[0].source.path : undefined).toBe(
               path.join(tmp.path, "config.json"),
             )
@@ -155,7 +154,7 @@ describe("Config", () => {
     ),
   )
 
-  it.live("loads recognized v2 fields from config files that still contain legacy fields", () =>
+  it.live("loads supported scalar and resource configuration", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
@@ -168,8 +167,20 @@ describe("Config", () => {
               JSON.stringify({
                 shell: "/bin/bash",
                 model: "anthropic/claude",
-                disabled_providers: ["openai"],
-                server: { port: 4096 },
+                autoupdate: "notify",
+                snapshots: false,
+                watcher: { ignore: ["node_modules/**", "dist/**", ".git"] },
+                skills: ["./skills", "~/shared-skills", "https://example.com/.well-known/skills/"],
+                instructions: ["CONTRIBUTING.md", ".cursor/rules/*.md", "https://example.com/shared-rules.md"],
+                references: {
+                  local: { path: "../library" },
+                  sdk: { repository: "github.com/example/sdk", branch: "main" },
+                  shorthand: "github.com/example/docs",
+                },
+                plugins: [
+                  "opencode-helicone-session",
+                  { package: "@my-org/audit-plugin", options: { endpoint: "https://audit.example.com" } },
+                ],
               }),
             ),
           )
@@ -180,6 +191,29 @@ describe("Config", () => {
 
             expect(documents).toHaveLength(1)
             expect(documents[0]?.info.shell).toBe("/bin/bash")
+            expect(documents[0]?.info.model).toBe("anthropic/claude")
+            expect(documents[0]?.info.autoupdate).toBe("notify")
+            expect(documents[0]?.info.snapshots).toBe(false)
+            expect(documents[0]?.info.watcher).toEqual({ ignore: ["node_modules/**", "dist/**", ".git"] })
+            expect(documents[0]?.info.skills).toEqual([
+              "./skills",
+              "~/shared-skills",
+              "https://example.com/.well-known/skills/",
+            ])
+            expect(documents[0]?.info.instructions).toEqual([
+              "CONTRIBUTING.md",
+              ".cursor/rules/*.md",
+              "https://example.com/shared-rules.md",
+            ])
+            expect(documents[0]?.info.references).toEqual({
+              local: { path: "../library" },
+              sdk: { repository: "github.com/example/sdk", branch: "main" },
+              shorthand: "github.com/example/docs",
+            })
+            expect(documents[0]?.info.plugins).toEqual([
+              "opencode-helicone-session",
+              { package: "@my-org/audit-plugin", options: { endpoint: "https://audit.example.com" } },
+            ])
           }).pipe(Effect.provide(testLayer(tmp.path)))
         }),
       ),

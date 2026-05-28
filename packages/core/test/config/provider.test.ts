@@ -1,9 +1,8 @@
 import { describe, expect } from "bun:test"
 import { Effect, Schema } from "effect"
 import { Catalog } from "@opencode-ai/core/catalog"
-import { Config } from "@opencode-ai/core/config/config"
+import { Config } from "@opencode-ai/core/config"
 import { ConfigProvider } from "@opencode-ai/core/config/provider"
-import { ConfigV2 } from "@opencode-ai/core/config/schema"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -21,7 +20,7 @@ function options(headers: Record<string, string>, variant?: string) {
   }
 }
 
-const decode = Schema.decodeUnknownSync(ConfigV2.Info)
+const decode = Schema.decodeUnknownSync(Config.Info)
 
 describe("ConfigProvider.Plugin", () => {
   it.effect("loads configured providers and applies later model overrides", () =>
@@ -34,8 +33,8 @@ describe("ConfigProvider.Plugin", () => {
         directories: () => Effect.succeed([]),
         get: () =>
           Effect.succeed([
-            new ConfigV2.Loaded({
-              source: new ConfigV2.MemorySource({ type: "memory" }),
+            new Config.Loaded({
+              source: new Config.MemorySource({ type: "memory" }),
               info: decode({
                 providers: {
                   custom: {
@@ -63,8 +62,8 @@ describe("ConfigProvider.Plugin", () => {
                 },
               }),
             }),
-            new ConfigV2.Loaded({
-              source: new ConfigV2.MemorySource({ type: "memory" }),
+            new Config.Loaded({
+              source: new Config.MemorySource({ type: "memory" }),
               info: decode({
                 providers: {
                   custom: {
@@ -95,8 +94,8 @@ describe("ConfigProvider.Plugin", () => {
                 },
               }),
             }),
-            new ConfigV2.Loaded({
-              source: new ConfigV2.MemorySource({ type: "memory" }),
+            new Config.Loaded({
+              source: new Config.MemorySource({ type: "memory" }),
               info: decode({
                 providers: {
                   custom: { name: "Renamed" },
