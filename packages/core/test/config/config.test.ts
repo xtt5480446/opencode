@@ -8,6 +8,7 @@ import { ConfigV2 } from "@opencode-ai/core/config/schema"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Global } from "@opencode-ai/core/global"
 import { Location } from "@opencode-ai/core/location"
+import { Policy } from "@opencode-ai/core/policy"
 import { Project } from "@opencode-ai/core/project"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { location } from "../fixture/location"
@@ -25,6 +26,7 @@ function testLayer(
   return Config.layer.pipe(
     Layer.provide(AppFileSystem.defaultLayer),
     Layer.provide(Global.layerWith({ config: globalDirectory })),
+    Layer.provideMerge(Policy.defaultLayer),
     Layer.provide(
       Layer.succeed(
         Location.Service,
@@ -120,6 +122,70 @@ describe("Config", () => {
     ),
   )
 
+  it.live("accepts $schema metadata without writing it into config files", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const file = path.join(tmp.path, "opencode.json")
+          const contents = JSON.stringify({
+            shell: "/bin/zsh",
+            policies: [{ effect: "deny", action: "provider.use", resource: "openai" }],
+            providers: { local: provider },
+          })
+          yield* Effect.promise(() => fs.writeFile(file, contents))
+
+          return yield* Effect.gen(function* () {
+            const config = yield* Config.Service
+            const documents = yield* config.get()
+
+            expect(documents[0]?.info.$schema).toBeUndefined()
+            expect(documents[0]?.info.shell).toBe("/bin/zsh")
+            expect(documents[0]?.info.policies?.[0]).toEqual({
+              effect: "deny",
+              action: "provider.use",
+              resource: "openai",
+            })
+            expect(yield* Effect.promise(() => fs.readFile(file, "utf8"))).toBe(contents)
+          }).pipe(Effect.provide(testLayer(tmp.path)))
+        }),
+      ),
+    ),
+  )
+
+  it.live("loads recognized v2 fields from config files that still contain legacy fields", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() =>
+            fs.writeFile(
+              path.join(tmp.path, "opencode.json"),
+              JSON.stringify({
+                shell: "/bin/bash",
+                model: "anthropic/claude",
+                disabled_providers: ["openai"],
+                server: { port: 4096 },
+              }),
+            ),
+          )
+
+          return yield* Effect.gen(function* () {
+            const config = yield* Config.Service
+            const documents = yield* config.get()
+
+            expect(documents).toHaveLength(1)
+            expect(documents[0]?.info.shell).toBe("/bin/bash")
+          }).pipe(Effect.provide(testLayer(tmp.path)))
+        }),
+      ),
+    ),
+  )
+
   it.live("ignores invalid files while loading valid config values", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
@@ -142,6 +208,36 @@ describe("Config", () => {
           }).pipe(Effect.provide(testLayer(tmp.path)))
         }),
       ),
+    ),
+  )
+
+  it.live("loads policy statements in reverse config order", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) => {
+        const global = path.join(tmp.path, "global")
+        return Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await fs.mkdir(global, { recursive: true })
+            await fs.writeFile(
+              path.join(global, "opencode.json"),
+              JSON.stringify({ policies: [{ effect: "deny", action: "provider.use", resource: "openai" }] }),
+            )
+            await fs.writeFile(
+              path.join(tmp.path, "opencode.json"),
+              JSON.stringify({ policies: [{ effect: "allow", action: "provider.use", resource: "openai" }] }),
+            )
+          })
+
+          return yield* Effect.gen(function* () {
+            const policy = yield* Policy.Service
+
+            expect(yield* policy.evaluate("provider.use", "openai", "allow")).toBe("deny")
+          }).pipe(Effect.provide(testLayer(tmp.path, global)))
+        })
+      }),
     ),
   )
 

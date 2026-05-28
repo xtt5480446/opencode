@@ -6,6 +6,7 @@ import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Global } from "@opencode-ai/core/global"
+import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { disposeAllInstances, provideInstanceEffect, tmpdirScoped, TestInstance } from "../fixture/fixture"
 import { markPluginDependenciesReady } from "../fixture/plugin"
 import { Auth } from "@/auth"
@@ -63,6 +64,7 @@ const providerLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(ModelsDev.defaultLayer),
     Layer.provide(RuntimeFlags.layer(flags)),
+    Layer.provide(LocationServiceMap.layer),
   )
 
 const list = Provider.use.list()
@@ -100,6 +102,11 @@ const alphaProviderConfig = {
   },
 }
 
+const denyAnthropicPolicyConfig = {
+  provider: {},
+  policies: [{ effect: "deny" as const, action: "provider.use" as const, resource: "anthropic" }],
+}
+
 it.instance("provider loaded from env variable", () =>
   Effect.gen(function* () {
     yield* setProcessEnv("ANTHROPIC_API_KEY", "test-api-key")
@@ -129,6 +136,16 @@ it.instance(
     expect(providers[ProviderID.anthropic]).toBeUndefined()
   }),
   { config: { disabled_providers: ["anthropic"] } },
+)
+
+it.instance(
+  "policies deny provider use",
+  Effect.gen(function* () {
+    yield* setProcessEnv("ANTHROPIC_API_KEY", "test-api-key")
+    const providers = yield* list
+    expect(providers[ProviderID.anthropic]).toBeUndefined()
+  }),
+  { config: denyAnthropicPolicyConfig },
 )
 
 it.instance(

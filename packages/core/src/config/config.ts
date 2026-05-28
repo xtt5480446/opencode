@@ -6,6 +6,7 @@ import { Context, Effect, Layer, Option, Schema } from "effect"
 import { AppFileSystem } from "../filesystem"
 import { Global } from "../global"
 import { Location } from "../location"
+import { Policy } from "../policy"
 import { AbsolutePath } from "../schema"
 import { ConfigV2 } from "./schema"
 
@@ -24,6 +25,7 @@ export const layer = Layer.effect(
     const fs = yield* AppFileSystem.Service
     const global = yield* Global.Service
     const location = yield* Location.Service
+    const policy = yield* Policy.Service
     const names = ["config.json", "opencode.json", "opencode.jsonc"]
 
     const loadFile = Effect.fnUntraced(function* (filepath: string) {
@@ -34,7 +36,11 @@ export const layer = Layer.effect(
       const input: unknown = parse(text, errors, { allowTrailingComma: true })
       if (errors.length) return
 
-      const info = Option.getOrUndefined(Schema.decodeUnknownOption(ConfigV2.Info)(input, { errors: "all" }))
+      // Accept legacy fields while v2 is migrated incrementally; recognized
+      // fields still have to satisfy the v2 schema.
+      const info = Option.getOrUndefined(
+        Schema.decodeUnknownOption(ConfigV2.Info)(input, { errors: "all", onExcessProperty: "ignore" }),
+      )
       if (!info) return
       return new ConfigV2.Loaded({ source: new ConfigV2.FileSource({ type: "file", path: filepath }), info })
     })
@@ -74,6 +80,9 @@ export const layer = Layer.effect(
     // Apply general settings first and more specific settings last:
     // global config, project files, then `.opencode` files.
     const configs = [...(supplementary[0] ?? []), ...direct, ...supplementary.slice(1).flat()]
+    // Rules use the opposite order so a user-global rule can override a
+    // repository rule. Statement order inside each file stays unchanged.
+    yield* policy.load(configs.toReversed().flatMap((config) => config.info.policies ?? []))
 
     return Service.of({
       directories: Effect.fn("Config.directories")(function* () {
@@ -86,4 +95,7 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(AppFileSystem.defaultLayer), Layer.provide(Global.defaultLayer))
+export const defaultLayer = layer.pipe(
+  Layer.provide(AppFileSystem.defaultLayer),
+  Layer.provide(Global.defaultLayer),
+)

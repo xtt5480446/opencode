@@ -7,6 +7,7 @@ import { PluginV2 } from "./plugin"
 import { ProviderV2 } from "./provider"
 import { Location } from "./location"
 import { EventV2 } from "./event"
+import { Policy } from "./policy"
 
 export type ProviderRecord = {
   provider: ProviderV2.Info
@@ -24,6 +25,8 @@ export class ModelNotFoundError extends Schema.TaggedErrorClass<ModelNotFoundErr
   providerID: ProviderV2.ID,
   modelID: ModelV2.ID,
 }) {}
+
+export const PolicyActions = Schema.Literals(["provider.use"])
 
 export const Event = {
   ModelUpdated: EventV2.define({
@@ -84,6 +87,7 @@ export const layer = Layer.effect(
     let defaultModel: { providerID: ProviderV2.ID; modelID: ModelV2.ID } | undefined
     const plugin = yield* PluginV2.Service
     const events = yield* EventV2.Service
+    const policy = yield* Policy.Service
     const scope = yield* Scope.Scope
 
     const resolve = (model: ModelV2.Info) => {
@@ -199,16 +203,23 @@ export const layer = Layer.effect(
       return result
     }
 
-    const transform = Effect.fn("CatalogV2.transform")(function* () {
-      const draft = { records: clone(records), data: HashMap.toValues(records) }
-      yield* plugin.trigger("catalog.transform", context(draft), {})
-      records = draft.records
+    const applyPolicy = Effect.fn("CatalogV2.applyPolicy")(function* (draft: {
+      records: HashMap.HashMap<ProviderV2.ID, ProviderRecord>
+      data: ProviderRecord[]
+    }) {
+      const ctx = context(draft)
+      for (const record of [...draft.data]) {
+        if ((yield* policy.evaluate("provider.use", record.provider.id, "allow")) === "deny") {
+          ctx.provider.remove(record.provider.id)
+        }
+      }
     })
 
     const rebuild = Effect.fn("CatalogV2.rebuild")(function* () {
       const draft = { records: HashMap.empty<ProviderV2.ID, ProviderRecord>(), data: [] as ProviderRecord[] }
       for (const loader of loaders) loader.update(context(draft))
       yield* plugin.trigger("catalog.transform", context(draft), {})
+      yield* applyPolicy(draft)
       records = draft.records
     })
 
@@ -217,6 +228,7 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           const draft = { records: clone(records), data: HashMap.toValues(records) }
           yield* plugin.triggerFor(id, "catalog.transform", context(draft), {})
+          yield* applyPolicy(draft)
           records = draft.records
         }),
       ),
@@ -354,4 +366,7 @@ export const layer = Layer.effect(
 
 const SMALL_MODEL_RE = /\b(nano|flash|lite|mini|haiku|small|fast)\b/
 
-export const defaultLayer = layer.pipe(Layer.provide(EventV2.defaultLayer), Layer.provide(PluginV2.defaultLayer))
+export const defaultLayer = layer.pipe(
+  Layer.provide(EventV2.defaultLayer),
+  Layer.provide(PluginV2.defaultLayer),
+)

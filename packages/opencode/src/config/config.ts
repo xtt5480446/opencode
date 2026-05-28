@@ -43,6 +43,7 @@ import { ConfigSkills } from "./skills"
 import { ConfigVariable } from "./variable"
 import { Npm } from "@opencode-ai/core/npm"
 import { withTransientReadRetry } from "@/util/effect-http-client"
+import { ConfigV2 } from "@opencode-ai/core/config/schema"
 
 const log = Log.create({ service: "config" })
 
@@ -176,6 +177,9 @@ export const Info = Schema.Struct({
   }),
   enabled_providers: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "When set, ONLY these providers will be enabled. All other providers will be ignored",
+  }),
+  policies: Schema.optional(Schema.mutable(Schema.Array(ConfigV2.Policy))).annotate({
+    description: "Policy statements applied to supported resources, such as provider access",
   }),
   model: Schema.optional(ConfigModelID).annotate({
     description: "Model to use in the format of provider/model, eg anthropic/claude-2",

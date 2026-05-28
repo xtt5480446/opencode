@@ -7,6 +7,7 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { Location } from "@opencode-ai/core/location"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { PluginV2 } from "@opencode-ai/core/plugin"
+import { Policy } from "@opencode-ai/core/policy"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { location } from "../fixture/location"
@@ -51,6 +52,7 @@ export const it = testEffect(
   Catalog.layer.pipe(
     Layer.provideMerge(PluginV2.defaultLayer),
     Layer.provideMerge(EventV2.defaultLayer),
+    Layer.provide(Policy.defaultLayer),
     Layer.provideMerge(locationLayer),
     Layer.provideMerge(npmLayer),
   ),

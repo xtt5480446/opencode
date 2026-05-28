@@ -5,11 +5,11 @@ import { Catalog } from "@opencode-ai/core/catalog"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Location } from "@opencode-ai/core/location"
 import { PluginV2 } from "@opencode-ai/core/plugin"
+import { Policy } from "@opencode-ai/core/policy"
 import { AccountPlugin } from "@opencode-ai/core/plugin/account"
 import { GitLabPlugin } from "@opencode-ai/core/plugin/provider/gitlab"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { location } from "../fixture/location"
 import { testEffect } from "../lib/effect"
 import { it, model, npmLayer, withEnv } from "./provider-helper"
 
@@ -29,14 +29,15 @@ void mock.module("gitlab-ai-provider", () => ({
 }))
 
 const itWithAccount = testEffect(
-  Catalog.layer.pipe(
-    Layer.provideMerge(PluginV2.defaultLayer),
-    Layer.provideMerge(AccountV2.defaultLayer),
-    Layer.provideMerge(EventV2.defaultLayer),
-    Layer.provideMerge(
-      Layer.succeed(Location.Service, Location.Service.of(location({ directory: AbsolutePath.make("test") }))),
-    ),
-    Layer.provideMerge(npmLayer),
+  Layer.mergeAll(
+    Catalog.defaultLayer,
+    PluginV2.defaultLayer,
+    AccountV2.defaultLayer,
+    EventV2.defaultLayer,
+    npmLayer,
+  ).pipe(
+    Layer.provide(Policy.defaultLayer),
+    Layer.provide(Location.defaultLayer({ directory: AbsolutePath.make("/") })),
   ),
 )
 

@@ -5,6 +5,7 @@ import { Catalog } from "@opencode-ai/core/catalog"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Location } from "@opencode-ai/core/location"
 import { PluginV2 } from "@opencode-ai/core/plugin"
+import { Policy } from "@opencode-ai/core/policy"
 import { AccountPlugin } from "@opencode-ai/core/plugin/account"
 import { AzurePlugin } from "@opencode-ai/core/plugin/provider/azure"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -18,6 +19,7 @@ const itWithAccount = testEffect(
     Layer.provideMerge(PluginV2.defaultLayer),
     Layer.provideMerge(AccountV2.defaultLayer),
     Layer.provideMerge(EventV2.defaultLayer),
+    Layer.provide(Policy.defaultLayer),
     Layer.provideMerge(
       Layer.succeed(Location.Service, Location.Service.of(location({ directory: AbsolutePath.make("test") }))),
     ),
