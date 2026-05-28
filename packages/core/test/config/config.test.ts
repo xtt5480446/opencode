@@ -132,7 +132,7 @@ describe("Config", () => {
           const file = path.join(tmp.path, "opencode.json")
           const contents = JSON.stringify({
             shell: "/bin/zsh",
-            policies: [{ effect: "deny", action: "provider.use", resource: "openai" }],
+            experimental: { policies: [{ effect: "deny", action: "provider.use", resource: "openai" }] },
             providers: { local: provider },
           })
           yield* Effect.promise(() => fs.writeFile(file, contents))
@@ -143,7 +143,7 @@ describe("Config", () => {
 
             expect(documents[0]?.info.$schema).toBeUndefined()
             expect(documents[0]?.info.shell).toBe("/bin/zsh")
-            expect(documents[0]?.info.policies?.[0]).toEqual({
+            expect(documents[0]?.info.experimental?.policies?.[0]).toEqual({
               effect: "deny",
               action: "provider.use",
               resource: "openai",
@@ -223,11 +223,11 @@ describe("Config", () => {
             await fs.mkdir(global, { recursive: true })
             await fs.writeFile(
               path.join(global, "opencode.json"),
-              JSON.stringify({ policies: [{ effect: "deny", action: "provider.use", resource: "openai" }] }),
+              JSON.stringify({ experimental: { policies: [{ effect: "deny", action: "provider.use", resource: "openai" }] } }),
             )
             await fs.writeFile(
               path.join(tmp.path, "opencode.json"),
-              JSON.stringify({ policies: [{ effect: "allow", action: "provider.use", resource: "openai" }] }),
+              JSON.stringify({ experimental: { policies: [{ effect: "allow", action: "provider.use", resource: "openai" }] } }),
             )
           })
 

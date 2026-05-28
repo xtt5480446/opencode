@@ -178,9 +178,6 @@ export const Info = Schema.Struct({
   enabled_providers: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "When set, ONLY these providers will be enabled. All other providers will be ignored",
   }),
-  policies: Schema.optional(Schema.mutable(Schema.Array(ConfigV2.Policy))).annotate({
-    description: "Policy statements applied to supported resources, such as provider access",
-  }),
   model: Schema.optional(ConfigModelID).annotate({
     description: "Model to use in the format of provider/model, eg anthropic/claude-2",
   }),
@@ -304,6 +301,9 @@ export const Info = Schema.Struct({
       }),
       mcp_timeout: Schema.optional(PositiveInt).annotate({
         description: "Timeout in milliseconds for model context protocol (MCP) requests",
+      }),
+      policies: Schema.optional(Schema.mutable(Schema.Array(ConfigV2.Policy))).annotate({
+        description: "Policy statements applied to supported resources, such as provider access",
       }),
     }),
   ),

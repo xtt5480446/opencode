@@ -14,7 +14,7 @@ resource: provider ID, such as openai or company-ai
 Provider configuration and provider policy remain separate:
 
 - `providers` describes endpoints, options, and model overrides.
-- `policies` determines whether an operation using a provider is allowed.
+- `experimental.policies` determines whether an operation using a provider is allowed.
 
 A provider can be correctly configured and have valid credentials while policy still denies its use.
 
@@ -38,13 +38,15 @@ A provider can be correctly configured and have valid credentials while policy s
 
 ```jsonc
 {
-  "policies": [
-    {
-      "effect": "deny",
-      "action": "provider.use",
-      "resource": "openai",
-    },
-  ],
+  "experimental": {
+    "policies": [
+      {
+        "effect": "deny",
+        "action": "provider.use",
+        "resource": "openai",
+      },
+    ],
+  },
 }
 ```
 
@@ -56,7 +58,7 @@ interface PolicyInfo {
 }
 ```
 
-The `Policy` module owns the shared `Policy.Info` interface, `Policy.Effect` type, and evaluator. Domains define their supported typed statement schemas; for example, `Catalog.ProviderPolicy` fixes `action` to `"provider.use"`. The config schema gathers those domain-defined statement schemas into the accepted `policies` union because config files are one place statements can be authored.
+The `Policy` module owns the shared `Policy.Info` interface, `Policy.Effect` type, and evaluator. Domains define their supported typed statement schemas; for example, `Catalog.ProviderPolicy` fixes `action` to `"provider.use"`. The config schema gathers those domain-defined statement schemas into the accepted `experimental.policies` union because config files are one place statements can be authored while the capability is experimental.
 
 ## Matching
 
@@ -103,18 +105,20 @@ To deny all providers except Anthropic:
 
 ```jsonc
 {
-  "policies": [
-    {
-      "effect": "deny",
-      "action": "provider.use",
-      "resource": "*",
-    },
-    {
-      "effect": "allow",
-      "action": "provider.use",
-      "resource": "anthropic",
-    },
-  ],
+  "experimental": {
+    "policies": [
+      {
+        "effect": "deny",
+        "action": "provider.use",
+        "resource": "*",
+      },
+      {
+        "effect": "allow",
+        "action": "provider.use",
+        "resource": "anthropic",
+      },
+    ],
+  },
 }
 ```
 
@@ -129,11 +133,13 @@ To allow internal providers except experimental ones:
 
 ```jsonc
 {
-  "policies": [
-    { "effect": "deny", "action": "provider.use", "resource": "*" },
-    { "effect": "allow", "action": "provider.use", "resource": "company-*" },
-    { "effect": "deny", "action": "provider.use", "resource": "company-experimental-*" },
-  ],
+  "experimental": {
+    "policies": [
+      { "effect": "deny", "action": "provider.use", "resource": "*" },
+      { "effect": "allow", "action": "provider.use", "resource": "company-*" },
+      { "effect": "deny", "action": "provider.use", "resource": "company-experimental-*" },
+    ],
+  },
 }
 ```
 
@@ -159,7 +165,9 @@ Project config:
 
 ```jsonc
 {
-  "policies": [{ "effect": "allow", "action": "provider.use", "resource": "openai" }],
+  "experimental": {
+    "policies": [{ "effect": "allow", "action": "provider.use", "resource": "openai" }],
+  },
 }
 ```
 
@@ -167,7 +175,9 @@ User-global config:
 
 ```jsonc
 {
-  "policies": [{ "effect": "deny", "action": "provider.use", "resource": "openai" }],
+  "experimental": {
+    "policies": [{ "effect": "deny", "action": "provider.use", "resource": "openai" }],
+  },
 }
 ```
 
@@ -203,10 +213,12 @@ Provider policy is not a full sandbox for executable plugins. A denied provider 
       },
     },
   },
-  "policies": [
-    { "effect": "deny", "action": "provider.use", "resource": "*" },
-    { "effect": "allow", "action": "provider.use", "resource": "company-ai" },
-  ],
+  "experimental": {
+    "policies": [
+      { "effect": "deny", "action": "provider.use", "resource": "*" },
+      { "effect": "allow", "action": "provider.use", "resource": "company-ai" },
+    ],
+  },
 }
 ```
 
@@ -247,10 +259,12 @@ Equivalent v2 policy:
 
 ```jsonc
 {
-  "policies": [
-    { "effect": "deny", "action": "provider.use", "resource": "openai" },
-    { "effect": "deny", "action": "provider.use", "resource": "google" },
-  ],
+  "experimental": {
+    "policies": [
+      { "effect": "deny", "action": "provider.use", "resource": "openai" },
+      { "effect": "deny", "action": "provider.use", "resource": "google" },
+    ],
+  },
 }
 ```
 
@@ -266,10 +280,12 @@ Equivalent v2 policy:
 
 ```jsonc
 {
-  "policies": [
-    { "effect": "deny", "action": "provider.use", "resource": "*" },
-    { "effect": "allow", "action": "provider.use", "resource": "anthropic" },
-    { "effect": "allow", "action": "provider.use", "resource": "openai" },
-  ],
+  "experimental": {
+    "policies": [
+      { "effect": "deny", "action": "provider.use", "resource": "*" },
+      { "effect": "allow", "action": "provider.use", "resource": "anthropic" },
+      { "effect": "allow", "action": "provider.use", "resource": "openai" },
+    ],
+  },
 }
 ```

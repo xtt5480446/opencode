@@ -104,7 +104,9 @@ const alphaProviderConfig = {
 
 const denyAnthropicPolicyConfig = {
   provider: {},
-  policies: [{ effect: "deny" as const, action: "provider.use" as const, resource: "anthropic" }],
+  experimental: {
+    policies: [{ effect: "deny" as const, action: "provider.use" as const, resource: "anthropic" }],
+  },
 }
 
 it.instance("provider loaded from env variable", () =>
@@ -139,7 +141,7 @@ it.instance(
 )
 
 it.instance(
-  "policies deny provider use",
+  "experimental policies deny provider use",
   Effect.gen(function* () {
     yield* setProcessEnv("ANTHROPIC_API_KEY", "test-api-key")
     const providers = yield* list

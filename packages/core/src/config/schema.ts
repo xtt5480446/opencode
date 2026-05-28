@@ -14,6 +14,10 @@ export class Policy extends Schema.Class<Policy>("ConfigV2.Policy")({
   action: PolicyAction,
 }) {}
 
+export class Experimental extends Schema.Class<Experimental>("ConfigV2.Experimental")({
+  policies: Policy.pipe(Schema.Array, Schema.optional),
+}) {}
+
 export class Info extends Schema.Class<Info>("ConfigV2.Info")({
   $schema: Schema.optional(Schema.String).annotate({
     description: "JSON schema reference for configuration validation",
@@ -21,7 +25,7 @@ export class Info extends Schema.Class<Info>("ConfigV2.Info")({
   shell: Schema.String.pipe(Schema.optional).annotate({
     description: "Default shell to use for terminal and shell tool execution",
   }),
-  policies: Policy.pipe(Schema.Array, Schema.optional),
+  experimental: Experimental.pipe(Schema.optional),
   providers: Schema.Record(Schema.String, ConfigProvider.Info).pipe(Schema.optional),
 }) {}
 

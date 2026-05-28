@@ -395,18 +395,20 @@ You can also configure [local models](/docs/models#local). [Learn more](/docs/mo
 
 ### Policies
 
-Use the `policies` option to allow or deny OpenCode actions on configured resources. Currently, policies can control which providers OpenCode may use.
+Use the `experimental.policies` option to allow or deny OpenCode actions on configured resources. Currently, policies can control which providers OpenCode may use.
 
 ```json title="opencode.json"
 {
   "$schema": "https://opencode.ai/config.json",
-  "policies": [
-    {
-      "effect": "deny",
-      "action": "provider.use",
-      "resource": "openai"
-    }
-  ]
+  "experimental": {
+    "policies": [
+      {
+        "effect": "deny",
+        "action": "provider.use",
+        "resource": "openai"
+      }
+    ]
+  }
 }
 ```
 

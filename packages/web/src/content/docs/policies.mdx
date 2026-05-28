@@ -3,7 +3,7 @@ title: Policies
 description: Control which configured resources OpenCode may use.
 ---
 
-Policies control whether OpenCode may perform an action on a named resource. They are configured with the `policies` array in `opencode.json`.
+Policies control whether OpenCode may perform an action on a named resource. This feature is experimental and is configured with the `experimental.policies` array in `opencode.json`.
 
 Policies are separate from [permissions](/docs/permissions). Permissions control what tools can do during a session, while policies control whether OpenCode may use a resource such as an LLM provider.
 
@@ -22,13 +22,15 @@ For example, deny use of the `openai` provider:
 ```json title="opencode.json"
 {
   "$schema": "https://opencode.ai/config.json",
-  "policies": [
-    {
-      "effect": "deny",
-      "action": "provider.use",
-      "resource": "openai"
-    }
-  ]
+  "experimental": {
+    "policies": [
+      {
+        "effect": "deny",
+        "action": "provider.use",
+        "resource": "openai"
+      }
+    ]
+  }
 }
 ```
 
@@ -55,13 +57,15 @@ The `resource` field supports wildcard matching. Use `*` to match zero or more c
 ```json title="opencode.json"
 {
   "$schema": "https://opencode.ai/config.json",
-  "policies": [
-    {
-      "effect": "deny",
-      "action": "provider.use",
-      "resource": "company-*"
-    }
-  ]
+  "experimental": {
+    "policies": [
+      {
+        "effect": "deny",
+        "action": "provider.use",
+        "resource": "company-*"
+      }
+    ]
+  }
 }
 ```
 
@@ -78,18 +82,20 @@ For example, allow only Anthropic:
 ```json title="opencode.json"
 {
   "$schema": "https://opencode.ai/config.json",
-  "policies": [
-    {
-      "effect": "deny",
-      "action": "provider.use",
-      "resource": "*"
-    },
-    {
-      "effect": "allow",
-      "action": "provider.use",
-      "resource": "anthropic"
-    }
-  ]
+  "experimental": {
+    "policies": [
+      {
+        "effect": "deny",
+        "action": "provider.use",
+        "resource": "*"
+      },
+      {
+        "effect": "allow",
+        "action": "provider.use",
+        "resource": "anthropic"
+      }
+    ]
+  }
 }
 ```
 
@@ -107,10 +113,12 @@ To replace `disabled_providers`:
 
 ```json title="opencode.json"
 {
-  "policies": [
-    { "effect": "deny", "action": "provider.use", "resource": "openai" },
-    { "effect": "deny", "action": "provider.use", "resource": "google" }
-  ]
+  "experimental": {
+    "policies": [
+      { "effect": "deny", "action": "provider.use", "resource": "openai" },
+      { "effect": "deny", "action": "provider.use", "resource": "google" }
+    ]
+  }
 }
 ```
 
@@ -118,10 +126,12 @@ To replace `enabled_providers`, deny all providers first and allow the selected 
 
 ```json title="opencode.json"
 {
-  "policies": [
-    { "effect": "deny", "action": "provider.use", "resource": "*" },
-    { "effect": "allow", "action": "provider.use", "resource": "anthropic" },
-    { "effect": "allow", "action": "provider.use", "resource": "openai" }
-  ]
+  "experimental": {
+    "policies": [
+      { "effect": "deny", "action": "provider.use", "resource": "*" },
+      { "effect": "allow", "action": "provider.use", "resource": "anthropic" },
+      { "effect": "allow", "action": "provider.use", "resource": "openai" }
+    ]
+  }
 }
 ```

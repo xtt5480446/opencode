@@ -82,27 +82,29 @@ Provider catalog customization and model-choice configuration. The new core work
 | Field                | Current Purpose                                   | Status   | Notes                                                                                   |
 | -------------------- | ------------------------------------------------- | -------- | --------------------------------------------------------------------------------------- |
 | `provider`           | Custom provider configuration and model overrides | pending  | New core schema currently uses `providers`; decide public key compatibility.            |
-| `disabled_providers` | Disable automatically loaded providers            | redesign | Replace with `policies: [{ effect: "deny", action: "provider.use", resource: "..." }]`. |
+| `disabled_providers` | Disable automatically loaded providers            | redesign | Replace with `experimental.policies: [{ effect: "deny", action: "provider.use", resource: "..." }]`. |
 | `enabled_providers`  | Restrict enabled providers to an allowlist        | redesign | Replace with ordered `provider.use` allow/deny statements and wildcard resources.       |
 | `model`              | Default model selection                           | pending  |                                                                                         |
 | `small_model`        | Small/utility model selection                     | pending  |                                                                                         |
 
-Provider selection rules belong in a plural `policies` array rather than provider entries or repeated top-level provider fields. Initial proposed shape:
+Provider selection rules belong in `experimental.policies` rather than provider entries or repeated top-level provider fields. Initial proposed shape:
 
 ```jsonc
 {
-  "policies": [
-    {
-      "effect": "deny",
-      "action": "provider.use",
-      "resource": "*",
-    },
-    {
-      "effect": "allow",
-      "action": "provider.use",
-      "resource": "anthropic",
-    },
-  ],
+  "experimental": {
+    "policies": [
+      {
+        "effect": "deny",
+        "action": "provider.use",
+        "resource": "*",
+      },
+      {
+        "effect": "allow",
+        "action": "provider.use",
+        "resource": "anthropic",
+      },
+    ],
+  },
 }
 ```
 

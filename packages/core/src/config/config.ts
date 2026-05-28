@@ -82,7 +82,7 @@ export const layer = Layer.effect(
     const configs = [...(supplementary[0] ?? []), ...direct, ...supplementary.slice(1).flat()]
     // Rules use the opposite order so a user-global rule can override a
     // repository rule. Statement order inside each file stays unchanged.
-    yield* policy.load(configs.toReversed().flatMap((config) => config.info.policies ?? []))
+    yield* policy.load(configs.toReversed().flatMap((config) => config.info.experimental?.policies ?? []))
 
     return Service.of({
       directories: Effect.fn("Config.directories")(function* () {
