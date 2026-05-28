@@ -5,6 +5,8 @@ import type { TextPart } from "@opencode-ai/sdk/v2"
 import { Locale } from "@/util/locale"
 import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
+import { useToast } from "../../ui/toast"
+import { Spinner } from "../../component/spinner"
 import { useDialog, type DialogContext } from "../../ui/dialog"
 import type { PromptInfo } from "@tui/component/prompt/history"
 import { strip } from "@tui/component/prompt/part"
@@ -14,24 +16,37 @@ export function DialogForkFromTimeline(props: { sessionID: string; onMove: (mess
   const dialog = useDialog()
   const sdk = useSDK()
   const route = useRoute()
+  const toast = useToast()
 
   onMount(() => {
     dialog.setSize("large")
   })
+
+  // Forking a large session can take a moment, so swap the dialog to a progress view instead of
+  // leaving it open (which looks frozen), then navigate to the fork and confirm with a toast.
+  const fork = async (dialog: DialogContext, messageID?: string, prompt?: PromptInfo) => {
+    dialog.replace(() => (
+      <box paddingLeft={2} paddingRight={2} paddingBottom={1}>
+        <Spinner>Forking session…</Spinner>
+      </box>
+    ))
+    const forked = await sdk.client.session.fork({ sessionID: props.sessionID, messageID })
+    if (!forked.data) {
+      toast.show({ variant: "error", message: "Failed to fork session" })
+      dialog.clear()
+      return
+    }
+    route.navigate({ sessionID: forked.data.id, type: "session", prompt })
+    dialog.clear()
+    toast.show({ variant: "success", message: "Forked session", duration: 4000 })
+  }
 
   const options = createMemo((): DialogSelectOption<string | undefined>[] => {
     const messages = sync.data.message[props.sessionID] ?? []
     const fullSession = {
       title: "Full session",
       value: undefined,
-      onSelect: async (dialog: DialogContext) => {
-        const forked = await sdk.client.session.fork({ sessionID: props.sessionID })
-        route.navigate({
-          sessionID: forked.data!.id,
-          type: "session",
-        })
-        dialog.clear()
-      },
+      onSelect: fork,
     } satisfies DialogSelectOption<string | undefined>
     const result = [] as DialogSelectOption<string | undefined>[]
     for (const message of messages) {
@@ -44,13 +59,8 @@ export function DialogForkFromTimeline(props: { sessionID: string; onMove: (mess
         title: part.text.replace(/\n/g, " "),
         value: message.id,
         footer: Locale.time(message.time.created),
-        onSelect: async (dialog) => {
-          const forked = await sdk.client.session.fork({
-            sessionID: props.sessionID,
-            messageID: message.id,
-          })
-          const parts = sync.data.part[message.id] ?? []
-          const prompt = parts.reduce(
+        onSelect: (dialog) => {
+          const prompt = (sync.data.part[message.id] ?? []).reduce(
             (agg, part) => {
               if (part.type === "text") {
                 if (!part.synthetic) agg.input += part.text
@@ -60,12 +70,7 @@ export function DialogForkFromTimeline(props: { sessionID: string; onMove: (mess
             },
             { input: "", parts: [] as PromptInfo["parts"] },
           )
-          route.navigate({
-            sessionID: forked.data!.id,
-            type: "session",
-            prompt,
-          })
-          dialog.clear()
+          return fork(dialog, message.id, prompt)
         },
       })
     }

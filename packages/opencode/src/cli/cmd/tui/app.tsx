@@ -50,7 +50,7 @@ import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
 import { DialogAlert } from "./ui/dialog-alert"
 import { DialogConfirm } from "./ui/dialog-confirm"
-import { ToastProvider, useToast } from "./ui/toast"
+import { Toast, ToastProvider, useToast } from "./ui/toast"
 import { createExit, ExitProvider, useExit, type Exit } from "./context/exit"
 import { Session as SessionApi } from "@/session/session"
 import { TuiEvent } from "./event"
@@ -1072,6 +1072,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           <TuiPluginRuntime.Slot name="app_bottom" />
         </box>
         <TuiPluginRuntime.Slot name="app" />
+        {/* One Toast for the whole app, not per-route, so toasts survive route.navigate */}
+        <Toast />
       </Show>
       <StartupLoading ready={ready} />
     </box>
