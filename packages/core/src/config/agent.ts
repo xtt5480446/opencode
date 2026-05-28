@@ -2,7 +2,7 @@ export * as ConfigAgent from "./agent"
 
 import { Schema } from "effect"
 import { PermissionV2 } from "../permission"
-import { ProviderV2 } from "../provider"
+import { ConfigProvider } from "./provider"
 import { PositiveInt } from "../schema"
 
 export const Color = Schema.Union([
@@ -13,7 +13,7 @@ export const Color = Schema.Union([
 export class Info extends Schema.Class<Info>("ConfigV2.Agent")({
   model: Schema.String.pipe(Schema.optional),
   variant: Schema.String.pipe(Schema.optional),
-  options: ProviderV2.Options.pipe(Schema.optional),
+  options: ConfigProvider.Options.pipe(Schema.optional),
   system: Schema.String.pipe(Schema.optional),
   description: Schema.String.pipe(Schema.optional),
   mode: Schema.Literals(["subagent", "primary", "all"]).pipe(Schema.optional),

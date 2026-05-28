@@ -181,8 +181,7 @@ describe("Config", () => {
                     variant: "high",
                     options: {
                       headers: { "x-agent": "reviewer" },
-                      body: {},
-                      aisdk: { provider: {}, request: { reasoningEffort: "high" } },
+                      aisdk: { request: { reasoningEffort: "high" } },
                     },
                     description: "Review changes for correctness",
                     system: "Find regressions.",
@@ -260,8 +259,7 @@ describe("Config", () => {
               variant: "high",
               options: {
                 headers: { "x-agent": "reviewer" },
-                body: {},
-                aisdk: { provider: {}, request: { reasoningEffort: "high" } },
+                aisdk: { request: { reasoningEffort: "high" } },
               },
               description: "Review changes for correctness",
               system: "Find regressions.",

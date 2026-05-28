@@ -202,6 +202,35 @@ Keep `model` as the default model fallback. It is application-wide behavior used
 
 Do not port `small_model`. In the current runtime it is only consulted while generating a session title: the `title` agent model wins first, then `small_model`, then automatic/current-model fallback. In v2, users who need a specific title model should configure the `title` agent directly rather than use a separate top-level model setting.
 
+Provider, model, variant, and provisional agent `options` are authored as partial patches rather than fully materialized runtime option records. Users should be able to set only the override they need, such as a header or an AI SDK request option; catalog state supplies empty defaults and merges patches in configuration order.
+
+Keep provider `env` as an authored list of recognized credential environment variable names. Built-in catalog providers already carry this metadata for automatic environment-backed availability, and configured providers may need to declare the same source. For a configured provider this is additive metadata, not a requirement that one of the variables exists: the provider may instead be usable through configured options, a stored account, or an endpoint that needs no credential.
+
+Within configured models, rename legacy upstream model identifier `id` to `api_id` rather than exposing camelCase runtime `apiID`. Model `limit` is an authored patch, so an override may change only `context`, `input`, or `output`. Model `cost` accepts one simple pricing object or an array of tiered pricing entries; omitted cache prices default to zero.
+
+Do not port legacy provider model `reasoning`, `temperature`, or `interleaved` flags as first-class config fields; provider/request behavior belongs in structured `options` or model variants. Do not port `release_date`, `status`, `experimental`, `whitelist`, or `blacklist` in this v2 surface.
+
+```jsonc
+{
+  "providers": {
+    "internal": {
+      "env": ["INTERNAL_LLM_API_KEY"],
+      "options": { "headers": { "Authorization": "Bearer {env:API_KEY}" } },
+      "models": {
+        "chat": {
+          "api_id": "upstream-chat-model",
+          "limit": { "output": 32768 },
+          "cost": { "input": 1.25, "output": 10 },
+          "variants": [
+            { "id": "high", "aisdk": { "request": { "reasoningEffort": "high" } } },
+          ],
+        },
+      },
+    },
+  },
+}
+```
+
 ## Group 8: Agents And Permissions
 
 Agent behavior and tool-access policy. Review together because agent configuration can contain permissions and model choices.

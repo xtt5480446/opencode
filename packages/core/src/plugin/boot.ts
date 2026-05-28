@@ -4,11 +4,11 @@ import { Context, Deferred, Effect, Layer } from "effect"
 import { AccountV2 } from "../account"
 import { Catalog } from "../catalog"
 import { Config } from "../config"
-import { ConfigProvider } from "../config/provider"
 import { EventV2 } from "../event"
 import { Npm } from "../npm"
 import { PluginV2 } from "../plugin"
 import { AccountPlugin } from "./account"
+import { ConfigProviderPlugin } from "../config/plugin/provider"
 import { EnvPlugin } from "./env"
 import { ModelsDevPlugin } from "./models-dev"
 import { ProviderPlugins } from "./provider"
@@ -58,7 +58,7 @@ export const layer = Layer.effect(
         yield* add(item)
       }
       yield* add(ModelsDevPlugin)
-      yield* add(ConfigProvider.Plugin)
+      yield* add(ConfigProviderPlugin.Plugin)
     }).pipe(Effect.withSpan("PluginBoot.boot"))
 
     yield* boot.pipe(
