@@ -5,7 +5,7 @@ import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import * as Clipboard from "@tui/util/clipboard"
 import type { PromptInfo } from "@tui/component/prompt/history"
-import { strip } from "@tui/component/prompt/part"
+import { MessageActions } from "./message-actions"
 
 export function DialogMessage(props: {
   messageID: string
@@ -26,29 +26,14 @@ export function DialogMessage(props: {
           value: "session.revert",
           description: "undo messages and file changes",
           onSelect: (dialog) => {
-            const msg = message()
-            if (!msg) return
-
-            void sdk.client.session.revert({
+            if (!message()) return
+            MessageActions.revert({
+              sdk,
+              sync,
               sessionID: props.sessionID,
-              messageID: msg.id,
+              messageID: props.messageID,
+              setPrompt: props.setPrompt,
             })
-
-            if (props.setPrompt) {
-              const parts = sync.data.part[msg.id]
-              const promptInfo = parts.reduce(
-                (agg, part) => {
-                  if (part.type === "text") {
-                    if (!part.synthetic) agg.input += part.text
-                  }
-                  if (part.type === "file") agg.parts.push(strip(part))
-                  return agg
-                },
-                { input: "", parts: [] as PromptInfo["parts"] },
-              )
-              props.setPrompt(promptInfo)
-            }
-
             dialog.clear()
           },
         },
@@ -57,18 +42,8 @@ export function DialogMessage(props: {
           value: "message.copy",
           description: "message text to clipboard",
           onSelect: async (dialog) => {
-            const msg = message()
-            if (!msg) return
-
-            const parts = sync.data.part[msg.id]
-            const text = parts.reduce((agg, part) => {
-              if (part.type === "text" && !part.synthetic) {
-                agg += part.text
-              }
-              return agg
-            }, "")
-
-            await Clipboard.copy(text)
+            if (!message()) return
+            await Clipboard.copy(MessageActions.collectText(sync, props.messageID))
             dialog.clear()
           },
         },
@@ -77,27 +52,13 @@ export function DialogMessage(props: {
           value: "session.fork",
           description: "create a new session",
           onSelect: async (dialog) => {
-            const result = await sdk.client.session.fork({
+            if (!message()) return
+            await MessageActions.fork({
+              sdk,
+              sync,
+              navigate: route.navigate,
               sessionID: props.sessionID,
               messageID: props.messageID,
-            })
-            const msg = message()
-            const prompt = msg
-              ? sync.data.part[msg.id].reduce(
-                  (agg, part) => {
-                    if (part.type === "text") {
-                      if (!part.synthetic) agg.input += part.text
-                    }
-                    if (part.type === "file") agg.parts.push(part)
-                    return agg
-                  },
-                  { input: "", parts: [] as PromptInfo["parts"] },
-                )
-              : undefined
-            route.navigate({
-              sessionID: result.data!.id,
-              type: "session",
-              prompt,
             })
             dialog.clear()
           },
