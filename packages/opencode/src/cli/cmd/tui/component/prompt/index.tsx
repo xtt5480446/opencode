@@ -66,6 +66,7 @@ export type PromptProps = {
   sessionID?: string
   visible?: boolean
   disabled?: boolean
+  inert?: boolean
   onSubmit?: () => void
   ref?: (ref: PromptRef | undefined) => void
   hint?: JSX.Element
@@ -700,7 +701,7 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.visible === false || dialog.stack.length > 0) {
+    if (props.visible === false || dialog.stack.length > 0 || props.inert) {
       if (input.focused) input.blur()
       return
     }
@@ -1388,7 +1389,7 @@ export function Prompt(props: PromptProps) {
   }
 
   const highlight = createMemo(() => {
-    if (leader()) return theme.border
+    if (leader() || props.inert) return theme.border
     if (store.mode === "shell") return theme.primary
     const agent = local.agent.current()
     if (!agent) return theme.border
@@ -1494,8 +1495,8 @@ export function Prompt(props: PromptProps) {
               width="100%"
               placeholder={placeholderText()}
               placeholderColor={theme.textMuted}
-              textColor={leader() ? theme.textMuted : theme.text}
-              focusedTextColor={leader() ? theme.textMuted : theme.text}
+              textColor={leader() || props.inert ? theme.textMuted : theme.text}
+              focusedTextColor={leader() || props.inert ? theme.textMuted : theme.text}
               minHeight={1}
               maxHeight={maxHeight()}
               onContentChange={() => {

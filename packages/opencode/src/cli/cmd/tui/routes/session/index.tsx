@@ -7,6 +7,7 @@ import {
   For,
   Match,
   on,
+  onCleanup,
   onMount,
   Show,
   Switch,
@@ -57,6 +58,7 @@ import { useDialog } from "../../ui/dialog"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { TodoItem } from "../../component/todo-item"
 import { DialogMessage } from "./dialog-message"
+import { MessageActions } from "./message-actions"
 import type { PromptInfo } from "../../component/prompt/history"
 import { DialogConfirm } from "@tui/ui/dialog-confirm"
 import { DialogTimeline } from "./dialog-timeline"
@@ -89,7 +91,7 @@ import { TuiPluginRuntime } from "@/cli/cmd/tui/plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
 import { SessionRetry } from "@/session/retry"
 import { getRevertDiffFiles } from "../../util/revert-diff"
-import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
+import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap, useOpencodeModeStack } from "../../keymap"
 import { PathFormatterProvider, usePathFormatter } from "../../context/path-format"
 
 addDefaultParsers(parsers.parsers)
@@ -117,6 +119,8 @@ function goUpsellKeys(action: SessionRetry.Retryable["action"]) {
     }
   }
 }
+
+const FOCUS_MODE = "messages"
 
 const sessionBindingCommands = [
   "session.share",
@@ -1109,8 +1113,202 @@ export function Session() {
     }
   })
 
+  const modeStack = useOpencodeModeStack()
+  const [navMode, setNavMode] = createSignal(false)
+  const [focusedMessage, setFocusedMessage] = createSignal<string>()
+
+  const navigableMessages = createMemo(() => {
+    const revertID = revertMessageID()
+    return messages().filter((message): message is UserMessage => {
+      if (message.role !== "user") return false
+      if (revertID && message.id >= revertID) return false
+      return (sync.data.part[message.id] ?? []).some(
+        (part) => part.type === "text" && !part.synthetic && !part.ignored,
+      )
+    })
+  })
+
+  let scrollAnimation: ReturnType<typeof setInterval> | undefined
+  function cancelScrollAnimation() {
+    if (!scrollAnimation) return
+    clearInterval(scrollAnimation)
+    scrollAnimation = undefined
+  }
+
+  function scrollToFocused(messageID: string) {
+    if (!scroll || scroll.isDestroyed) return
+    const child = scroll.getChildren().find((c) => c.id === messageID)
+    if (!child) return
+
+    const desiredTop = Math.max(1, Math.floor((scroll.height - child.height) / 2))
+    const target = scroll.scrollTop + (child.y - scroll.y) - desiredTop
+    cancelScrollAnimation()
+    if (!kv.get("animations_enabled", true)) {
+      scroll.scrollTo(target)
+      return
+    }
+    scrollAnimation = setInterval(() => {
+      if (!scroll || scroll.isDestroyed) return cancelScrollAnimation()
+      const remaining = target - scroll.scrollTop
+      if (Math.abs(remaining) <= 1) {
+        scroll.scrollTo(target)
+        cancelScrollAnimation()
+      } else {
+        scroll.scrollTo(scroll.scrollTop + remaining * 0.3)
+      }
+      renderer.requestRender()
+    }, 16)
+  }
+
+  function focusEnter() {
+    if (!visible()) return false
+    if (navigableMessages().length === 0) return false
+    setNavMode(true)
+  }
+
+  function focusExit() {
+    if (!navMode()) return
+    cancelScrollAnimation()
+    setFocusedMessage(undefined)
+    setNavMode(false)
+    toBottom()
+  }
+
+  function focusMessage(messageID: string) {
+    setFocusedMessage(messageID)
+    scrollToFocused(messageID)
+  }
+
+  function focusMove(direction: 1 | -1) {
+    const list = navigableMessages()
+    if (list.length === 0) return focusExit()
+    const current = focusedMessage()
+    if (current === undefined) {
+      if (direction === -1) return focusMessage(list[list.length - 1].id)
+      return focusExit()
+    }
+    const index = list.findIndex((message) => message.id === current)
+    const next = index === -1 ? list.length - 1 : index + direction
+    if (next < 0) return
+    if (next >= list.length) return focusExit()
+    focusMessage(list[next].id)
+  }
+
+  function withFocused(action: (messageID: string) => void) {
+    const messageID = focusedMessage()
+    if (messageID) action(messageID)
+  }
+
+  const focusCommands = createMemo(() =>
+    [
+      {
+        name: "session.message.focus.toggle",
+        title: "Toggle message focus",
+        run: () => (navMode() ? focusExit() : focusEnter()),
+      },
+      { name: "session.message.focus.exit", title: "Exit message focus", run: focusExit },
+      { name: "session.message.focus.previous", title: "Focus previous message", run: () => focusMove(-1) },
+      { name: "session.message.focus.next", title: "Focus next message", run: () => focusMove(1) },
+      {
+        name: "session.message.focus.actions",
+        title: "Message actions",
+        run: () =>
+          withFocused((messageID) =>
+            dialog.replace(() => (
+              <DialogMessage
+                messageID={messageID}
+                sessionID={route.sessionID}
+                // Revert refills the prompt; exit focus so the draft is editable.
+                setPrompt={(info) => {
+                  prompt?.set(info)
+                  focusExit()
+                }}
+              />
+            )),
+          ),
+      },
+      {
+        name: "session.message.focus.revert",
+        title: "Revert to message",
+        run: () =>
+          withFocused((messageID) => {
+            MessageActions.revert({
+              sdk,
+              sync,
+              sessionID: route.sessionID,
+              messageID,
+              setPrompt: (info) => prompt?.set(info),
+            })
+            focusExit()
+          }),
+      },
+      {
+        name: "session.message.focus.copy",
+        title: "Copy message",
+        run: () =>
+          withFocused((messageID) => {
+            const text = MessageActions.collectText(sync, messageID)
+            if (!text) return
+            void Clipboard.copy(text)
+              .then(() => toast.show({ message: "Message copied to clipboard!", variant: "success" }))
+              .catch(() => toast.show({ message: "Failed to copy to clipboard", variant: "error" }))
+          }),
+      },
+      {
+        name: "session.message.focus.fork",
+        title: "Fork from message",
+        run: () =>
+          withFocused((messageID) => void MessageActions.fork({ sdk, sync, navigate, sessionID: route.sessionID, messageID })),
+      },
+    ].map((command) => ({ namespace: "palette", hidden: true, category: "Session", ...command })),
+  )
+
+  useBindings(() => ({ commands: focusCommands() }))
+  useBindings(() => ({
+    mode: OPENCODE_BASE_MODE,
+    bindings: tuiConfig.keybinds.gather("messages.focus.enter", ["session.message.focus.toggle"]),
+  }))
+  useBindings(() => ({
+    mode: FOCUS_MODE,
+    bindings: tuiConfig.keybinds.gather("messages.focus", [
+      "session.message.focus.toggle",
+      "session.message.focus.exit",
+      "session.message.focus.previous",
+      "session.message.focus.next",
+      "session.message.focus.actions",
+      "session.message.focus.revert",
+      "session.message.focus.copy",
+      "session.message.focus.fork",
+    ]),
+  }))
+
+  createEffect(() => {
+    if (!navMode()) return
+    const dispose = modeStack.push(FOCUS_MODE)
+    onCleanup(dispose)
+  })
+
+  createEffect(() => {
+    if (!navMode()) return
+    const current = focusedMessage()
+    if (!visible() || (current !== undefined && !navigableMessages().some((message) => message.id === current)))
+      focusExit()
+  })
+
+  onCleanup(cancelScrollAnimation)
+
   // snap to bottom when session changes
-  createEffect(on(() => route.sessionID, toBottom))
+  createEffect(
+    on(
+      () => route.sessionID,
+      () => {
+        cancelScrollAnimation()
+        setNavMode(false)
+        setFocusedMessage(undefined)
+        toBottom()
+      },
+    ),
+  )
 
   return (
     <PathFormatterProvider path={session()?.directory}>
@@ -1148,7 +1346,7 @@ export function Session() {
                     foregroundColor: theme.border,
                   },
                 }}
-                stickyScroll={true}
+                stickyScroll={!navMode()}
                 stickyStart="bottom"
                 flexGrow={1}
                 scrollAcceleration={scrollAcceleration()}
@@ -1223,6 +1421,8 @@ export function Session() {
                       <Match when={message.role === "user"}>
                         <UserMessage
                           index={index()}
+                          focused={focusedMessage() === message.id}
+                          navigating={navMode()}
                           onMouseUp={() => {
                             if (renderer.getSelection()?.getSelectedText()) return
                             dialog.replace(() => (
@@ -1277,6 +1477,7 @@ export function Session() {
                         toBottom()
                       }}
                       sessionID={route.sessionID}
+                      inert={navMode()}
                       right={<TuiPluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
                     />
                   </TuiPluginRuntime.Slot>
@@ -1326,6 +1527,8 @@ function UserMessage(props: {
   parts: Part[]
   onMouseUp: () => void
   index: number
+  focused?: boolean
+  navigating?: boolean
   pending?: string
 }) {
   const ctx = use()
@@ -1357,7 +1560,7 @@ function UserMessage(props: {
         <box
           id={props.message.id}
           border={["left"]}
-          borderColor={color()}
+          borderColor={props.focused ? color() : props.navigating ? theme.border : color()}
           customBorderChars={SplitBorder.customBorderChars}
           marginTop={props.index === 0 ? 0 : 1}
         >
@@ -1372,10 +1575,10 @@ function UserMessage(props: {
             paddingTop={1}
             paddingBottom={1}
             paddingLeft={2}
-            backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
+            backgroundColor={props.focused || hover() ? theme.backgroundElement : theme.backgroundPanel}
             flexShrink={0}
           >
-            <text fg={theme.text}>{text()}</text>
+            <text fg={props.navigating && !props.focused ? theme.textMuted : theme.text}>{text()}</text>
             <Show when={files().length}>
               <box flexDirection="row" paddingBottom={metadataVisible() ? 1 : 0} paddingTop={1} gap={1} flexWrap="wrap">
                 <For each={files()}>
