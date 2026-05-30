@@ -29,9 +29,6 @@ import { ModelID, ProviderID } from "./schema"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
-import { LocationServiceMap } from "@opencode-ai/core/location-layer"
-import { Policy } from "@opencode-ai/core/policy"
-import { AbsolutePath } from "@opencode-ai/core/schema"
 
 const log = Log.create({ service: "provider" })
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 10_000
@@ -1210,11 +1207,9 @@ export const layer = Layer.effect(
     const plugin = yield* Plugin.Service
     const modelsDevSvc = yield* ModelsDev.Service
     const runtimeFlags = yield* RuntimeFlags.Service
-    const locations = yield* LocationServiceMap
 
-    const state = yield* InstanceState.make<State>((ctx) =>
+    const state = yield* InstanceState.make<State>(() =>
       Effect.gen(function* () {
-        const policy = yield* Policy.Service
         using _ = log.time("state")
         const bridge = yield* EffectBridge.make()
         const cfg = yield* config.get()
@@ -1485,10 +1480,7 @@ export const layer = Layer.effect(
 
         for (const [id, provider] of Object.entries(providers)) {
           const providerID = ProviderID.make(id)
-          if (
-            !isProviderAllowed(providerID) ||
-            (yield* policy.evaluate("provider.use", providerID, "allow")) === "deny"
-          ) {
+          if (!isProviderAllowed(providerID)) {
             delete providers[providerID]
             continue
           }
@@ -1545,7 +1537,7 @@ export const layer = Layer.effect(
           modelLoaders,
           varsLoaders,
         }
-      }).pipe(Effect.provide(locations.get({ directory: AbsolutePath.make(ctx.directory) }))),
+      }),
     )
 
     const list = Effect.fn("Provider.list")(() => InstanceState.use(state, (s) => s.providers))
@@ -1881,7 +1873,6 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(ModelsDev.defaultLayer),
     Layer.provide(RuntimeFlags.defaultLayer),
-    Layer.provide(LocationServiceMap.layer),
   ),
 )
 
