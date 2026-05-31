@@ -867,40 +867,6 @@ it.instance(
   3_000,
 )
 
-it.instance(
-  "loop includes parentID on child session status events",
-  () =>
-    Effect.gen(function* () {
-      const { llm } = yield* useServerConfig(providerCfg)
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const events = yield* EventV2Bridge.Service
-      const ready = yield* Deferred.make<void>()
-
-      yield* llm.hang
-
-      const parent = yield* sessions.create({})
-      const child = yield* sessions.create({ parentID: parent.id })
-      yield* user(child.id, "hi")
-
-      const off = yield* events.listen((evt) => {
-        if (evt.type !== SessionStatus.Event.Status.type) return Effect.void
-        const data = evt.data as typeof SessionStatus.Event.Status.data.Type
-        if (data.sessionID !== child.id || data.status.type !== "busy") return Effect.void
-        if (data.parentID !== parent.id) return Effect.void
-        Deferred.doneUnsafe(ready, Effect.void)
-        return Effect.void
-      })
-      yield* Effect.addFinalizer(() => off)
-
-      const fiber = yield* prompt.loop({ sessionID: child.id }).pipe(Effect.forkChild)
-      yield* Deferred.await(ready).pipe(Effect.timeout("2 seconds"))
-      yield* prompt.cancel(child.id)
-      yield* Fiber.await(fiber)
-    }),
-  3_000,
-)
-
 // Cancel semantics
 
 it.instance(
