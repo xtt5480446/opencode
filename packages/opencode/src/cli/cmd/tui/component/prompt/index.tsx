@@ -405,12 +405,9 @@ export function Prompt(props: PromptProps) {
       // Only set agent if it's a primary agent (not a subagent)
       const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
       if (msg.agent && isPrimaryAgent) {
-        // Keep an explicitly configured agent (--agent flag or config "default_agent") instead
-        // of flipping to the session's last-used agent when navigating between sessions.
-        if (!args.agent && !sync.data.config.default_agent) local.agent.set(msg.agent)
-        // Keep an explicitly configured model (--model flag or config "model") instead of
-        // flipping to the session's last-used model when navigating between sessions.
-        if (msg.model && !args.model && !sync.data.config.model) {
+        // Keep command line --agent if specified.
+        if (!args.agent) local.agent.set(msg.agent)
+        if (msg.model) {
           local.model.set(msg.model)
           local.model.variant.set(msg.model.variant)
         }
