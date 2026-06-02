@@ -19,7 +19,11 @@ function goUpsellKeys(status: SessionStatus) {
   if (status.type !== "retry" || !status.action) return
   const { action } = status
   if (!GO_UPSELL_PROVIDERS.has(action.provider)) return
-  if (action.reason === "free_tier_limit") {
+  if (
+    action.reason === "free_tier_limit" ||
+    action.reason === "free_tier_go_subscriber" ||
+    action.reason === "free_tier_credit_available"
+  ) {
     return {
       lastSeenAt: GO_UPSELL_FREE_TIER_LAST_SEEN_AT,
       dontShow: GO_UPSELL_FREE_TIER_DONT_SHOW,
@@ -39,6 +43,7 @@ export function useUsageExceededDialogs() {
   const { params } = useSessionLayout()
   const { t, locale } = useI18n()
   const isEnglish = () => locale() === "en"
+  const useActionText = (reason: string) => isEnglish() || reason !== "free_tier_limit"
 
   const [goUpsellState, setGoUpsellState] = persisted(
     Persist.global("go-upsell"),
@@ -65,19 +70,31 @@ export function useUsageExceededDialogs() {
       if (seen && Date.now() - seen < GO_UPSELL_WINDOW) return
       if (goUpsellState[keys.dontShow]) return
 
-      if (action.reason === "free_tier_limit") {
+      if (
+        action.reason === "free_tier_limit" ||
+        action.reason === "free_tier_go_subscriber" ||
+        action.reason === "free_tier_credit_available"
+      ) {
         dialog.show(() => (
           <DialogUsageExceeded
-            title={isEnglish() ? action.title : t("dialog.usageExceeded.freeTier.title")}
-            description={isEnglish() ? action.message : t("dialog.usageExceeded.freeTier.description")}
-            actionLabel={isEnglish() ? action.label : t("dialog.usageExceeded.freeTier.actionLabel")}
+            title={useActionText(action.reason) ? action.title : t("dialog.usageExceeded.freeTier.title")}
+            description={
+              useActionText(action.reason) ? action.message : t("dialog.usageExceeded.freeTier.description")
+            }
+            actionLabel={
+              useActionText(action.reason) ? action.label : t("dialog.usageExceeded.freeTier.actionLabel")
+            }
             link={action.link}
             onClose={(dontShowAgain) => {
               setGoUpsellState(keys.lastSeenAt, Date.now())
               if (dontShowAgain) setGoUpsellState(keys.dontShow, Date.now())
-              else {
+              else if (action.reason === "free_tier_limit" || action.reason === "free_tier_go_subscriber") {
                 void import("../../components/dialog-connect-provider").then((x) =>
                   dialog.show(() => <x.DialogConnectProvider provider="opencode-go" />),
+                )
+              } else if (action.reason === "free_tier_credit_available") {
+                void import("../../components/dialog-select-model").then((x) =>
+                  dialog.show(() => <x.DialogSelectModel />),
                 )
               }
             }}

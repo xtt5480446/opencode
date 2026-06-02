@@ -1,4 +1,4 @@
-import { RateLimitError } from "./error"
+import { RateLimitError, type FreeUsageLimitMetadata } from "./error"
 import { buildRateLimitKey, getRedis } from "./redis"
 import { i18n } from "~/i18n"
 import { localeFromRequest } from "~/lib/language"
@@ -22,7 +22,7 @@ export function createRateLimiter(
   const key = buildRateLimitKey("key", zenApiKey, interval)
 
   return {
-    check: async () => {
+    check: async (_metadata?: FreeUsageLimitMetadata) => {
       const count = Number((await redis.mget<(string | number | null)[]>([key]))[0] ?? 0)
 
       if (count >= LIMIT) throw new RateLimitError(dict["zen.api.error.rateLimitExceeded"], 60)

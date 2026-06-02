@@ -12,7 +12,18 @@ class LimitError extends Error {
   }
 }
 export class RateLimitError extends LimitError {}
-export class FreeUsageLimitError extends LimitError {}
+export type FreeUsageLimitMetadata = {
+  workspace?: string
+  subscribedToGo?: boolean
+  hasCredits?: boolean
+}
+export class FreeUsageLimitError extends LimitError {
+  metadata: FreeUsageLimitMetadata
+  constructor(message: string, retryAfter?: number, metadata: FreeUsageLimitMetadata = {}) {
+    super(message, retryAfter)
+    this.metadata = metadata
+  }
+}
 export class BlackUsageLimitError extends LimitError {}
 
 type LimitName = "5 hour" | "weekly" | "monthly"

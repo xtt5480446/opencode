@@ -9,7 +9,16 @@ export type Err = ReturnType<NamedError["toObject"]>
 
 export const GO_UPSELL_MESSAGE = "Free usage exceeded, subscribe to Go"
 export const GO_UPSELL_URL = "https://opencode.ai/go"
-export type RetryReason = "free_tier_limit" | "account_rate_limit" | (string & {})
+const GO_PROVIDER_MESSAGE =
+  "Free usage exceeded. You're already subscribed to OpenCode Go; switch to the OpenCode Go provider to continue with higher usage limits."
+const PAID_MODEL_MESSAGE =
+  "Free usage exceeded. You have credits available; switch to a paid model to continue using your balance."
+export type RetryReason =
+  | "free_tier_limit"
+  | "free_tier_go_subscriber"
+  | "free_tier_credit_available"
+  | "account_rate_limit"
+  | (string & {})
 
 export type Retryable = {
   message: string
@@ -74,6 +83,32 @@ export function retryable(error: Err, provider: string) {
     // even when the provider SDK doesn't explicitly mark them as retryable.
     if (!error.data.isRetryable && !(status !== undefined && status >= 500)) return undefined
     if (error.data.responseBody?.includes("FreeUsageLimitError")) {
+      const body = parseJSON(error.data.responseBody)
+      const metadata = body?.metadata
+      if (metadata?.subscribedToGo === true) {
+        return {
+          message: GO_PROVIDER_MESSAGE,
+          action: {
+            reason: "free_tier_go_subscriber",
+            provider,
+            title: "Free limit reached",
+            message: GO_PROVIDER_MESSAGE,
+            label: "switch provider",
+          },
+        }
+      }
+      if (metadata?.hasCredits === true) {
+        return {
+          message: PAID_MODEL_MESSAGE,
+          action: {
+            reason: "free_tier_credit_available",
+            provider,
+            title: "Free limit reached",
+            message: PAID_MODEL_MESSAGE,
+            label: "switch model",
+          },
+        }
+      }
       return {
         message: GO_UPSELL_MESSAGE,
         action: {

@@ -1,4 +1,4 @@
-import { FreeUsageLimitError } from "./error"
+import { FreeUsageLimitError, type FreeUsageLimitMetadata } from "./error"
 import { logger } from "./logger"
 import { buildRateLimitKey, getRedis } from "./redis"
 import { i18n } from "~/i18n"
@@ -28,7 +28,7 @@ export function createRateLimiter(modelId: string, rateLimit: number | undefined
   let isNew = false
 
   return {
-    check: async () => {
+    check: async (metadata?: FreeUsageLimitMetadata) => {
       const counts = await redis.mget<(string | number | null)[]>(isDefaultModel ? [lifetimeKey, dailyKey] : [dailyKey])
       const lifetimeCount = isDefaultModel ? Number(counts[0] ?? 0) : 0
       const dailyCount = Number(counts[isDefaultModel ? 1 : 0] ?? 0)
@@ -37,7 +37,7 @@ export function createRateLimiter(modelId: string, rateLimit: number | undefined
       isNew = isDefaultModel && lifetimeCount < dailyLimit * 7
 
       if ((isNew && dailyCount >= dailyLimit * 2) || (!isNew && dailyCount >= dailyLimit))
-        throw new FreeUsageLimitError(dict["zen.api.error.rateLimitExceeded"], retryAfter)
+        throw new FreeUsageLimitError(dict["zen.api.error.rateLimitExceeded"], retryAfter, metadata)
     },
     track: async () => {
       const pipeline = redis.pipeline()

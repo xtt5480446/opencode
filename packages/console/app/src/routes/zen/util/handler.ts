@@ -120,8 +120,8 @@ export async function handler(
     const rateLimiter = modelInfo.allowAnonymous
       ? createIpRateLimiter(modelInfo.id, modelInfo.rateLimit, ip, input.request)
       : createKeyRateLimiter(modelInfo.id, modelInfo.rateLimit, zenApiKey, input.request)
-    await rateLimiter?.check()
     const authInfo = await authenticate(modelInfo, zenApiKey)
+    await rateLimiter?.check(freeUsageLimitMetadata(authInfo))
     const stickyId = sessionId ? sessionId : (authInfo?.workspaceID ?? ip)
     const stickyTracker = createStickyTracker(modelInfo.id, modelInfo.stickyProvider, stickyId)
     const stickyProvider = await stickyTracker?.get()
@@ -424,6 +424,8 @@ export async function handler(
                   workspace: error.workspace,
                   limitName: error.limitName,
                 }
+              : error instanceof FreeUsageLimitError
+                ? error.metadata
               : {},
         }),
         { status: 429, headers },
@@ -879,6 +881,15 @@ export async function handler(
       )
 
     return "balance"
+  }
+
+  function freeUsageLimitMetadata(authInfo: AuthInfo) {
+    if (!authInfo) return {}
+    return {
+      workspace: authInfo.workspaceID,
+      subscribedToGo: !!(authInfo.billing.lite || authInfo.lite),
+      hasCredits: authInfo.billing.balance > 0,
+    }
   }
 
   function validateModelSettings(billingSource: BillingSource, authInfo: AuthInfo) {

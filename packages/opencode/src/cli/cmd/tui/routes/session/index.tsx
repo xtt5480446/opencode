@@ -104,7 +104,11 @@ const GO_UPSELL_PROVIDERS = new Set(["opencode", "opencode-go"])
 function goUpsellKeys(action: SessionRetry.Retryable["action"]) {
   if (!action) return
   if (!GO_UPSELL_PROVIDERS.has(action.provider)) return
-  if (action.reason === "free_tier_limit") {
+  if (
+    action.reason === "free_tier_limit" ||
+    action.reason === "free_tier_go_subscriber" ||
+    action.reason === "free_tier_credit_available"
+  ) {
     return {
       lastSeenAt: GO_UPSELL_FREE_TIER_LAST_SEEN_AT,
       dontShow: GO_UPSELL_FREE_TIER_DONT_SHOW,

@@ -279,6 +279,60 @@ describe("session.retry.retryable", () => {
     })
   })
 
+  test("maps free limits for Go subscribers to Go provider action", () => {
+    const error = Schema.decodeUnknownSync(MessageV2.APIError.Schema)(
+      new MessageV2.APIError({
+        message: "Free usage exceeded",
+        isRetryable: true,
+        statusCode: 429,
+        responseBody: JSON.stringify({
+          type: "error",
+          error: { type: "FreeUsageLimitError", message: "Free usage exceeded" },
+          metadata: { subscribedToGo: true, hasCredits: true },
+        }),
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, "opencode")).toEqual({
+      message:
+        "Free usage exceeded. You're already subscribed to OpenCode Go; switch to the OpenCode Go provider to continue with higher usage limits.",
+      action: {
+        reason: "free_tier_go_subscriber",
+        provider: "opencode",
+        title: "Free limit reached",
+        message:
+          "Free usage exceeded. You're already subscribed to OpenCode Go; switch to the OpenCode Go provider to continue with higher usage limits.",
+        label: "switch provider",
+      },
+    })
+  })
+
+  test("maps free limits with credits to paid model action", () => {
+    const error = Schema.decodeUnknownSync(MessageV2.APIError.Schema)(
+      new MessageV2.APIError({
+        message: "Free usage exceeded",
+        isRetryable: true,
+        statusCode: 429,
+        responseBody: JSON.stringify({
+          type: "error",
+          error: { type: "FreeUsageLimitError", message: "Free usage exceeded" },
+          metadata: { hasCredits: true },
+        }),
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, "opencode")).toEqual({
+      message: "Free usage exceeded. You have credits available; switch to a paid model to continue using your balance.",
+      action: {
+        reason: "free_tier_credit_available",
+        provider: "opencode",
+        title: "Free limit reached",
+        message: "Free usage exceeded. You have credits available; switch to a paid model to continue using your balance.",
+        label: "switch model",
+      },
+    })
+  })
+
   test("maps Go subscription limits to workspace PAYG upsell", () => {
     const error = Schema.decodeUnknownSync(SessionLegacy.APIError.Schema)(
       new SessionLegacy.APIError({
