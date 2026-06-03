@@ -18,6 +18,7 @@ import { Npm } from "../npm"
 import { PluginV2 } from "../plugin"
 import { AccountPlugin } from "./account"
 import { AgentPlugin } from "./agent"
+import { CommandPlugin } from "./command"
 import { ConfigProviderPlugin } from "../config/plugin/provider"
 import { EnvPlugin } from "./env"
 import { ModelsDevPlugin } from "./models-dev"
@@ -92,6 +93,7 @@ export const layer = Layer.effect(
       yield* add(EnvPlugin)
       yield* add(AccountPlugin)
       yield* add(AgentPlugin.Plugin)
+      yield* add(CommandPlugin.Plugin)
       for (const item of ProviderPlugins) {
         yield* add(item)
       }

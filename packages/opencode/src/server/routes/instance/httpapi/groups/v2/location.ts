@@ -1,13 +1,15 @@
 import { Catalog } from "@opencode-ai/core/catalog"
+import { CommandV2 } from "@opencode-ai/core/command"
 import { Location } from "@opencode-ai/core/location"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { ProjectReference } from "@opencode-ai/core/project-reference"
+import { SkillV2 } from "@opencode-ai/core/skill"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { PluginBoot } from "@opencode-ai/core/plugin/boot"
 import { Effect, Layer, Schema } from "effect"
-import { HttpServerRequest } from "effect/unstable/http"
+import { HttpEffect, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiMiddleware, OpenApi } from "effect/unstable/httpapi"
 
 export const LocationQuery = Schema.Struct({
@@ -39,10 +41,12 @@ export class V2LocationMiddleware extends HttpApiMiddleware.Service<
   {
     provides:
       | Catalog.Service
+      | CommandV2.Service
       | PluginBoot.Service
       | PermissionV2.Service
       | ProjectReference.Service
       | FileSystem.Service
+      | SkillV2.Service
   }
 >()("@opencode/ExperimentalHttpApiV2Location") {}
 
@@ -63,7 +67,19 @@ export const layer = Layer.effect(
     return V2LocationMiddleware.of((effect) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
-        return yield* effect.pipe(Effect.provide(locations.get(ref(request))))
+        return yield* Effect.gen(function* () {
+          const location = yield* Location.Service
+          yield* HttpEffect.appendPreResponseHandler((_request, response) =>
+            Effect.succeed(
+              HttpServerResponse.setHeaders(response, {
+                "x-opencode-directory": location.directory,
+                "x-opencode-project-id": location.project.id,
+                ...(location.workspaceID ? { "x-opencode-workspace": location.workspaceID } : {}),
+              }),
+            ),
+          )
+          return yield* effect
+        }).pipe(Effect.provide(locations.get(ref(request))))
       }),
     )
   }),

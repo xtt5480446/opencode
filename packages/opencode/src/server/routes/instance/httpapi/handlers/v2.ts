@@ -9,6 +9,8 @@ import { providerHandlers } from "./v2/provider"
 import { sessionHandlers } from "./v2/session"
 import { permissionHandlers, savedPermissionHandlers, sessionPermissionHandlers } from "./v2/permission"
 import { fileSystemHandlers } from "./v2/fs"
+import { commandHandlers } from "./v2/command"
+import { skillHandlers } from "./v2/skill"
 
 export const v2Handlers = Layer.mergeAll(
   sessionHandlers,
@@ -19,6 +21,8 @@ export const v2Handlers = Layer.mergeAll(
   sessionPermissionHandlers,
   savedPermissionHandlers,
   fileSystemHandlers,
+  commandHandlers,
+  skillHandlers,
 ).pipe(
   Layer.provide(v2LocationLayer),
   Layer.provide(LocationServiceMap.layer),
