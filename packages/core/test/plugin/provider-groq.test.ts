@@ -83,11 +83,11 @@ describe("GroqPlugin", () => {
       const result = yield* aisdk.language(
         model("groq", "alias", {
           apiID: ModelV2.ID.make("llama-api"),
-          endpoint: {
+          api: {
             type: "aisdk",
             package: "@ai-sdk/groq",
           },
-          options: {
+          request: {
             headers: {},
             body: { apiKey: "test" },
           },

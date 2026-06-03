@@ -6,6 +6,7 @@ export interface ProviderResult {
   readonly headers?: Record<string, string>
   readonly body?: Record<string, unknown>
   readonly url?: string
+  readonly settings?: Record<string, unknown>
 }
 
 export interface Lowerer {
@@ -14,11 +15,14 @@ export interface Lowerer {
 }
 
 export function get(packageName?: string): Lowerer {
-  return lowerers[packageName ?? ""] ?? raw
+  const key = packageName ?? ""
+  return Object.hasOwn(lowerers, key) ? lowerers[key]! : raw
 }
 
 const raw: Lowerer = {
-  provider: body,
+  provider(options) {
+    return { body: clone(options) }
+  },
   request: clone,
 }
 
@@ -32,7 +36,8 @@ const openai: Lowerer = {
         "OpenAI-Project": string(options.project),
         ...headers(options.headers),
       }),
-      body: omit(options, ["apiKey", "baseURL", "organization", "project", "headers", "name", "fetch"]),
+      body: body(options.body),
+      settings: omit(options, ["apiKey", "baseURL", "organization", "project", "headers", "body"]),
     }
   },
   request: snake,
@@ -47,7 +52,8 @@ const anthropic: Lowerer = {
         Authorization: options.authToken ? bearer(options.authToken) : undefined,
         ...headers(options.headers),
       }),
-      body: omit(options, ["apiKey", "authToken", "baseURL", "headers", "name", "fetch", "generateId"]),
+      body: body(options.body),
+      settings: omit(options, ["apiKey", "authToken", "baseURL", "headers", "body"]),
     }
   },
   request(options) {
@@ -70,7 +76,8 @@ const google: Lowerer = {
     return {
       url: string(options.baseURL),
       headers: compact({ "x-goog-api-key": string(options.apiKey), ...headers(options.headers) }),
-      body: omit(options, ["apiKey", "baseURL", "headers", "name", "fetch", "generateId"]),
+      body: body(options.body),
+      settings: omit(options, ["apiKey", "baseURL", "headers", "body"]),
     }
   },
   request(options) {
@@ -87,7 +94,8 @@ const azure: Lowerer = {
     return {
       url: string(options.baseURL),
       headers: compact({ "api-key": string(options.apiKey), ...headers(options.headers) }),
-      body: omit(options, ["apiKey", "baseURL", "headers", "name", "fetch", "tokenProvider"]),
+      body: body(options.body),
+      settings: omit(options, ["apiKey", "baseURL", "headers", "body"]),
     }
   },
   request: openai.request,
@@ -95,7 +103,7 @@ const azure: Lowerer = {
 
 const bedrock: Lowerer = {
   provider(options) {
-    return { headers: headers(options.headers), body: omit(options, ["headers", "fetch"]) }
+    return direct(options)
   },
   request(options) {
     return { additionalModelRequestFields: clone(options) }
@@ -104,7 +112,7 @@ const bedrock: Lowerer = {
 
 const openaiCompatible: Lowerer = {
   provider(options) {
-    return { url: string(options.baseURL), headers: headers(options.headers), body: omit(options, ["baseURL", "headers", "name", "fetch"]) }
+    return { ...direct(options, ["baseURL"]), url: string(options.baseURL) }
   },
   request(options) {
     const result = clone(options)
@@ -136,8 +144,17 @@ const lowerers: Readonly<Record<string, Lowerer>> = {
   "venice-ai-sdk-provider": openaiCompatible,
 }
 
-function body(options: Options): ProviderResult {
-  return { body: clone(options) }
+function direct(options: Options, extraKeys: ReadonlyArray<string> = []): ProviderResult {
+  return {
+    headers: headers(options.headers),
+    body: body(options.body),
+    settings: omit(options, ["headers", "body", ...extraKeys]),
+  }
+}
+
+function body(input: unknown) {
+  if (!isRecord(input)) return undefined
+  return { ...input }
 }
 
 function snake(options: Options) {

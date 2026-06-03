@@ -52,11 +52,11 @@ describe("GooglePlugin", () => {
       const language = yield* aisdk.language(
         model("custom-google", "alias", {
           apiID: ModelV2.ID.make("gemini-api"),
-          endpoint: {
+          api: {
             type: "aisdk",
             package: "@ai-sdk/google",
           },
-          options: {
+          request: {
             headers: {},
             body: { apiKey: "test" },
           },

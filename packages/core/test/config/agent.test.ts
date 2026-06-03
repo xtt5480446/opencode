@@ -147,7 +147,7 @@ describe("ConfigAgentPlugin.Plugin", () => {
         steps: 12,
         model: { providerID: "anthropic", id: "claude-sonnet", variant: undefined },
       })
-      expect(reviewer.options).toEqual({
+      expect(reviewer.request).toEqual({
         headers: { first: "one", shared: "last", second: "two" },
         body: { enabled: true, profile: "review", retries: 2, effort: "high" },
       })

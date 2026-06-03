@@ -32,10 +32,10 @@ export const AccountPlugin = PluginV2.define({
               service: account.serviceID,
             }
             if (account.credential.type === "api") {
-              provider.options.body.apiKey = account.credential.key
-              Object.assign(provider.options.body, account.credential.metadata ?? {})
+              provider.request.body.apiKey = account.credential.key
+              Object.assign(provider.request.body, account.credential.metadata ?? {})
             }
-            if (account.credential.type === "oauth") provider.options.body.apiKey = account.credential.access
+            if (account.credential.type === "oauth") provider.request.body.apiKey = account.credential.access
           })
         }
       }),

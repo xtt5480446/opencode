@@ -4,7 +4,7 @@ import { Schema } from "effect"
 import { ProviderV2 } from "../provider"
 import { ModelV2 } from "../model"
 
-export class Options extends Schema.Class<Options>("ConfigV2.Provider.Options")({
+export class Request extends Schema.Class<Request>("ConfigV2.Provider.Request")({
   headers: Schema.Record(Schema.String, Schema.String).pipe(Schema.optional),
   body: Schema.Record(Schema.String, Schema.Unknown).pipe(Schema.optional),
 }) {}
@@ -34,15 +34,15 @@ class Model extends Schema.Class<Model>("ConfigV2.Model")({
   api_id: ModelV2.ID.pipe(Schema.optional),
   family: ModelV2.Family.pipe(Schema.optional),
   name: Schema.String.pipe(Schema.optional),
-  endpoint: ProviderV2.Endpoint.pipe(Schema.optional),
+  api: ProviderV2.Api.pipe(Schema.optional),
   capabilities: ModelV2.Capabilities.pipe(Schema.optional),
-  options: Schema.Struct({
-    ...Options.fields,
+  request: Schema.Struct({
+    ...Request.fields,
     variant: Schema.String.pipe(Schema.optional),
   }).pipe(Schema.optional),
   variants: Schema.Struct({
     id: ModelV2.VariantID,
-    ...Options.fields,
+    ...Request.fields,
   }).pipe(Schema.Array, Schema.optional),
   cost: Schema.Union([Cost, Cost.pipe(Schema.Array)]).pipe(Schema.optional),
   disabled: Schema.Boolean.pipe(Schema.optional),
@@ -52,7 +52,7 @@ class Model extends Schema.Class<Model>("ConfigV2.Model")({
 export class Info extends Schema.Class<Info>("ConfigV2.Provider")({
   name: Schema.String.pipe(Schema.optional),
   env: Schema.String.pipe(Schema.Array, Schema.optional),
-  endpoint: ProviderV2.Endpoint.pipe(Schema.optional),
-  options: Options.pipe(Schema.optional),
+  api: ProviderV2.Api.pipe(Schema.optional),
+  request: Request.pipe(Schema.optional),
   models: Schema.Record(Schema.String, Model).pipe(Schema.optional),
 }) {}

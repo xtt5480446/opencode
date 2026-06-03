@@ -112,7 +112,7 @@ function migrateAgent(info: ConfigAgentV1.Info) {
   return {
     model: info.model,
     variant: info.variant,
-    options: Object.keys(body).length ? { body } : undefined,
+    request: Object.keys(body).length ? { body } : undefined,
     system: info.prompt,
     description: info.description,
     mode: info.mode,
@@ -166,14 +166,15 @@ function migrateProvider(info: ConfigProviderV1.Info) {
   return {
     name: info.name,
     env: info.env,
-    endpoint: info.npm
+    api: info.npm
       ? {
           type: "aisdk" as const,
           package: info.npm,
           url: info.api ?? options.url,
+          settings: options.settings ?? {},
         }
       : undefined,
-    options: info.options && { headers: options.headers, body: options.body },
+    request: info.options && { headers: options.headers, body: options.body },
     models:
       info.models &&
       Object.fromEntries(Object.entries(info.models).map(([name, model]) => [name, migrateModel(model, info.npm)])),
@@ -207,11 +208,11 @@ function migrateModel(info: typeof ConfigProviderV1.Model.Type, packageName?: st
     api_id: info.id,
     family: info.family,
     name: info.name,
-    endpoint: info.provider?.npm
-      ? { type: "aisdk" as const, package: info.provider.npm, url: info.provider.api }
+    api: info.provider?.npm
+      ? { type: "aisdk" as const, package: info.provider.npm, url: info.provider.api, settings: {} }
       : undefined,
     capabilities,
-    options: (info.headers || info.options) && {
+    request: (info.headers || info.options) && {
       headers: info.headers,
       body: info.options && lowerer.request(info.options),
     },

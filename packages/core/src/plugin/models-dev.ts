@@ -62,14 +62,16 @@ export const ModelsDevPlugin = PluginV2.define({
           catalog.provider.update(providerID, (provider) => {
             provider.name = item.name
             provider.env = [...item.env]
-            provider.endpoint = item.npm
+            provider.api = item.npm
               ? {
                   type: "aisdk",
                   package: item.npm,
                   url: item.api,
                 }
               : {
-                  type: "unknown",
+                  type: "native",
+                  url: item.api,
+                  settings: {},
                 }
           })
 
@@ -78,14 +80,16 @@ export const ModelsDevPlugin = PluginV2.define({
             catalog.model.update(providerID, modelID, (draft) => {
               draft.name = model.name
               draft.family = model.family ? ModelV2.Family.make(model.family) : undefined
-              draft.endpoint = model.provider?.npm
+              draft.api = model.provider?.npm
                 ? {
                     type: "aisdk",
                     package: model.provider?.npm,
                     url: model.provider.api,
                   }
                 : {
-                    type: "unknown",
+                    type: "native",
+                    url: model.provider?.api,
+                    settings: {},
                   }
               draft.capabilities = {
                 tools: model.tool_call,

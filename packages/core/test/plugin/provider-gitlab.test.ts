@@ -190,7 +190,7 @@ describe("GitLabPlugin", () => {
             {
               model: model("gitlab", "claude"),
               package: "gitlab-ai-provider",
-              options: provider.options.body,
+              options: provider.request.body,
             },
             {},
           )
@@ -238,7 +238,7 @@ describe("GitLabPlugin", () => {
             {
               model: model("gitlab", "claude"),
               package: "gitlab-ai-provider",
-              options: provider.options.body,
+              options: provider.request.body,
             },
             {},
           )
@@ -256,7 +256,7 @@ describe("GitLabPlugin", () => {
         "aisdk.language",
         {
           model: model("gitlab", "duo-workflow-custom", {
-            options: {
+            request: {
               headers: {},
               body: { workflowRef: "ref", workflowDefinition: "definition" },
             },
@@ -319,7 +319,7 @@ describe("GitLabPlugin", () => {
         "aisdk.language",
         {
           model: model("gitlab", "duo-workflow-custom", {
-            options: {
+            request: {
               headers: {},
               body: { featureFlags: { request_flag: true } },
             },
@@ -348,7 +348,7 @@ describe("GitLabPlugin", () => {
         "aisdk.language",
         {
           model: model("gitlab", "claude", {
-            options: { headers: { h: "v" }, body: {}, },
+            request: { headers: { h: "v" }, body: {} },
           }),
           sdk: {
             workflowChat: () => undefined,

@@ -43,8 +43,8 @@ function testLayer(
 }
 
 const provider = {
-  endpoint: { type: "unknown" },
-  options: {
+  api: { type: "native", settings: {} },
+  request: {
     headers: {},
     body: {},
   },
@@ -68,6 +68,35 @@ describe("Config", () => {
         }),
         { numRuns: 100 },
       )
+    }),
+  )
+
+  it.effect("migrates v1 provider setup options into AISDK settings", () =>
+    Effect.sync(() => {
+      const migrated = ConfigMigrateV1.migrate({
+        provider: {
+          bedrock: {
+            npm: "@ai-sdk/amazon-bedrock",
+            options: {
+              headers: { "x-test": "1" },
+              body: { trace: true },
+              region: "us-east-1",
+              profile: "dev",
+            },
+          },
+        },
+      })
+
+      expect(migrated.providers?.bedrock?.api).toEqual({
+        type: "aisdk",
+        package: "@ai-sdk/amazon-bedrock",
+        url: undefined,
+        settings: { region: "us-east-1", profile: "dev" },
+      })
+      expect(migrated.providers?.bedrock?.request).toEqual({
+        headers: { "x-test": "1" },
+        body: { trace: true },
+      })
     }),
   )
 
@@ -195,7 +224,7 @@ describe("Config", () => {
                   reviewer: {
                     model: "openrouter/openai/gpt-5",
                     variant: "high",
-                    options: {
+                    request: {
                       headers: { "x-agent": "reviewer" },
                       body: { reasoningEffort: "high" },
                     },
@@ -275,22 +304,21 @@ describe("Config", () => {
               { action: "bash", resource: "*", effect: "ask" },
               { action: "bash", resource: "git status", effect: "allow" },
             ])
-            expect(documents[0]?.info.agents?.reviewer).toEqual({
-              model: "openrouter/openai/gpt-5",
-              variant: "high",
-              options: {
-                headers: { "x-agent": "reviewer" },
-                body: { reasoningEffort: "high" },
-              },
-              description: "Review changes for correctness",
-              system: "Find regressions.",
-              mode: "subagent",
-              hidden: false,
-              color: "warning",
-              steps: 12,
-              disabled: false,
-              permissions: [{ action: "edit", resource: "*", effect: "deny" }],
+            const reviewer = documents[0]?.info.agents?.reviewer
+            expect(reviewer?.model).toBe("openrouter/openai/gpt-5")
+            expect(reviewer?.variant).toBe("high")
+            expect(reviewer?.request).toEqual({
+              headers: { "x-agent": "reviewer" },
+              body: { reasoningEffort: "high" },
             })
+            expect(reviewer?.description).toBe("Review changes for correctness")
+            expect(reviewer?.system).toBe("Find regressions.")
+            expect(reviewer?.mode).toBe("subagent")
+            expect(reviewer?.hidden).toBe(false)
+            expect(reviewer?.color).toBe("warning")
+            expect(reviewer?.steps).toBe(12)
+            expect(reviewer?.disabled).toBe(false)
+            expect(reviewer?.permissions).toEqual([{ action: "edit", resource: "*", effect: "deny" }])
             expect(documents[0]?.info.snapshots).toBe(false)
             expect(documents[0]?.info.watcher).toEqual({ ignore: ["node_modules/**", "dist/**", ".git"] })
             expect(documents[0]?.info.formatter).toEqual({
@@ -437,7 +465,7 @@ describe("Config", () => {
             expect(documents[0]?.info.agents?.reviewer).toMatchObject({
               system: "Review changes.",
               disabled: true,
-              options: { body: { temperature: 0.2 } },
+              request: { body: { temperature: 0.2 } },
               permissions: [{ action: "read", resource: "*", effect: "allow" }],
             })
             expect(documents[0]?.info.plugins).toEqual([
@@ -448,17 +476,18 @@ describe("Config", () => {
             expect(documents[0]?.info.references).toEqual({ docs: { path: "../docs" } })
             expect(documents[0]?.info.attachments).toEqual({ image: { auto_resize: false, max_width: 1200 } })
             expect(documents[0]?.info.providers?.custom).toMatchObject({
-              options: { body: { apiKey: "secret" } },
+              request: { body: { apiKey: "secret" } },
               models: {
                 model: {
-                  options: { body: { reasoningEffort: "high" } },
+                  request: { body: { reasoningEffort: "high" } },
                   variants: [{ id: "fast", body: { temperature: 0.2 } }],
                 },
               },
             })
             expect(documents[0]?.info.providers?.openai).toMatchObject({
-              options: { headers: { Authorization: "Bearer secret", "OpenAI-Organization": "org" } },
-              models: { model: { options: { body: { reasoning_effort: "high", service_tier: "priority" } } } },
+              api: { settings: {} },
+              request: { headers: { Authorization: "Bearer secret", "OpenAI-Organization": "org" } },
+              models: { model: { request: { body: { reasoning_effort: "high", service_tier: "priority" } } } },
             })
             expect(documents[0]?.info.compaction).toEqual({
               auto: true,
