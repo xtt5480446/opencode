@@ -1,4 +1,5 @@
 import { ModelV2 } from "@opencode-ai/core/model"
+import { Location } from "@opencode-ai/core/location"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { ServiceUnavailableError } from "../../errors"
@@ -9,7 +10,7 @@ export const ModelGroup = HttpApiGroup.make("v2.model")
   .add(
     HttpApiEndpoint.get("models", "/api/model", {
       query: LocationQuery,
-      success: Schema.Array(ModelV2.Info),
+      success: Location.response(Schema.Array(ModelV2.Info)),
       error: ServiceUnavailableError,
     })
       .annotateMerge(locationQueryOpenApi)

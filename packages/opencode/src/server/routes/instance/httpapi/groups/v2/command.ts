@@ -1,4 +1,5 @@
 import { CommandV2 } from "@opencode-ai/core/command"
+import { Location } from "@opencode-ai/core/location"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { V2Authorization } from "../../middleware/authorization"
@@ -8,7 +9,7 @@ export const CommandGroup = HttpApiGroup.make("v2.command")
   .add(
     HttpApiEndpoint.get("commands", "/api/command", {
       query: LocationQuery,
-      success: Schema.Array(CommandV2.Info),
+      success: Location.response(Schema.Array(CommandV2.Info)),
     })
       .annotateMerge(locationQueryOpenApi)
       .annotateMerge(

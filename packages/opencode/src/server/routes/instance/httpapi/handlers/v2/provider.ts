@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../../api"
 import { ProviderNotFoundError, ServiceUnavailableError } from "../../errors"
+import { response } from "../../groups/v2/location"
 
 const catalogUnavailable = new ServiceUnavailableError({
   message: "Provider catalog is unavailable",
@@ -19,7 +20,7 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "v2.provid
           const catalog = yield* Catalog.Service
           const pluginBoot = yield* PluginBoot.Service
           yield* pluginBoot.wait().pipe(Effect.catchDefect(() => Effect.fail(catalogUnavailable)))
-          return yield* catalog.provider.available()
+          return yield* response(catalog.provider.available())
         }),
       )
       .handle(
@@ -28,7 +29,7 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "v2.provid
           const catalog = yield* Catalog.Service
           const pluginBoot = yield* PluginBoot.Service
           yield* pluginBoot.wait().pipe(Effect.catchDefect(() => Effect.fail(catalogUnavailable)))
-          return yield* catalog.provider.get(ctx.params.providerID).pipe(
+          return yield* response(catalog.provider.get(ctx.params.providerID)).pipe(
             Effect.catchTag("CatalogV2.ProviderNotFound", (error) =>
               Effect.fail(
                 new ProviderNotFoundError({

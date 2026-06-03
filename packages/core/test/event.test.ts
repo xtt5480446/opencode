@@ -5,6 +5,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { Project } from "@opencode-ai/core/project"
 import { eq } from "drizzle-orm"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
@@ -80,7 +81,11 @@ describe("EventV2", () => {
       expect(event.type).toBe("test.message")
       expect(event).not.toHaveProperty("version")
       expect(event.data).toEqual({ text: "hello" })
-      expect(event.location).toEqual({ directory: AbsolutePath.make("project"), workspaceID: "workspace" })
+      expect(event.location).toEqual({
+        directory: AbsolutePath.make("project"),
+        workspaceID: "workspace",
+        project: { id: Project.ID.global, directory: AbsolutePath.make("project") },
+      })
     }),
   )
 

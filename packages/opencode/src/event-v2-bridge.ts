@@ -3,6 +3,8 @@
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { GlobalBus } from "@/bus/global"
 import { EventV2 } from "@opencode-ai/core/event"
+import { Location } from "@opencode-ai/core/location"
+import { Project } from "@opencode-ai/core/project"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import "@opencode-ai/core/account"
 import "@opencode-ai/core/catalog"
@@ -24,10 +26,11 @@ export const layer = Layer.effect(
         const workspaceID = yield* WorkspaceRef
         return yield* events.publish(definition, data, {
           ...options,
-          location: {
+          location: new Location.Info({
             directory: AbsolutePath.make(ctx.directory),
             ...(workspaceID ? { workspaceID } : {}),
-          },
+            project: { id: Project.ID.make(ctx.project.id), directory: AbsolutePath.make(ctx.worktree) },
+          }),
         })
       })
 

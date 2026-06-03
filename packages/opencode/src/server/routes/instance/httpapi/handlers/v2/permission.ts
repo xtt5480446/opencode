@@ -9,6 +9,7 @@ import { Effect } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../../api"
 import { PermissionNotFoundError, SessionNotFoundError } from "../../errors"
+import { response } from "../../groups/v2/location"
 
 function missingRequest(id: PermissionV2.ID) {
   return new PermissionNotFoundError({ requestID: id, message: `Permission request not found: ${id}` })
@@ -19,7 +20,7 @@ export const permissionHandlers = HttpApiBuilder.group(InstanceHttpApi, "v2.perm
     return handlers.handle(
       "permissionRequests",
       Effect.fn(function* () {
-        return yield* (yield* PermissionV2.Service).list()
+        return yield* response((yield* PermissionV2.Service).list())
       }),
     )
   }),

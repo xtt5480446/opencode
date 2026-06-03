@@ -26,15 +26,16 @@ afterEach(async () => {
 })
 
 describe("v2 location HttpApi", () => {
-  test("returns command and skill snapshots with resolved location headers", async () => {
+  test("returns command and skill snapshots with resolved locations", async () => {
     await using tmp = await tmpdir({ git: true })
 
     for (const route of ["/api/command", "/api/skill"]) {
       const response = await request(route, tmp.path)
       expect(response.status).toBe(200)
-      expect(await response.json()).toBeArray()
-      expect(response.headers.get("x-opencode-directory")).toBe(tmp.path)
-      expect(response.headers.get("x-opencode-project-id")).toBeTruthy()
+      const body = (await response.json()) as { location: { directory: string; project: { id: string } }; data: unknown }
+      expect(body.data).toBeArray()
+      expect(body.location.directory).toBe(tmp.path)
+      expect(body.location.project.id).toBeTruthy()
     }
   })
 })

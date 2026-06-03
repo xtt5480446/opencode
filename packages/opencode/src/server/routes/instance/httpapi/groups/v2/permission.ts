@@ -1,4 +1,5 @@
 import { PermissionV2 } from "@opencode-ai/core/permission"
+import { Location } from "@opencode-ai/core/location"
 import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { SessionV2 } from "@opencode-ai/core/session"
@@ -12,7 +13,7 @@ export const PermissionGroup = HttpApiGroup.make("v2.permission")
   .add(
     HttpApiEndpoint.get("permissionRequests", "/api/permission/request", {
       query: LocationQuery,
-      success: Schema.Array(PermissionV2.Request),
+      success: Location.response(Schema.Array(PermissionV2.Request)),
     })
       .annotateMerge(locationQueryOpenApi)
       .annotateMerge(

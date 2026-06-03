@@ -9,7 +9,7 @@ import { SkillV2 } from "@opencode-ai/core/skill"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { PluginBoot } from "@opencode-ai/core/plugin/boot"
 import { Effect, Layer, Schema } from "effect"
-import { HttpEffect, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpServerRequest } from "effect/unstable/http"
 import { HttpApiMiddleware, OpenApi } from "effect/unstable/httpapi"
 
 export const LocationQuery = Schema.Struct({
@@ -35,6 +35,20 @@ export const locationQueryOpenApi = OpenApi.annotations({
     }
   },
 })
+
+export function response<A, E, R>(data: Effect.Effect<A, E, R>) {
+  return Effect.gen(function* () {
+    const location = yield* Location.Service
+    return {
+      location: new Location.Info({
+        directory: location.directory,
+        workspaceID: location.workspaceID,
+        project: location.project,
+      }),
+      data: yield* data,
+    }
+  })
+}
 
 export class V2LocationMiddleware extends HttpApiMiddleware.Service<
   V2LocationMiddleware,
@@ -67,19 +81,7 @@ export const layer = Layer.effect(
     return V2LocationMiddleware.of((effect) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
-        return yield* Effect.gen(function* () {
-          const location = yield* Location.Service
-          yield* HttpEffect.appendPreResponseHandler((_request, response) =>
-            Effect.succeed(
-              HttpServerResponse.setHeaders(response, {
-                "x-opencode-directory": location.directory,
-                "x-opencode-project-id": location.project.id,
-                ...(location.workspaceID ? { "x-opencode-workspace": location.workspaceID } : {}),
-              }),
-            ),
-          )
-          return yield* effect
-        }).pipe(Effect.provide(locations.get(ref(request))))
+        return yield* effect.pipe(Effect.provide(locations.get(ref(request))))
       }),
     )
   }),

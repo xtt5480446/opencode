@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../../api"
 import { ServiceUnavailableError } from "../../errors"
+import { response } from "../../groups/v2/location"
 
 const catalogUnavailable = new ServiceUnavailableError({
   message: "Model catalog is unavailable",
@@ -18,7 +19,7 @@ export const modelHandlers = HttpApiBuilder.group(InstanceHttpApi, "v2.model", (
         const catalog = yield* Catalog.Service
         const pluginBoot = yield* PluginBoot.Service
         yield* pluginBoot.wait().pipe(Effect.catchDefect(() => Effect.fail(catalogUnavailable)))
-        return yield* catalog.model.available()
+        return yield* response(catalog.model.available())
       }),
     )
   }),

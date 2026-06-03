@@ -10,14 +10,21 @@ export const Ref = Schema.Struct({
 }).annotate({ identifier: "Location.Ref" })
 export type Ref = typeof Ref.Type
 
-export interface Interface {
-  readonly directory: AbsolutePath
-  readonly workspaceID?: string
-  readonly project: {
-    readonly id: Project.ID
-    readonly directory: AbsolutePath
-  }
+export class Info extends Schema.Class<Info>("Location.Info")({
+  directory: AbsolutePath,
+  workspaceID: Schema.String.pipe(Schema.optional),
+  project: Schema.Struct({
+    id: Project.ID,
+    directory: AbsolutePath,
+  }),
+}) {}
+
+export interface Interface extends Info {
   readonly vcs?: Project.Vcs
+}
+
+export function response<S extends Schema.Top>(data: S) {
+  return Schema.Struct({ location: Info, data })
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Location") {}

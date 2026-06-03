@@ -1,4 +1,5 @@
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { Location } from "@opencode-ai/core/location"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { ProviderNotFoundError, ServiceUnavailableError } from "../../errors"
@@ -9,7 +10,7 @@ export const ProviderGroup = HttpApiGroup.make("v2.provider")
   .add(
     HttpApiEndpoint.get("providers", "/api/provider", {
       query: LocationQuery,
-      success: Schema.Array(ProviderV2.Info),
+      success: Location.response(Schema.Array(ProviderV2.Info)),
       error: ServiceUnavailableError,
     })
       .annotateMerge(locationQueryOpenApi)
@@ -25,7 +26,7 @@ export const ProviderGroup = HttpApiGroup.make("v2.provider")
     HttpApiEndpoint.get("provider", "/api/provider/:providerID", {
       params: { providerID: ProviderV2.ID },
       query: LocationQuery,
-      success: ProviderV2.Info,
+      success: Location.response(ProviderV2.Info),
       error: [ProviderNotFoundError, ServiceUnavailableError],
     })
       .annotateMerge(locationQueryOpenApi)

@@ -30,7 +30,7 @@ export type Payload<D extends Definition = Definition> = {
   readonly type: D["type"]
   readonly data: Data<D>
   readonly version?: number
-  readonly location?: Location.Ref
+  readonly location?: Location.Info
   readonly metadata?: Record<string, unknown>
 }
 
@@ -77,7 +77,7 @@ export function define<const Type extends string, Fields extends Schema.Struct.F
     metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
     type: Schema.Literal(input.type),
     version: Schema.optional(Schema.Number),
-    location: Schema.optional(Location.Ref),
+    location: Schema.optional(Location.Info),
     data: Data,
   }).annotate({ identifier: input.type })
 
@@ -106,7 +106,7 @@ export function definitions() {
 export interface PublishOptions {
   readonly id?: ID
   readonly metadata?: Record<string, unknown>
-  readonly location?: Location.Ref
+  readonly location?: Location.Info
 }
 
 export interface Interface {
@@ -264,7 +264,11 @@ export const layer = Layer.effect(
         const location =
           options?.location ??
           (serviceLocation
-            ? { directory: serviceLocation.directory, workspaceID: serviceLocation.workspaceID }
+            ? new Location.Info({
+                directory: serviceLocation.directory,
+                workspaceID: serviceLocation.workspaceID,
+                project: serviceLocation.project,
+              })
             : undefined)
         return yield* publishEvent({
           id: options?.id ?? ID.create(),

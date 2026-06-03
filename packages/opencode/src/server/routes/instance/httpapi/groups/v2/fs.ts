@@ -1,4 +1,5 @@
 import { FileSystem } from "@opencode-ai/core/filesystem"
+import { Location } from "@opencode-ai/core/location"
 import { RelativePath } from "@opencode-ai/core/schema"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
@@ -21,7 +22,7 @@ export const FileSystemGroup = HttpApiGroup.make("v2.fs")
   .add(
     HttpApiEndpoint.get("read", "/api/fs/read", {
       query: ReadQuery,
-      success: FileSystem.Content,
+      success: Location.response(FileSystem.Content),
     })
       .annotateMerge(locationQueryOpenApi)
       .annotateMerge(
@@ -35,7 +36,7 @@ export const FileSystemGroup = HttpApiGroup.make("v2.fs")
   .add(
     HttpApiEndpoint.get("list", "/api/fs/list", {
       query: ListQuery,
-      success: Schema.Array(FileSystem.Entry),
+      success: Location.response(Schema.Array(FileSystem.Entry)),
     })
       .annotateMerge(locationQueryOpenApi)
       .annotateMerge(
