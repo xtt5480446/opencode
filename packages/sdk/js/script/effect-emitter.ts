@@ -57,13 +57,13 @@ function generateEffectClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
         .map((name) => `  ${name},`),
       `} from "./types.gen.js"`,
       ``,
-      `export type OpencodeEffectOptions<TData extends TDataShape, TResponse> = Omit<`,
+      `export type ${ctx.namespacePascal}EffectOptions<TData extends TDataShape, TResponse> = Omit<`,
       `  Options<TData, true, TResponse, "data">,`,
       `  "responseStyle" | "throwOnError"`,
       `>`,
       ``,
       `export interface ${ctx.namespacePascal}EffectClient {`,
-      ...spec.services.flatMap((service) => serviceShape(service, sse)),
+      ...spec.services.flatMap((service) => serviceShape(service, sse, `${ctx.namespacePascal}EffectOptions`)),
       `}`,
       ``,
       `export function create${ctx.namespacePascal}EffectClient(client: Client): ${ctx.namespacePascal}EffectClient {`,
@@ -82,10 +82,13 @@ function generateEffectClient(spec: ApiSpec, ctx: EmitterContext): GeneratedFile
   }
 }
 
-function serviceShape(service: Service, sse: Set<string>) {
+function serviceShape(service: Service, sse: Set<string>, optionsType: string) {
   return [
     `  ${propertyName(service.name)}: {`,
-    ...service.operations.flatMap((operation) => [doc(operation, "    "), `    ${methodSignature(operation, sse)}`]),
+    ...service.operations.flatMap((operation) => [
+      doc(operation, "    "),
+      `    ${methodSignature(operation, sse, optionsType)}`,
+    ]),
     `  }`,
   ]
 }
@@ -100,9 +103,9 @@ function serviceFactory(service: Service, sse: Set<string>) {
   ]
 }
 
-function methodSignature(operation: Operation, sse: Set<string>) {
+function methodSignature(operation: Operation, sse: Set<string>, optionsType: string) {
   const optional = hasRequiredOptions(operation) ? "" : "?"
-  return `${propertyName(operation.name)}(options${optional}: OpencodeEffectOptions<${operationType(
+  return `${propertyName(operation.name)}(options${optional}: ${optionsType}<${operationType(
     operation,
   )}Data, ${operationType(operation)}Responses>): Effect.Effect<${operationResponse(operation, sse)}, ${operationError(
     operation,
