@@ -168,22 +168,9 @@ export const SessionContextEpochTable = sqliteTable("session_context_epoch", {
     .$type<SessionSchema.ID>()
     .primaryKey()
     .references(() => SessionTable.id, { onDelete: "cascade" }),
-  baseline: text({ mode: "json" }).notNull().$type<ReadonlyArray<SystemContext.Part>>(),
-  checkpoint: text({ mode: "json" }).notNull().$type<SystemContext.Checkpoint>(),
+  baseline: text().notNull(),
+  snapshot: text({ mode: "json" }).notNull().$type<SystemContext.Snapshot>(),
   baseline_seq: integer().notNull(),
   replacement_seq: integer(),
   revision: integer().notNull().default(0),
 })
-
-export const SessionContextMessageTable = sqliteTable(
-  "session_context_message",
-  {
-    session_id: text()
-      .$type<SessionSchema.ID>()
-      .notNull()
-      .references(() => SessionTable.id, { onDelete: "cascade" }),
-    seq: integer().notNull(),
-    parts: text({ mode: "json" }).notNull().$type<ReadonlyArray<SystemContext.Part>>(),
-  },
-  (table) => [primaryKey({ columns: [table.session_id, table.seq] })],
-)

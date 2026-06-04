@@ -30,41 +30,48 @@ describe("SessionSystemContext", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(timestamp)
       const context = yield* SessionSystemContext.Service
-      const initialized = SystemContext.initialize(yield* context.load())
+      const initialized = yield* SystemContext.initialize(yield* context.load())
 
-      expect(initialized.baseline).toEqual([
-        {
-          key: SystemContext.Key.make("core/environment"),
-          text: [
-            "Here is some useful information about the environment you are running in:",
-            "<env>",
-            `  Working directory: ${directory}`,
-            `  Workspace root folder: ${projectDirectory}`,
-            "  Is directory a git repo: yes",
-            `  Platform: ${process.platform}`,
-            "</env>",
-          ].join("\n"),
-        },
-        { key: SystemContext.Key.make("core/date"), text: `Today's date: ${localDate(timestamp)}` },
-      ])
+      expect(initialized.baseline).toBe(
+        [
+          "Here is some useful information about the environment you are running in:",
+          "<env>",
+          `  Working directory: ${directory}`,
+          `  Workspace root folder: ${projectDirectory}`,
+          "  Is directory a git repo: yes",
+          `  Platform: ${process.platform}`,
+          "</env>",
+          "",
+          `Today's date: ${localDate(timestamp)}`,
+        ].join("\n"),
+      )
     }),
   )
 
-  it.effect("refreshes the date without repeating unchanged environment context", () =>
+  it.effect("reconciles the date without repeating unchanged environment context", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(timestamp)
       const context = yield* SessionSystemContext.Service
-      const initialized = SystemContext.initialize(yield* context.load())
+      const initialized = yield* SystemContext.initialize(yield* context.load())
 
       yield* TestClock.setTime(timestamp + 24 * 60 * 60 * 1000)
-      const refreshed = SystemContext.refresh(yield* context.load(), initialized.checkpoint)
+      const refreshed = yield* SystemContext.reconcile(yield* context.load(), initialized.snapshot)
 
-      expect(refreshed.changes).toEqual([
-        {
-          key: SystemContext.Key.make("core/date"),
-          text: `Today's date is now: ${localDate(timestamp + 24 * 60 * 60 * 1000)}`,
-        },
-      ])
+      expect(refreshed).toMatchObject({
+        _tag: "Updated",
+        text: `Today's date is now: ${localDate(timestamp + 24 * 60 * 60 * 1000)}`,
+      })
+    }),
+  )
+
+  it.effect("does not update again within the same local calendar day", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(timestamp)
+      const context = yield* SessionSystemContext.Service
+      const initialized = yield* SystemContext.initialize(yield* context.load())
+
+      yield* TestClock.setTime(timestamp + 60 * 60 * 1000)
+      expect(yield* SystemContext.reconcile(yield* context.load(), initialized.snapshot)).toEqual({ _tag: "Unchanged" })
     }),
   )
 })

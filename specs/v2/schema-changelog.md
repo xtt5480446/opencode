@@ -687,23 +687,23 @@ Compatibility:
 - Foreground V2 bash execution is unchanged.
 - Reintroduce background bash only with durable status observation, completion delivery, and explicit cancellation semantics.
 
-## 2026-06-04: Initialize Durable Session Context Epochs
+## 2026-06-04: Add Durable Session Context Snapshots
 
 Affected schema:
 
-- Add synchronized `session.next.context.initialized.1` Session events.
-- Add `session_context_epoch` for one active immutable keyed baseline, component-hash checkpoint, and baseline sequence per Session.
+- Add `session_context_epoch` for one active immutable baseline string, structured JSON snapshot, and baseline sequence per Session.
 
 Change:
 
-- Lazily initialize one durable Context Epoch at the first safe provider-turn boundary.
-- Lower its exact keyed baseline parts through `LLMRequest.system` for every provider turn in the epoch.
+- Lazily initialize one durable Context Epoch snapshot at the first safe provider-turn boundary.
+- Lower its exact baseline string through `LLMRequest.system` for every provider turn in the epoch.
 - Reuse the stored baseline verbatim after restart or producer changes instead of resampling privileged initial context.
-- Keep ordinary Session transcript APIs unchanged.
+- Compare later observations against an overwriteable codec-encoded structured snapshot rather than rendered-text hashes.
+- Expose admitted chronological context as first-class `system` Session messages while keeping the active baseline in bounded context state.
 
 Compatibility:
 
-- The unpublished Context Epoch schema is consolidated into one database migration and this adds one synchronized Session event type.
+- The unpublished Context Epoch schema is consolidated into one database migration; baseline and structured snapshots are operational state rather than synchronized event history.
 - Existing experimental V2 Session databases remain disposable across incompatible pre-launch event-schema changes.
 - Chronological context updates, replacement epochs after compaction or model switches, project instructions, skills guidance, and plugin transforms remain follow-up slices.
 
@@ -711,21 +711,21 @@ Compatibility:
 
 Affected schema:
 
-- Add synchronized `session.next.context.updated.1` Session events.
-- Add `session_context_epoch.revision` for transactional checkpoint advancement.
-- Add `session_context_message` for hidden chronological keyed context updates ordered by Session aggregate sequence.
+- Add synchronized `session.next.context.updated.1` Session events containing only exact combined model-visible text.
+- Add `session_context_epoch.revision` for transactional structured-snapshot advancement.
+- Add the first-class `system` Session message projection for chronological context updates.
 
 Change:
 
-- Refresh Location-scoped Context Components at each safe provider-turn boundary.
-- Keep the stored baseline immutable while admitting changed component values as runner-private chronological `Message.system(...)` history.
-- Emit an explicit tombstone update and advance component-hash checkpoints transactionally when a component is removed.
-- Keep ordinary Session transcript APIs unchanged while runner history merges visible Session messages and hidden context updates by durable aggregate sequence.
+- Reconcile Location-scoped Context Sources at each safe provider-turn boundary using one coherent observation.
+- Keep the stored baseline immutable while admitting changed source renderings as chronological `Message.system(...)` history.
+- Advance the overwriteable structured snapshot atomically with the rendered System-message event.
+- Emit the previously stored model-meaningful removal rendering when a source is removed.
 - Reject chronological system updates that would split a local tool call from its result across provider protocols; use wrapped user fallback when Anthropic native system-update placement is unsupported.
 
 Compatibility:
 
-- The unpublished Context Epoch schema remains consolidated into one database migration and this adds one synchronized Session event type.
+- The synchronized event log retains only text actually shown to the model, not internal structured snapshots.
 - Existing experimental V2 Session databases remain disposable across incompatible pre-launch event-schema changes.
 - Replacement epochs after compaction or model switches, project instructions, skills guidance, and plugin transforms remain follow-up slices.
 
@@ -733,18 +733,17 @@ Compatibility:
 
 Affected schema:
 
-- Add synchronized `session.next.context.replaced.1` Session events.
 - Add nullable `session_context_epoch.replacement_seq` for idempotent lazy replacement requests.
 
 Change:
 
 - Mark the active Context Epoch for replacement after a model switch or completed compaction projection.
 - Persist the triggering aggregate sequence so same-target replay cannot reopen an already-settled replacement.
-- Render and persist the fresh immutable baseline lazily at the next safe provider-turn boundary.
-- Exclude hidden chronological updates from earlier epochs when assembling active provider history.
+- Render and overwrite the fresh immutable baseline and structured snapshot lazily at the next safe provider-turn boundary.
+- Exclude chronological System messages from earlier epochs when assembling active provider history.
 
 Compatibility:
 
-- The unpublished Context Epoch schema remains consolidated into one database migration and this adds one synchronized Session event type.
+- Baseline replacement is bounded operational state and does not add permanent synchronized events.
 - Existing experimental V2 Session databases remain disposable across incompatible pre-launch event-schema changes.
 - Compaction execution, project instructions, skills guidance, and plugin transforms remain follow-up slices.

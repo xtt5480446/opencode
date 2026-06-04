@@ -27,7 +27,7 @@ Watcher-backed caches are a later efficiency optimization for roots with proven 
 | `EventV2.subscribe(...)`            | Expose advisory events as scoped Effect streams.                                                                                 |
 | `State.create(...)`                 | Rebuild replayable plugin and config contribution state from scoped transforms.                                                  |
 | `SynchronizedRef.modifyEffect(...)` | Serialize effectful state refresh and store the next value only after success.                                                   |
-| `SystemContext`                     | Convert coherent source samples into immutable baseline parts, chronological updates, unavailable state, and removal tombstones. |
+| `SystemContext`                     | Convert coherent source samples into one immutable baseline, chronological updates, unavailable state, and removal tombstones.   |
 | `LocationServiceMap`                | Own and clean up Location-scoped services, watcher subscriptions, and observation caches together.                               |
 
 The missing reusable piece is deliberately small: retain the last successful value, mark it stale, and serialize refresh attempts.
@@ -128,7 +128,7 @@ sequenceDiagram
 
 ## Observation Units
 
-Compose refreshables around coherent observations that share one invalidation policy. Do not create one uniformly per rendered Context Component or one aggregate cache for unrelated source kinds.
+Compose refreshables around coherent observations that share one invalidation policy. Do not create one uniformly per rendered Context Source or one aggregate cache for unrelated source kinds.
 
 ```text
 local built-in discovery
@@ -153,13 +153,13 @@ Add a Location-scoped service:
 
 ```ts
 export interface InstructionContext.Interface {
-  readonly loadAmbient: () => Effect.Effect<ReadonlyArray<SystemContext.Component>>
+  readonly loadAmbient: () => Effect.Effect<SystemContext.SystemContext>
 }
 ```
 
 `InstructionContext` owns instruction discovery, stable source identity, deterministic ordering, and source loading. `SystemContext` remains unaware of files and URLs.
 
-Each effective source becomes one independently keyed component:
+Each effective instruction becomes one independently keyed `SystemContext.Source<string>` closed into the aggregate context with `SystemContext.make(...)`:
 
 ```text
 core/instructions/file/<stable-hash-of-normalized-absolute-path>
@@ -192,7 +192,7 @@ sequenceDiagram
   Runner->>Instructions: loadAmbient
   Instructions->>Files: discover and read AGENTS.md files
   Files-->>Instructions: coherent current observation
-  Instructions-->>Runner: independently keyed components
+  Instructions-->>Runner: composed SystemContext
   Runner->>Epoch: compare and durably admit changes
 ```
 
@@ -208,19 +208,19 @@ observation
 -> what bytes or temporary failure does each identity currently produce?
 ```
 
-| Observation                                                    | Component outcome                                                                                               |
+| Observation                                                    | Source outcome                                                                                                  |
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Local scan succeeds and discovers readable file                | Available component with exact contents.                                                                        |
-| Local scan succeeds and a previously discovered file is absent | Remove component so `SystemContext` emits a tombstone.                                                          |
+| Local scan succeeds and discovers readable file                | Available source with exact contents.                                                                           |
+| Local scan succeeds and a previously discovered file is absent | Remove source so `SystemContext` emits a tombstone.                                                             |
 | Local scan fails transiently                                   | Preserve the domain-owned prior source graph as unavailable or fail the current turn; never emit mass removals. |
-| Known local file read fails transiently                        | Preserve the component as `SystemContext.unavailable`.                                                          |
+| Known local file read fails transiently                        | Preserve the source as `SystemContext.unavailable`.                                                             |
 | Known local file read reports not-found after discovery        | Invalidate discovery and report unavailable until a coherent rescan confirms removal.                           |
 | Empty local file                                               | Available exact content, not absence.                                                                           |
-| URL returns `2xx` body                                         | Available component with exact contents.                                                                        |
+| URL returns `2xx` body                                         | Available source with exact contents.                                                                           |
 | URL times out or returns transient failure                     | `SystemContext.unavailable`.                                                                                    |
 | URL returns `404` or `410`                                     | Decide the explicit removal contract before URL implementation.                                                 |
 
-Instruction removal text must be model-meaningful. If instruction component keys hash source identities, add source-specific removal rendering before unlink support is considered complete:
+Instruction removal text must be model-meaningful. If instruction source keys hash source identities, add source-specific removal rendering before unlink support is considered complete:
 
 ```text
 Instructions removed: /repo/packages/core/AGENTS.md
@@ -234,7 +234,7 @@ Implement only:
 ```text
 global config AGENTS.md
 + upward project AGENTS.md ancestors
-+ one keyed component per file
++ one keyed source per file
 + direct safe-turn observation
 ```
 
@@ -263,7 +263,7 @@ empty file
 transient scan failure
 transient file-read failure
 deterministic ordering
-restart with durable checkpoint
+restart with durable structured snapshots
 ```
 
 ## Future Watcher Optimization
@@ -316,7 +316,7 @@ Start with direct safe-turn loading:
 ```text
 safe provider-turn boundary
 -> fetch URL
--> emit available or unavailable component
+-> emit available or unavailable source
 ```
 
 If measurements show excessive requests, add a URL-specific invalidation policy later:
@@ -375,7 +375,7 @@ Nested instructions discovered after successful read-tool activity remain a Sess
 1. Add and unit-test `Refreshable.make(load)` with `get` and `invalidate`.
 2. Add model-meaningful instruction removal rendering support before unlink lands.
 3. Add Location-scoped `InstructionContext` for global and upward project `AGENTS.md` only.
-4. Compose instruction components into `SessionSystemContext.load()`.
+4. Compose instruction sources into `SessionSystemContext.load()`.
 5. Observe local instructions directly at each safe provider boundary.
 6. Test add, edit, unlink, empty file, transient scan failure, transient read failure, restart, and deterministic ordering.
 7. Add configured local exact paths and globs.
@@ -386,11 +386,10 @@ Nested instructions discovered after successful read-tool activity remain a Sess
 
 ## Open Questions
 
-1. Should source-specific removal rendering extend `SystemContext.Component`, or should `InstructionContext` retain removal metadata in a separate component registry?
-2. Should the first local scan failure preserve prior discovered sources as unavailable, or fail the current provider turn until a coherent rescan succeeds?
-3. Should configured URL sources treat `404` and `410` as confirmed removals?
-4. What root-specific watcher API cleanly models ignore policy and callback health?
-5. Should own-process file mutations publish an advisory invalidation event synchronously after commit?
+1. Should the first local scan failure preserve prior discovered sources as unavailable, or fail the current provider turn until a coherent rescan succeeds?
+2. Should configured URL sources treat `404` and `410` as confirmed removals?
+3. What root-specific watcher API cleanly models ignore policy and callback health?
+4. Should own-process file mutations publish an advisory invalidation event synchronously after commit?
 
 ## Compression Line
 

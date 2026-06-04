@@ -1,11 +1,11 @@
 export * as SessionSystemContext from "./session-system-context"
 
-import { Context, DateTime, Effect, Layer } from "effect"
+import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { Location } from "./location"
 import { SystemContext } from "./system-context"
 
 export interface Interface {
-  readonly load: () => Effect.Effect<SystemContext.Snapshot>
+  readonly load: () => Effect.Effect<SystemContext.SystemContext>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionSystemContext") {}
@@ -22,32 +22,25 @@ export const layer = Layer.effect(
       `  Platform: ${process.platform}`,
       "</env>",
     ].join("\n")
-    const context = SystemContext.struct({
-      environment: SystemContext.value({
+    const context = SystemContext.combine([
+      SystemContext.make({
         key: SystemContext.Key.make("core/environment"),
-        load: Effect.succeed({
-          baseline: ["Here is some useful information about the environment you are running in:", environment].join(
-            "\n",
-          ),
-          update: ["The environment you are running in is now:", environment].join("\n"),
-        }),
+        codec: Schema.toCodecJson(Schema.String),
+        load: Effect.succeed(environment),
+        baseline: (environment) =>
+          ["Here is some useful information about the environment you are running in:", environment].join("\n"),
+        update: (_previous, environment) => ["The environment you are running in is now:", environment].join("\n"),
       }),
-      date: SystemContext.value({
+      SystemContext.make({
         key: SystemContext.Key.make("core/date"),
-        load: DateTime.nowAsDate.pipe(
-          Effect.map((date) => ({
-            baseline: `Today's date: ${date.toDateString()}`,
-            update: `Today's date is now: ${date.toDateString()}`,
-          })),
-        ),
+        codec: Schema.toCodecJson(Schema.String),
+        load: DateTime.nowAsDate.pipe(Effect.map((date) => date.toDateString())),
+        baseline: (date) => `Today's date: ${date}`,
+        update: (_previous, date) => `Today's date is now: ${date}`,
       }),
-    })
+    ])
 
-    return Service.of({
-      load: Effect.fn("SessionSystemContext.load")(function* () {
-        return yield* SystemContext.load(context)
-      }),
-    })
+    return Service.of({ load: () => Effect.succeed(context) })
   }),
 )
 

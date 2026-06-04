@@ -16,7 +16,7 @@ export interface Interface {
   readonly runnerContext: (
     sessionID: SessionSchema.ID,
     baselineSeq: number,
-  ) => Effect.Effect<SessionContext.RunnerMessage[], MessageDecodeError>
+  ) => Effect.Effect<SessionMessage.Message[], MessageDecodeError>
   readonly message: (
     messageID: SessionMessage.ID,
   ) => Effect.Effect<{ readonly sessionID: SessionSchema.ID; readonly message: SessionMessage.Message } | undefined>

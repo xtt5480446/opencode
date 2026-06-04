@@ -133,6 +133,7 @@ const table = sqliteTable("session", {
 
 - Avoid mocks as much as possible
 - Test actual implementation, do not duplicate logic into tests
+- In `packages/core/test`, define tests with the shared `it.effect` or `testEffect(...)` helpers from `test/lib/effect.ts`; do not use raw `test(...)`. Wrap synchronous assertions in `Effect.sync(...)`.
 - Tests cannot run from repo root (guard: `do-not-run-tests-from-root`); run from package dirs like `packages/opencode`.
 
 ## Type Checking

@@ -21,10 +21,9 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { SessionSystemContext } from "@opencode-ai/core/session-system-context"
 import { SystemContext } from "@opencode-ai/core/system-context"
-import { Hash } from "@opencode-ai/core/util/hash"
 import { describe, expect } from "bun:test"
 import { eq } from "drizzle-orm"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import path from "node:path"
 import { testEffect } from "./lib/effect"
 
@@ -62,17 +61,16 @@ const systemContext = Layer.succeed(
   SessionSystemContext.Service,
   SessionSystemContext.Service.of({
     load: () =>
-      Effect.succeed({
-        entries: [
-          {
-            _tag: "Available" as const,
-            key: SystemContext.Key.make("test/context"),
-            baseline: "Recorded context",
-            update: "Recorded context",
-            hash: Hash.sha256("Recorded context"),
-          },
-        ],
-      }),
+      Effect.succeed(
+        SystemContext.make({
+          key: SystemContext.Key.make("test/context"),
+          codec: Schema.toCodecJson(Schema.String),
+          load: Effect.succeed("Recorded context"),
+          baseline: String,
+          update: (_previous, current) => current,
+          removed: () => "Recorded context removed",
+        }),
+      ),
   }),
 )
 const runner = SessionRunnerLLM.defaultLayer.pipe(
@@ -167,7 +165,6 @@ describe("SessionRunnerLLM recorded", () => {
       ).toEqual([
         "session.next.prompt.admitted.1",
         "session.next.prompt.promoted.1",
-        "session.next.context.initialized.1",
         "session.next.step.started.1",
         "session.next.text.started.1",
         "session.next.text.ended.1",
