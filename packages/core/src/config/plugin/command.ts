@@ -19,12 +19,14 @@ export const Plugin = PluginV2.define({
     const config = yield* Config.Service
     const fs = yield* FSUtil.Service
     const transform = yield* command.transform()
-    const documents = yield* Effect.forEach(yield* config.entries(), (entry) => {
-      if (entry.type === "document") return Effect.succeed([{ commands: entry.info.commands }])
-      return loadDirectory(fs, entry.path).pipe(
-        Effect.map((commands) => [{ commands: Object.fromEntries(commands.map((command) => [command.name, command.info])) }]),
-      )
-    }).pipe(Effect.map((documents) => documents.flat()))
+      const documents = yield* Effect.forEach(yield* config.entries(), (entry) => {
+        if (entry.type === "document") return Effect.succeed([{ commands: entry.info.commands }])
+        return loadDirectory(fs, entry.path).pipe(
+          Effect.map((commands) => [
+            { commands: Object.fromEntries(commands.map((command) => [command.name, command.info])) },
+          ]),
+        )
+      }).pipe(Effect.map((documents) => documents.flat()))
 
     yield* transform((editor) => {
       for (const document of documents) {
