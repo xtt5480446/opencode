@@ -19,30 +19,10 @@ export interface Interface {
   readonly open: (input: WebSocketRequest) => Effect.Effect<WebSocketConnection, LLMError>
 }
 
-interface WebSocketLike {
-  readonly readyState: number
-  readonly send: (message: string) => void
-  readonly close: (code?: number) => void
-  readonly addEventListener: {
-    (type: "open" | "error", listener: (event: Event) => void, options?: { readonly once?: boolean }): void
-    (type: "close", listener: (event: CloseEvent) => void, options?: { readonly once?: boolean }): void
-    (type: "message", listener: (event: MessageEvent) => void, options?: { readonly once?: boolean }): void
-  }
-  readonly removeEventListener: {
-    (type: "open" | "error", listener: (event: Event) => void): void
-    (type: "close", listener: (event: CloseEvent) => void): void
-    (type: "message", listener: (event: MessageEvent) => void): void
-  }
-}
-
-interface WebSocketConstructorWithHeaders {
-  readonly OPEN: number
-  readonly CLOSING: number
-  readonly CLOSED: number
-  new (url: string, options?: { readonly headers?: Headers.Headers }): WebSocketLike
-}
-
-const WebSocketGlobal = globalThis as unknown as { readonly WebSocket: WebSocketConstructorWithHeaders }
+type WebSocketConstructorWithHeaders = new (
+  url: string,
+  options?: { readonly headers?: Headers.Headers },
+) => globalThis.WebSocket
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LLM/WebSocketExecutor") {}
 
@@ -69,9 +49,9 @@ const binaryMessage = (data: unknown) => {
   return undefined
 }
 
-const waitOpen = (ws: WebSocketLike, input: WebSocketRequest) => {
-  if (ws.readyState === WebSocketGlobal.WebSocket.OPEN) return Effect.void
-  if (ws.readyState === WebSocketGlobal.WebSocket.CLOSING || ws.readyState === WebSocketGlobal.WebSocket.CLOSED) {
+const waitOpen = (ws: globalThis.WebSocket, input: WebSocketRequest) => {
+  if (ws.readyState === globalThis.WebSocket.OPEN) return Effect.void
+  if (ws.readyState === globalThis.WebSocket.CLOSING || ws.readyState === globalThis.WebSocket.CLOSED) {
     return Effect.fail(
       transportError("open", `WebSocket closed before opening (state ${ws.readyState})`, {
         url: input.url,
@@ -88,7 +68,7 @@ const waitOpen = (ws: WebSocketLike, input: WebSocketRequest) => {
     }
     const onAbort = () => {
       cleanup()
-      if (ws.readyState !== WebSocketGlobal.WebSocket.CLOSED && ws.readyState !== WebSocketGlobal.WebSocket.CLOSING)
+      if (ws.readyState !== globalThis.WebSocket.CLOSED && ws.readyState !== globalThis.WebSocket.CLOSING)
         ws.close(1000)
     }
     const onOpen = () => {
@@ -144,7 +124,8 @@ const webSocketUrl = (value: string) =>
 
 export const open = (input: WebSocketRequest) =>
   Effect.try({
-    try: () => new WebSocketGlobal.WebSocket(input.url, { headers: input.headers }),
+    try: () =>
+      new (globalThis.WebSocket as unknown as WebSocketConstructorWithHeaders)(input.url, { headers: input.headers }),
     catch: (error) =>
       transportError("open", error instanceof Error ? error.message : "Failed to construct WebSocket", {
         url: input.url,
@@ -155,7 +136,7 @@ export const open = (input: WebSocketRequest) =>
 export const layer: Layer.Layer<Service> = Layer.succeed(Service, Service.of({ open }))
 
 export const fromWebSocket = (
-  ws: WebSocketLike,
+  ws: globalThis.WebSocket,
   input: WebSocketRequest,
 ): Effect.Effect<WebSocketConnection, LLMError> =>
   Effect.gen(function* () {
@@ -214,8 +195,7 @@ export const fromWebSocket = (
       close: cleanup.pipe(
         Effect.andThen(
           Effect.sync(() => {
-            if (ws.readyState === WebSocketGlobal.WebSocket.CLOSED || ws.readyState === WebSocketGlobal.WebSocket.CLOSING)
-              return
+            if (ws.readyState === globalThis.WebSocket.CLOSED || ws.readyState === globalThis.WebSocket.CLOSING) return
             ws.close(1000)
           }),
         ),
