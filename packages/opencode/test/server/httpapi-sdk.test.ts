@@ -393,7 +393,7 @@ describe("HttpApi SDK", () => {
         const url = new URL(request!.url)
 
         expect(file.response.status).toBe(200)
-        expect(file.data).toMatchObject({ content: "hello" })
+        expect(file.data).toMatchObject({ data: { content: "hello" } })
         expect(url.searchParams.get("directory")).toBe(directory)
         expect(url.searchParams.get("workspace")).toBe(workspaceID)
         expect(url.searchParams.get("location[directory]")).toBe(directory)
