@@ -153,8 +153,15 @@ export const layer = Layer.effect(
           )
           const init = yield* Effect.tryPromise({
             try: () => plugin(input),
-            catch: (err) => {},
-          }).pipe(Effect.option)
+            catch: (error) => error,
+          }).pipe(
+            Effect.tapError((error) =>
+              Effect.logError("failed to load internal plugin").pipe(
+                Effect.annotateLogs({ service: "plugin", ...{ name: plugin.name, error } }),
+              ),
+            ),
+            Effect.option,
+          )
           if (init._tag === "Some") hooks.push(init.value)
         }
 
@@ -210,6 +217,11 @@ export const layer = Layer.effect(
               return message
             },
           }).pipe(
+            Effect.tapError((error) =>
+              Effect.logError("failed to load plugin").pipe(
+                Effect.annotateLogs({ service: "plugin", ...{ path: load.spec, error } }),
+              ),
+            ),
             Effect.catch(() => {
               // TODO: make proper events for this
               // bus.publish(Session.Event.Error, {
@@ -226,8 +238,13 @@ export const layer = Layer.effect(
         for (const hook of hooks) {
           yield* Effect.tryPromise({
             try: () => Promise.resolve((hook as any).config?.(cfg)),
-            catch: (err) => {},
-          }).pipe(Effect.ignore)
+            catch: (error) => error,
+          }).pipe(
+            Effect.tapError((error) =>
+              Effect.logError("plugin config hook failed").pipe(Effect.annotateLogs({ service: "plugin", ...{ error } })),
+            ),
+            Effect.ignore,
+          )
         }
 
         // Subscribe to bus events, fiber interrupted when scope closes

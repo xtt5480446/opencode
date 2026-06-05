@@ -125,9 +125,7 @@ export const layer = Layer.effect(
         const ps = yield* getOrCreate(s, def)
         const subscription = yield* PubSub.subscribe(ps)
         yield* Effect.addFinalizer(() =>
-          Effect.sync(() =>
-            Effect.logInfo("unsubscribing").pipe(Effect.annotateLogs({ service: "bus", ...{ type: def.type } })),
-          ),
+          Effect.logInfo("unsubscribing").pipe(Effect.annotateLogs({ service: "bus", ...{ type: def.type } })),
         )
         return Stream.fromSubscription(subscription)
       })
@@ -138,9 +136,7 @@ export const layer = Layer.effect(
         const s = yield* InstanceState.get(state)
         const subscription = yield* PubSub.subscribe(s.wildcard)
         yield* Effect.addFinalizer(() =>
-          Effect.sync(() =>
-            Effect.logInfo("unsubscribing").pipe(Effect.annotateLogs({ service: "bus", ...{ type: "*" } })),
-          ),
+          Effect.logInfo("unsubscribing").pipe(Effect.annotateLogs({ service: "bus", ...{ type: "*" } })),
         )
         return Stream.fromSubscription(subscription)
       })
@@ -157,15 +153,25 @@ export const layer = Layer.effect(
             Stream.runForEach((msg) =>
               Effect.tryPromise({
                 try: () => Promise.resolve().then(() => callback(msg)),
-                catch: (cause) => {},
-              }).pipe(Effect.ignore),
+                catch: (cause) => cause,
+              }).pipe(
+                Effect.tapError((cause) =>
+                  Effect.logError("subscriber failed").pipe(Effect.annotateLogs({ service: "bus", ...{ type, cause } })),
+                ),
+                Effect.ignore,
+              ),
             ),
             Effect.forkScoped,
           ),
         )
 
         return () => {
-          bridge.fork(Scope.close(scope, Exit.void))
+          bridge.fork(
+            Effect.logInfo("unsubscribing").pipe(
+              Effect.annotateLogs({ service: "bus", ...{ type } }),
+              Effect.andThen(Scope.close(scope, Exit.void)),
+            ),
+          )
         }
       })
     }
