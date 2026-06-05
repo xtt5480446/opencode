@@ -761,6 +761,8 @@ Change:
 - Directly discover and read global plus upward project `AGENTS.md` files at each safe provider-turn boundary.
 - Preserve admitted instructions across transient scan/read failures and block first-epoch initialization while any context source is unavailable.
 - Retry Context Epoch preparation until stable after optimistic revision mismatches.
+- Clear the active Context Epoch when a Session moves so the destination initializes a complete baseline before promoting more input.
+- Canonicalize ambient instruction traversal boundaries, honor `OPENCODE_DISABLE_PROJECT_CONFIG`, and make non-empty aggregate updates explicitly supersede previously loaded instructions.
 
 Compatibility:
 

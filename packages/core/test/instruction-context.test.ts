@@ -73,7 +73,19 @@ describe("InstructionContext", () => {
             text: expect.stringContaining(`Instructions from: ${packageFile}\nchanged`),
           })
 
-          yield* Effect.promise(() => Promise.all([fs.rm(globalFile), fs.rm(packageFile), fs.rm(projectFile)]))
+          yield* Effect.promise(() => fs.rm(packageFile))
+          const partial = yield* SystemContext.reconcile(yield* load, initialized.snapshot)
+          expect(partial).toEqual({
+            _tag: "Updated",
+            text: [
+              "These instructions replace all previously loaded ambient instructions.",
+              `Instructions from: ${globalFile}\nglobal`,
+              `Instructions from: ${projectFile}\nproject`,
+            ].join("\n\n"),
+            snapshot: expect.any(Object),
+          })
+
+          yield* Effect.promise(() => Promise.all([fs.rm(globalFile), fs.rm(projectFile)]))
           expect(yield* SystemContext.reconcile(yield* load, initialized.snapshot)).toEqual({
             _tag: "Updated",
             text: "Previously loaded instructions no longer apply.",
@@ -176,6 +188,112 @@ describe("InstructionContext", () => {
           },
         }),
       ).toEqual({ _tag: "Unchanged" })
+    }),
+  )
+
+  it.effect("canonicalizes upward discovery boundaries", () =>
+    Effect.gen(function* () {
+      let observed: { targets: string[]; start: string; stop?: string } | undefined
+      const observingFS = Layer.effect(
+        FSUtil.Service,
+        FSUtil.Service.pipe(
+          Effect.map((fs) =>
+            FSUtil.Service.of({
+              ...fs,
+              up: (options) =>
+                Effect.sync(() => {
+                  observed = options
+                  return []
+                }),
+            }),
+          ),
+        ),
+      ).pipe(Layer.provide(FSUtil.defaultLayer))
+
+      yield* SystemContextRegistry.Service.pipe(
+        Effect.flatMap((service) => service.load()),
+        Effect.provide(InstructionContext.layer.pipe(Layer.provideMerge(SystemContextRegistry.layer))),
+        Effect.provide(observingFS),
+        Effect.provide(Global.layerWith({ config: "/global" })),
+        Effect.provide(
+          Layer.succeed(
+            Location.Service,
+            Location.Service.of(
+              location(
+                { directory: AbsolutePath.make("/repo/") },
+                { projectDirectory: AbsolutePath.make("/repo") },
+              ),
+            ),
+          ),
+        ),
+      )
+
+      expect(observed).toEqual({ targets: ["AGENTS.md"], start: FSUtil.resolve("/repo"), stop: FSUtil.resolve("/repo") })
+    }),
+  )
+
+  it.effect("honors the project instruction opt-out", () =>
+    Effect.gen(function* () {
+      const previous = process.env.OPENCODE_DISABLE_PROJECT_CONFIG
+      let scanned = false
+      process.env.OPENCODE_DISABLE_PROJECT_CONFIG = "1"
+
+      yield* SystemContextRegistry.Service.pipe(
+        Effect.flatMap((service) => service.load()),
+        Effect.provide(InstructionContext.layer.pipe(Layer.provideMerge(SystemContextRegistry.layer))),
+        Effect.provide(
+          Layer.effect(
+            FSUtil.Service,
+            FSUtil.Service.pipe(
+              Effect.map((fs) => FSUtil.Service.of({ ...fs, up: () => Effect.sync(() => ((scanned = true), [])) })),
+            ),
+          ).pipe(Layer.provide(FSUtil.defaultLayer)),
+        ),
+        Effect.provide(Global.layerWith({ config: "/global" })),
+        Effect.provide(
+          Layer.succeed(Location.Service, Location.Service.of(location({ directory: AbsolutePath.make("/repo") }))),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (previous === undefined) delete process.env.OPENCODE_DISABLE_PROJECT_CONFIG
+            else process.env.OPENCODE_DISABLE_PROJECT_CONFIG = previous
+          }),
+        ),
+      )
+
+      expect(scanned).toBe(false)
+    }),
+  )
+
+  it.effect("does not discover project instructions outside the canonical project root", () =>
+    Effect.gen(function* () {
+      let scanned = false
+      yield* SystemContextRegistry.Service.pipe(
+        Effect.flatMap((service) => service.load()),
+        Effect.provide(InstructionContext.layer.pipe(Layer.provideMerge(SystemContextRegistry.layer))),
+        Effect.provide(
+          Layer.effect(
+            FSUtil.Service,
+            FSUtil.Service.pipe(
+              Effect.map((fs) => FSUtil.Service.of({ ...fs, up: () => Effect.sync(() => ((scanned = true), [])) })),
+            ),
+          ).pipe(Layer.provide(FSUtil.defaultLayer)),
+        ),
+        Effect.provide(Global.layerWith({ config: "/global" })),
+        Effect.provide(
+          Layer.succeed(
+            Location.Service,
+            Location.Service.of(
+              location(
+                { directory: AbsolutePath.make("/outside") },
+                { projectDirectory: AbsolutePath.make("/repo") },
+              ),
+            ),
+          ),
+        ),
+      )
+
+      expect(scanned).toBe(false)
     }),
   )
 })

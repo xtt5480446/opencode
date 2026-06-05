@@ -1,8 +1,9 @@
 export * as InstructionContext from "./instruction-context"
 
 import { Array, Effect, Layer, Schema } from "effect"
-import { join } from "path"
+import { isAbsolute, join, relative, sep } from "path"
 import { FSUtil } from "./fs-util"
+import { Flag } from "./flag/flag"
 import { Global } from "./global"
 import { Location } from "./location"
 import { AbsolutePath } from "./schema"
@@ -30,15 +31,25 @@ export const layer = Layer.effectDiscard(
         codec: Schema.toCodecJson(Files),
         load: Effect.succeed(value),
         baseline: render,
-        update: (_previous, current) => render(current),
+        update: (_previous, current) => `These instructions replace all previously loaded ambient instructions.\n\n${render(current)}`,
         removed: () => "Previously loaded instructions no longer apply.",
       })
 
     const observe = Effect.fn("InstructionContext.observe")(function* () {
+      const start = FSUtil.resolve(location.directory)
+      const stop = FSUtil.resolve(location.project.directory)
+      const fromProject = relative(stop, start)
+      const insideProject =
+        fromProject === "" || (fromProject !== ".." && !fromProject.startsWith(`..${sep}`) && !isAbsolute(fromProject))
       const discovered = new Set(
-        (yield* fs.up({ targets: ["AGENTS.md"], start: location.directory, stop: location.project.directory })).map(
-          FSUtil.resolve,
-        ),
+        (Flag.OPENCODE_DISABLE_PROJECT_CONFIG || !insideProject
+          ? []
+          : yield* fs.up({
+              targets: ["AGENTS.md"],
+              start,
+              stop,
+            })
+        ).map(FSUtil.resolve),
       )
       const paths = Array.dedupe([FSUtil.resolve(join(global.config, "AGENTS.md")), ...discovered])
       const files = yield* Effect.forEach(

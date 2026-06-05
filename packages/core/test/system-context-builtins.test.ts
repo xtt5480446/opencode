@@ -11,14 +11,18 @@ import { SystemContextRegistry } from "@opencode-ai/core/system-context-registry
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
-const directory = AbsolutePath.make("/repo/packages/core")
-const projectDirectory = AbsolutePath.make("/repo")
+const directory = AbsolutePath.make(FSUtil.resolve("/repo/packages/core"))
+const projectDirectory = AbsolutePath.make(FSUtil.resolve("/repo"))
+const instructionFile = FSUtil.resolve("/repo/AGENTS.md")
 const timestamp = Date.parse("2026-06-03T12:00:00.000Z")
 const localDate = (time: number) => new Date(time).toDateString()
 const locationLayer = Layer.succeed(
   Location.Service,
   Location.Service.of(
-    location({ directory }, { projectDirectory, vcs: { type: "git", store: AbsolutePath.make("/repo/.git") } }),
+    location(
+      { directory },
+      { projectDirectory, vcs: { type: "git", store: AbsolutePath.make(FSUtil.resolve("/repo/.git")) } },
+    ),
   ),
 )
 const it = testEffect(
@@ -34,8 +38,8 @@ const instructionFS = Layer.effect(
     Effect.map((fs) =>
       FSUtil.Service.of({
         ...fs,
-        up: () => Effect.succeed(["/repo/AGENTS.md"]),
-        readFileStringSafe: (path) => Effect.succeed(path === "/repo/AGENTS.md" ? "Be precise." : undefined),
+        up: () => Effect.succeed([instructionFile]),
+        readFileStringSafe: (path) => Effect.succeed(path === instructionFile ? "Be precise." : undefined),
       }),
     ),
   ),
@@ -115,7 +119,7 @@ describe("SystemContextBuiltIns", () => {
           "",
           `Today's date: ${localDate(timestamp)}`,
           "",
-          "Instructions from: /repo/AGENTS.md\nBe precise.",
+          `Instructions from: ${instructionFile}\nBe precise.`,
         ].join("\n"),
       )
     }),

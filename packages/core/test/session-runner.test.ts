@@ -596,6 +596,41 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("requires a complete new baseline after a Session moves", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      yield* session.prompt({ sessionID, prompt: new Prompt({ text: "First" }), resume: false })
+      requests.length = 0
+      response = []
+      yield* session.resume(sessionID)
+
+      yield* events.publish(SessionEvent.Moved, {
+        sessionID,
+        timestamp: DateTime.makeUnsafe(1),
+        location: { directory: AbsolutePath.make("/moved") },
+      })
+      expect(
+        yield* db
+          .select()
+          .from(SessionContextEpochTable)
+          .where(eq(SessionContextEpochTable.session_id, sessionID))
+          .get(),
+      ).toBeUndefined()
+
+      systemUnavailable = true
+      yield* session.prompt({ sessionID, prompt: new Prompt({ text: "Second" }), resume: false })
+      const exit = yield* session.resume(sessionID).pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(SystemContext.InitializationBlocked)
+      expect(requests).toHaveLength(1)
+      expect(yield* SessionInput.hasPending(db, sessionID, "steer")).toBe(true)
+    }),
+  )
+
   it.effect("reuses one durable baseline after the context producer changes", () =>
     Effect.gen(function* () {
       yield* setup

@@ -260,17 +260,20 @@ export const layer = Layer.effectDiscard(
         .pipe(Effect.orDie),
     )
     yield* events.project(SessionEvent.Moved, (event) =>
-      db
-        .update(SessionTable)
-        .set({
-          directory: event.data.location.directory,
-          path: event.data.subdirectory,
-          workspace_id: event.data.location.workspaceID ? WorkspaceV2.ID.make(event.data.location.workspaceID) : null,
-          time_updated: DateTime.toEpochMillis(event.data.timestamp),
-        })
-        .where(eq(SessionTable.id, event.data.sessionID))
-        .run()
-        .pipe(Effect.orDie),
+      Effect.gen(function* () {
+        yield* db
+          .update(SessionTable)
+          .set({
+            directory: event.data.location.directory,
+            path: event.data.subdirectory,
+            workspace_id: event.data.location.workspaceID ? WorkspaceV2.ID.make(event.data.location.workspaceID) : null,
+            time_updated: DateTime.toEpochMillis(event.data.timestamp),
+          })
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .run()
+          .pipe(Effect.orDie)
+        yield* SessionContextEpoch.reset(db, event.data.sessionID)
+      }),
     )
     yield* events.project(SessionV1.Event.Deleted, (event) =>
       db.delete(SessionTable).where(eq(SessionTable.id, event.data.sessionID)).run().pipe(Effect.orDie),
