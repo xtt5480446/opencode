@@ -5,6 +5,7 @@ import {
   LLMEvent,
   Model,
   Tool,
+  ToolFailure,
   TransportReason,
   InvalidRequestReason,
   type LLMClientShape,
@@ -112,6 +113,7 @@ const recoveryModel = Model.make({
 })
 const authorizations: ToolRegistry.AuthorizeInput[] = []
 const executions: string[] = []
+let denyEcho = false
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
@@ -135,9 +137,18 @@ const echo = Layer.effectDiscard(
     registry.contribute((editor) => {
       ;(editor.set("echo", {
         authorize: (input) =>
-          Effect.sync(() => {
-            authorizations.push(input)
-          }),
+          denyEcho
+            ? Effect.fail(
+                new ToolFailure({
+                  message: "Permission denied",
+                  error: new PermissionV2.DeniedError({
+                    rules: [{ action: "echo", resource: "*", effect: "deny" }],
+                  }),
+                }),
+              )
+            : Effect.sync(() => {
+                authorizations.push(input)
+              }),
         tool: Tool.make({
           description: "Echo text",
           parameters: Schema.Struct({ text: Schema.String }),
@@ -1805,6 +1816,53 @@ describe("SessionRunnerLLM", () => {
           ],
         },
         { type: "assistant", finish: "stop", content: [{ type: "text", id: "text-final", text: "Done" }] },
+      ])
+    }),
+  )
+
+  it.effect("continues after a permission is denied without awaiting a responder", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: new Prompt({ text: "Try the denied tool" }), resume: false })
+
+      requests.length = 0
+      executions.length = 0
+      denyEcho = true
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({ id: "call-denied", name: "echo", input: { text: "blocked" } }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "text-after-denial" }),
+          LLMEvent.textDelta({ id: "text-after-denial", text: "Permission denied" }),
+          LLMEvent.textEnd({ id: "text-after-denial" }),
+          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+          LLMEvent.finish({ reason: "stop" }),
+        ],
+      ]
+
+      yield* session.resume(sessionID).pipe(Effect.ensuring(Effect.sync(() => (denyEcho = false))))
+
+      expect(requests).toHaveLength(2)
+      expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
+      expect(executions).toEqual([])
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Try the denied tool" },
+        {
+          type: "assistant",
+          finish: "tool-calls",
+          content: [{ type: "tool", id: "call-denied", name: "echo", state: { status: "error" } }],
+        },
+        {
+          type: "assistant",
+          finish: "stop",
+          content: [{ type: "text", id: "text-after-denial", text: "Permission denied" }],
+        },
       ])
     }),
   )
