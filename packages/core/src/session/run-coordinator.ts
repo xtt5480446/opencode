@@ -46,6 +46,7 @@ type Entry<A, E> = {
   interruptSeq?: number
   owner?: Fiber.Fiber<void, never>
   stopping: boolean
+  advisoryRetriesRemaining: number
 }
 
 /** Combines follow-up demand: runs dominate, while wakes retain the newest durable admission sequence. */
@@ -81,12 +82,17 @@ export const make = <Key, A, E>(options: {
       }),
     )
 
-    const makeEntry = (current: Demand, explicitWaiter?: Deferred.Deferred<A, E>): Entry<A, E> => ({
+    const makeEntry = (
+      current: Demand,
+      explicitWaiter?: Deferred.Deferred<A, E>,
+      advisoryRetriesRemaining = current._tag === "wake" ? 1 : 0,
+    ): Entry<A, E> => ({
       done: Deferred.makeUnsafe<A, E>(),
       settled: Deferred.makeUnsafe<Exit.Exit<A, E>>(),
       current,
       explicitWaiter,
       stopping: false,
+      advisoryRetriesRemaining,
     })
 
     const start = (key: Key, entry: Entry<A, E>, demand: Demand, successor = false) => {
@@ -132,6 +138,7 @@ export const make = <Key, A, E>(options: {
           const pending = entry.pending
           entry.pending = undefined
           entry.current = pending
+          entry.advisoryRetriesRemaining = pending._tag === "wake" ? 1 : 0
           start(key, entry, pending, true)
           return
         }
@@ -141,7 +148,12 @@ export const make = <Key, A, E>(options: {
         return
       }
 
-      const successor = entry.pending !== undefined ? makeEntry(entry.pending, entry.explicitWaiter) : undefined
+      const successor =
+        entry.pending !== undefined
+          ? makeEntry(entry.pending, entry.explicitWaiter)
+          : exit._tag === "Failure" && demand._tag === "wake" && !entry.stopping && entry.advisoryRetriesRemaining > 0
+            ? makeEntry(demand, entry.explicitWaiter, entry.advisoryRetriesRemaining - 1)
+            : undefined
       if (successor === undefined) active.delete(key)
       else active.set(key, successor)
       if (successor !== undefined) start(key, successor, successor.current, true)
@@ -151,6 +163,7 @@ export const make = <Key, A, E>(options: {
         exit._tag === "Failure" &&
         !(entry.stopping && Cause.hasInterruptsOnly(exit.cause)) &&
         demand._tag === "wake" &&
+        successor === undefined &&
         options.onFailure !== undefined
       ) {
         report(Effect.suspend(() => options.onFailure!(key, exit.cause)))
