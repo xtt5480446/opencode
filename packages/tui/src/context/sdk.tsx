@@ -1,5 +1,4 @@
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
-import type { GlobalEvent } from "@opencode-ai/sdk/v2"
+import type { GlobalEvent, OpencodeClient } from "@opencode-ai/sdk/v2"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { createSimpleContext } from "./helper"
 import { batch, onCleanup, onMount } from "solid-js"
@@ -11,26 +10,14 @@ export type EventSource = {
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   name: "SDK",
   init: (props: {
-    url: string
+    sdk: OpencodeClient
     directory?: string
-    fetch?: typeof fetch
-    headers?: RequestInit["headers"]
     events?: EventSource
   }) => {
     const abort = new AbortController()
     let sse: AbortController | undefined
 
-    function createSDK() {
-      return createOpencodeClient({
-        baseUrl: props.url,
-        signal: abort.signal,
-        directory: props.directory,
-        fetch: props.fetch,
-        headers: props.headers,
-      })
-    }
-
-    let sdk = createSDK()
+    const sdk = props.sdk
 
     const handlers = new Set<(event: GlobalEvent) => void>()
     const emitter = {
@@ -144,8 +131,6 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       },
       directory: props.directory,
       event: emitter,
-      fetch: props.fetch ?? fetch,
-      url: props.url,
     }
   },
 })

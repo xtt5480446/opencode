@@ -31,6 +31,7 @@ import { ProjectProvider, useProject } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
+import type { OpencodeClient } from "@opencode-ai/sdk/v2"
 import { StartupLoading } from "./component/startup-loading"
 import { SyncProvider, useSync } from "./context/sync"
 import { SyncProviderV2 } from "./context/sync-v2"
@@ -130,13 +131,11 @@ const appBindingCommands = [
 ] as const
 
 export type TuiInput = {
-  url: string
+  sdk: OpencodeClient
   args: Args
   config: TuiConfig.Resolved
   onSnapshot?: () => Promise<string[]>
   directory?: string
-  fetch?: typeof fetch
-  headers?: RequestInit["headers"]
   events?: EventSource
   pluginHost: TuiPluginHost
 }
@@ -270,10 +269,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                   <TuiConfigProvider config={input.config}>
                                     <PluginRuntimeProvider value={pluginRuntime}>
                                       <SDKProvider
-                                        url={input.url}
+                                        sdk={input.sdk}
                                         directory={input.directory}
-                                        fetch={input.fetch}
-                                        headers={input.headers}
                                         events={input.events}
                                       >
                                         <ProjectProvider>

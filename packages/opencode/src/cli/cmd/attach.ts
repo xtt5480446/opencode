@@ -1,8 +1,10 @@
 import { cmd } from "./cmd"
 import { UI } from "@/cli/ui"
 import { errorMessage } from "@opencode-ai/tui/util/error"
-import { validateSession } from "../tui/validate-session"
 import { ServerAuth } from "@/server/auth"
+import { createOpencodeClient } from "@opencode-ai/sdk/v2"
+import { SessionID } from "@/session/schema"
+import { Schema } from "effect"
 
 export const AttachCommand = cmd({
   command: "attach <url>",
@@ -61,15 +63,22 @@ export const AttachCommand = cmd({
       }
     })()
     const headers = ServerAuth.headers({ password: args.password, username: args.username })
+    const sdk = createOpencodeClient({ baseUrl: args.url, directory, headers })
     const config = await TuiConfig.get()
 
     try {
-      await validateSession({
-        url: args.url,
-        sessionID: args.session,
-        directory,
-        headers,
-      })
+      if (args.session) {
+        const sessionID = (() => {
+          try {
+            return Schema.decodeUnknownSync(SessionID)(args.session)
+          } catch (error) {
+            throw new Error(`Invalid session ID: ${error instanceof Error ? error.message : "unknown error"}`, {
+              cause: error,
+            })
+          }
+        })()
+        await sdk.session.get({ sessionID }, { throwOnError: true })
+      }
     } catch (error) {
       UI.error(errorMessage(error))
       process.exitCode = 1
@@ -77,11 +86,12 @@ export const AttachCommand = cmd({
     }
 
     const { Effect } = await import("effect")
-    const { run } = await import("../tui/layer")
+    const { Global } = await import("@opencode-ai/core/global")
+    const { run } = await import("@opencode-ai/tui")
     const { createLegacyTuiPluginHost } = await import("@/plugin/tui/runtime")
     await Effect.runPromise(
       run({
-        url: args.url,
+        sdk,
         config,
         pluginHost: createLegacyTuiPluginHost(),
         args: {
@@ -90,8 +100,7 @@ export const AttachCommand = cmd({
           fork: args.fork,
         },
         directory,
-        headers,
-      }),
+      }).pipe(Effect.provide(Global.defaultLayer)),
     )
   },
 })

@@ -6,7 +6,7 @@ import { onMount } from "solid-js"
 import { ProjectProvider } from "../../../src/context/project"
 import { SDKProvider } from "../../../src/context/sdk"
 import { SyncProviderV2, useSyncV2 } from "../../../src/context/sync-v2"
-import { createEventSource, createFetch, directory, json } from "../../fixture/tui-sdk"
+import { createClient, createEventSource, createFetch, directory, json } from "../../fixture/tui-sdk"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 
 async function wait(fn: () => boolean, timeout = 2000) {
@@ -44,7 +44,7 @@ test("sync v2 settles pending tools when a live failure arrives", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+      <SDKProvider sdk={createClient(calls.fetch)} directory={directory} events={events.source}>
         <ProjectProvider>
           <SyncProviderV2>
             <Probe />
@@ -173,7 +173,7 @@ test("sync v2 renders admitted prompts only after promotion", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+      <SDKProvider sdk={createClient(calls.fetch)} directory={directory} events={events.source}>
         <ProjectProvider>
           <SyncProviderV2>
             <Probe />
@@ -237,7 +237,7 @@ test("sync v2 renders a promoted prompt when admission was missed", async () => 
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+      <SDKProvider sdk={createClient(calls.fetch)} directory={directory} events={events.source}>
         <ProjectProvider>
           <SyncProviderV2>
             <Probe />
@@ -285,7 +285,7 @@ test("sync v2 projects live context updates with their message ID", async () => 
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+      <SDKProvider sdk={createClient(calls.fetch)} directory={directory} events={events.source}>
         <ProjectProvider>
           <SyncProviderV2>
             <Probe />
@@ -340,7 +340,7 @@ test("sync v2 preserves live events while snapshot hydration is in flight", asyn
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+      <SDKProvider sdk={createClient(calls.fetch)} directory={directory} events={events.source}>
         <ProjectProvider>
           <SyncProviderV2>
             <Probe />
@@ -390,7 +390,7 @@ test("sync v2 replaces stale cached rows while preserving in-flight live rows", 
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+      <SDKProvider sdk={createClient(calls.fetch)} directory={directory} events={events.source}>
         <ProjectProvider>
           <SyncProviderV2>
             <Probe />
@@ -459,7 +459,7 @@ test("sync v2 preserves snapshot order and metadata for in-flight updates", asyn
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+      <SDKProvider sdk={createClient(calls.fetch)} directory={directory} events={events.source}>
         <ProjectProvider>
           <SyncProviderV2>
             <Probe />

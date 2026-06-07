@@ -6,7 +6,7 @@ import { KVProvider, useKV } from "../../../../src/context/kv"
 import { ProjectProvider, useProject } from "../../../../src/context/project"
 import { SDKProvider } from "../../../../src/context/sdk"
 import { SyncProvider, useSync } from "../../../../src/context/sync"
-import { createEventSource, createFetch, type FetchHandler, directory } from "../../../fixture/tui-sdk"
+import { createClient, createEventSource, createFetch, type FetchHandler, directory } from "../../../fixture/tui-sdk"
 import { TestTuiContexts } from "../../../fixture/tui-environment"
 export { createEventSource, createFetch, directory, eventSource, json, worktree } from "../../../fixture/tui-sdk"
 
@@ -46,7 +46,7 @@ export async function mount(override?: FetchHandler, state?: string) {
     <TestTuiContexts paths={state ? { state } : undefined}>
       <ArgsProvider>
         <KVProvider>
-          <SDKProvider url="http://test" directory={directory} fetch={calls.fetch} events={events.source}>
+          <SDKProvider sdk={createClient(calls.fetch)} directory={directory} events={events.source}>
             <ProjectProvider>
               <SyncProvider>
                 <Probe />

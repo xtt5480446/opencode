@@ -3,7 +3,7 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { Effect } from "effect"
 import { Global } from "@opencode-ai/core/global"
 import { createTuiResolvedConfig } from "./fixture/tui-runtime"
-import { createEventSource, createFetch, directory } from "./fixture/tui-sdk"
+import { createClient, createEventSource, createFetch, directory } from "./fixture/tui-sdk"
 
 test("SIGHUP clears title and disposes scoped resources once", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
@@ -28,10 +28,9 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
     const { run } = await import("../src/app")
     const task = Effect.runPromise(
       run({
-        url: "http://test",
+        sdk: createClient(calls.fetch),
         directory,
         config: createTuiResolvedConfig({ plugin_enabled: {} }),
-        fetch: calls.fetch,
         events: events.source,
         args: {},
         pluginHost: {

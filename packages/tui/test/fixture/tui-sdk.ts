@@ -1,8 +1,12 @@
-import type { GlobalEvent } from "@opencode-ai/sdk/v2"
+import { createOpencodeClient, type GlobalEvent } from "@opencode-ai/sdk/v2"
 import type { EventSource } from "../../src/context/sdk"
 
 export const worktree = "/tmp/opencode"
 export const directory = `${worktree}/packages/tui`
+
+export function createClient(fetch: typeof globalThis.fetch) {
+  return createOpencodeClient({ baseUrl: "http://test", directory, fetch })
+}
 
 export function json(data: unknown, init?: ResponseInit) {
   return new Response(JSON.stringify(data), {

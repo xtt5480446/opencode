@@ -13,6 +13,7 @@ import { WebSocketTracker } from "./routes/instance/httpapi/websocket-tracker"
 import { PublicApi } from "./routes/instance/httpapi/public"
 import type { CorsOptions } from "./cors"
 import { lazy } from "@/util/lazy"
+import { ServerAuth } from "./auth"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -36,6 +37,8 @@ type ListenOptions = CorsOptions & {
   hostname: string
   mdns?: boolean
   mdnsDomain?: string
+  preferredPort?: number
+  auth?: ServerAuth.Credentials
 }
 type ListenerState = {
   scope: Scope.Scope
@@ -109,19 +112,30 @@ function listenerLayer(opts: ListenOptions, port: number) {
     Layer.provideMerge(WebSocketTracker.layer),
     Layer.provideMerge(serverLayer({ port, hostname: opts.hostname })),
     // Install a fresh `ConfigProvider` per listener so `Config.string(...)`
-    // reads reflect the current `process.env`. Effect's default
+    // reads reflect the current `process.env` and listener-local credentials. Effect's default
     // `ConfigProvider` snapshots `process.env` on first read and caches the
     // result on a module-singleton Reference; without overriding it here,
     // every later `Server.listen()` keeps observing that initial snapshot.
-    Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv())),
+    Layer.provide(
+      ConfigProvider.layer(
+        opts.auth
+          ? ConfigProvider.fromUnknown({
+              ...process.env,
+              OPENCODE_SERVER_PASSWORD: opts.auth.password,
+              OPENCODE_SERVER_USERNAME: opts.auth.username ?? "opencode",
+            })
+          : ConfigProvider.fromEnv(),
+      ),
+    ),
   )
 }
 
 function startWithPortFallback(opts: ListenOptions) {
   if (opts.port !== 0) return startListener(opts, opts.port)
+  if (opts.preferredPort === 0) return startListener(opts, 0)
   // Match the legacy listener port-resolution behavior: explicit `0` prefers
   // 4096 first, then any free port.
-  return startListener(opts, 4096).pipe(Effect.catch(() => startListener(opts, 0)))
+  return startListener(opts, opts.preferredPort ?? 4096).pipe(Effect.catch(() => startListener(opts, 0)))
 }
 
 function startListener(opts: ListenOptions, port: number) {

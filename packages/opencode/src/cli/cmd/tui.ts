@@ -1,7 +1,12 @@
 import { cmd } from "@/cli/cmd/cmd"
 import { Rpc } from "@/util/rpc"
 import { type rpc } from "../tui/worker"
+import { ServerAuth } from "@/server/auth"
+import { createOpencodeClient } from "@opencode-ai/sdk/v2"
+import { SessionID } from "@/session/schema"
+import { Schema } from "effect"
 import path from "path"
+import { randomBytes } from "node:crypto"
 import { fileURLToPath } from "url"
 import { UI } from "@/cli/ui"
 import * as Log from "@opencode-ai/core/util/log"
@@ -9,8 +14,6 @@ import { errorMessage } from "@opencode-ai/tui/util/error"
 import { withTimeout } from "@/util/timeout"
 import { withNetworkOptions, resolveNetworkOptionsNoConfig } from "@/cli/network"
 import { Filesystem } from "@/util/filesystem"
-import type { GlobalEvent } from "@opencode-ai/sdk/v2"
-import type { EventSource } from "@opencode-ai/tui/context/sdk"
 import { writeHeapSnapshot } from "v8"
 import {
   OPENCODE_PROCESS_ROLE,
@@ -18,41 +21,10 @@ import {
   ensureRunID,
   sanitizedProcessEnv,
 } from "@opencode-ai/core/util/opencode-process"
-import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
-}
-
-type RpcClient = ReturnType<typeof Rpc.client<typeof rpc>>
-
-function createWorkerFetch(client: RpcClient): typeof fetch {
-  const fn = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const request = new Request(input, init)
-    const body = request.body ? await request.text() : undefined
-    const result = await client.call("fetch", {
-      url: request.url,
-      method: request.method,
-      headers: Object.fromEntries(request.headers.entries()),
-      body,
-    })
-    return new Response(result.body, {
-      status: result.status,
-      headers: result.headers,
-    })
-  }
-  return fn as typeof fetch
-}
-
-function createEventSource(client: RpcClient): EventSource {
-  return {
-    subscribe: async (handler) => {
-      return client.on<GlobalEvent>("global.event", (e) => {
-        handler(e)
-      })
-    },
-  }
 }
 
 async function target() {
@@ -132,6 +104,15 @@ export const TuiThreadCommand = cmd({
         return
       }
       const cwd = Filesystem.resolve(process.cwd())
+      const network = resolveNetworkOptionsNoConfig(args)
+      const external =
+        process.argv.includes("--port") ||
+        process.argv.includes("--hostname") ||
+        process.argv.includes("--mdns") ||
+        network.mdns ||
+        network.port !== 0 ||
+        network.hostname !== "127.0.0.1"
+      const password = external ? undefined : randomBytes(32).toString("base64url")
       const env = sanitizedProcessEnv({
         [OPENCODE_PROCESS_ROLE]: "worker",
         [OPENCODE_RUN_ID]: ensureRunID(),
@@ -183,34 +164,41 @@ export const TuiThreadCommand = cmd({
       const prompt = await input(args.prompt)
       const config = await TuiConfig.get()
 
-      const network = resolveNetworkOptionsNoConfig(args)
-      const external =
-        process.argv.includes("--port") ||
-        process.argv.includes("--hostname") ||
-        process.argv.includes("--mdns") ||
-        network.mdns ||
-        network.port !== 0 ||
-        network.hostname !== "127.0.0.1"
-
       const transport = external
         ? {
             url: (await client.call("server", network)).url,
-            fetch: undefined,
-            events: undefined,
+            headers: ServerAuth.headers(),
           }
         : {
-            url: "http://opencode.internal",
-            fetch: createWorkerFetch(client),
-            events: createEventSource(client),
+            url: (
+              await client.call("server", {
+                hostname: "127.0.0.1",
+                port: 0,
+                preferredPort: 0,
+                auth: { password },
+              })
+            ).url,
+            headers: ServerAuth.headers({ password }),
           }
+      const sdk = createOpencodeClient({
+        baseUrl: transport.url,
+        directory: cwd,
+        headers: transport.headers,
+      })
 
       try {
-        await validateSession({
-          url: transport.url,
-          sessionID: args.session,
-          directory: cwd,
-          fetch: transport.fetch,
-        })
+        if (args.session) {
+          const sessionID = (() => {
+            try {
+              return Schema.decodeUnknownSync(SessionID)(args.session)
+            } catch (error) {
+              throw new Error(`Invalid session ID: ${error instanceof Error ? error.message : "unknown error"}`, {
+                cause: error,
+              })
+            }
+          })()
+          await sdk.session.get({ sessionID }, { throwOnError: true })
+        }
       } catch (error) {
         UI.error(errorMessage(error))
         process.exitCode = 1
@@ -223,11 +211,12 @@ export const TuiThreadCommand = cmd({
 
       try {
         const { Effect } = await import("effect")
-        const { run } = await import("../tui/layer")
+        const { Global } = await import("@opencode-ai/core/global")
+        const { run } = await import("@opencode-ai/tui")
         const { createLegacyTuiPluginHost } = await import("@/plugin/tui/runtime")
         await Effect.runPromise(
           run({
-            url: transport.url,
+            sdk,
             async onSnapshot() {
               const tui = writeHeapSnapshot("tui.heapsnapshot")
               const server = await client.call("snapshot", undefined)
@@ -236,8 +225,6 @@ export const TuiThreadCommand = cmd({
             config,
             pluginHost: createLegacyTuiPluginHost(),
             directory: cwd,
-            fetch: transport.fetch,
-            events: transport.events,
             args: {
               continue: args.continue,
               sessionID: args.session,
@@ -246,12 +233,11 @@ export const TuiThreadCommand = cmd({
               prompt,
               fork: args.fork,
             },
-          }),
+          }).pipe(Effect.provide(Global.defaultLayer)),
         )
       } finally {
         await stop()
       }
-      process.exit(0)
     } finally {
       try {
         unguard?.()
@@ -259,6 +245,6 @@ export const TuiThreadCommand = cmd({
         Log.Default.warn("failed to restore terminal guard", { error: errorMessage(error) })
       }
     }
+    process.exit(0)
   },
 })
-// scratch

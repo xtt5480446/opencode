@@ -9,7 +9,6 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
-import { validateSession } from "../../src/cli/tui/validate-session"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { InstanceStore } from "../../src/project/instance-store"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -470,14 +469,8 @@ describe("HttpApi SDK", () => {
       Effect.gen(function* () {
         const sessionID = "ses_206f84f18ffeZ6hhD7pFYAiW5T"
         const fetch = yield* serverFetch(serverPath)
-        const thrown = yield* captureThrown(() =>
-          validateSession({
-            url: "http://localhost",
-            directory,
-            sessionID,
-            fetch,
-          }),
-        )
+        const sdk = createOpencodeClient({ baseUrl: "http://localhost", directory, fetch })
+        const thrown = yield* captureThrown(() => sdk.session.get({ sessionID }, { throwOnError: true }))
         expect(errorMessage(thrown)).toBe(`Session not found: ${sessionID}`)
         return errorMessage(thrown)
       }),

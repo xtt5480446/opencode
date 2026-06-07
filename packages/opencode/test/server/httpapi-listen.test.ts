@@ -3,6 +3,7 @@ import net from "node:net"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import * as Log from "@opencode-ai/core/util/log"
 import { Server } from "../../src/server/server"
+import { ServerAuth } from "../../src/server/auth"
 import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
 import { withTimeout } from "../../src/util/timeout"
 import { resetDatabase } from "../fixture/db"
@@ -310,6 +311,38 @@ describe("HttpApi Server.listen", () => {
       expect(listener.port).toBe(4096)
     } finally {
       await stop(listener, "timed out cleaning up port-0 prefers-4096 listener")
+    }
+  })
+
+  test("preferred port 0 uses an OS-assigned port", async () => {
+    const listener = await Server.listen({ hostname: "127.0.0.1", port: 0, preferredPort: 0 })
+    try {
+      expect(listener.port).toBeGreaterThan(0)
+      expect(listener.port).not.toBe(4096)
+    } finally {
+      await stop(listener, "timed out cleaning up OS-assigned listener")
+    }
+  })
+
+  test("accepts listener-local credentials without changing process auth", async () => {
+    const listener = await Server.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      preferredPort: 0,
+      auth: { password: "local-secret" },
+    })
+    try {
+      expect((await fetch(new URL("/doc", listener.url))).status).toBe(401)
+      expect(
+        (
+          await fetch(new URL("/doc", listener.url), {
+            headers: { authorization: ServerAuth.header({ password: "local-secret" }) ?? "" },
+          })
+        ).status,
+      ).toBe(200)
+      expect(process.env.OPENCODE_SERVER_PASSWORD).toBe(original.envPassword)
+    } finally {
+      await stop(listener, "timed out cleaning up listener-local auth listener")
     }
   })
 
