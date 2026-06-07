@@ -64,9 +64,9 @@ describe("TaskTool", () => {
       const inputs: Parameters<SessionV2.Interface["prompt"]>[0][] = []
       let resumed = 0
       const sessions = mockSessions({
-        prompt: (input) => {
-          inputs.push(input)
-          return Effect.succeed(admission(input))
+        prompt: (value) => {
+          inputs.push(value)
+          return Effect.succeed(admission(value))
         },
         resume: () => Effect.sync(() => resumed++),
       })
@@ -90,8 +90,6 @@ describe("TaskTool", () => {
             created = true
             return child
           }),
-        prompt: (input) => Effect.succeed(admission(input)),
-        resume: () => Effect.void,
       })
       const tool = yield* TaskTool.make(sessions, () => Effect.succeed(undefined))
 
@@ -99,24 +97,6 @@ describe("TaskTool", () => {
 
       expect(error.message).toBe("Unknown subagent: missing")
       expect(created).toBe(false)
-    }),
-  )
-
-  it.live("interrupts the child when foreground waiting is interrupted", () =>
-    Effect.gen(function* () {
-      const resumed = yield* Deferred.make<void>()
-      const interrupts: SessionV2.ID[] = []
-      const sessions = mockSessions({
-        prompt: (input) => Effect.succeed(admission(input)),
-        resume: () => Deferred.succeed(resumed, undefined).pipe(Effect.andThen(Effect.never)),
-        interrupt: (sessionID) => Effect.sync(() => interrupts.push(sessionID)),
-      })
-      const tool = yield* TaskTool.make(sessions, resolveAgent)
-      const fiber = yield* execute(tool, input, "call_task_interrupt").pipe(Effect.forkChild)
-
-      yield* Deferred.await(resumed)
-      yield* Fiber.interrupt(fiber)
-      expect(interrupts).toEqual([childID])
     }),
   )
 
@@ -140,17 +120,34 @@ describe("TaskTool", () => {
     }),
   )
 
+  it.live("interrupts the child when foreground waiting is interrupted", () =>
+    Effect.gen(function* () {
+      const resumed = yield* Deferred.make<void>()
+      const interrupts: SessionV2.ID[] = []
+      const sessions = mockSessions({
+        resume: () => Deferred.succeed(resumed, undefined).pipe(Effect.andThen(Effect.never)),
+        interrupt: (sessionID) => Effect.sync(() => interrupts.push(sessionID)),
+      })
+      const tool = yield* TaskTool.make(sessions, resolveAgent)
+      const fiber = yield* execute(tool, input, "call_task_interrupt").pipe(Effect.forkChild)
+
+      yield* Deferred.await(resumed)
+      yield* Fiber.interrupt(fiber)
+      expect(interrupts).toEqual([childID])
+    }),
+  )
+
   it.live("returns before background completion and steers the result into the parent", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>()
       const notified = yield* Deferred.make<Parameters<SessionV2.Interface["prompt"]>[0]>()
       const inputs: Parameters<SessionV2.Interface["prompt"]>[0][] = []
       const sessions = mockSessions({
-        prompt: (input) => {
-          inputs.push(input)
-          return input.sessionID === parentID
-            ? Deferred.succeed(notified, input).pipe(Effect.as(admission(input)))
-            : Effect.succeed(admission(input))
+        prompt: (value) => {
+          inputs.push(value)
+          return value.sessionID === parentID
+            ? Deferred.succeed(notified, value).pipe(Effect.as(admission(value)))
+            : Effect.succeed(admission(value))
         },
         resume: () => Deferred.await(gate),
       })

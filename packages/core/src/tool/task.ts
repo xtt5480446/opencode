@@ -50,8 +50,9 @@ export const make = Effect.fn("TaskTool.make")(function* (
           model: agent.model ?? parent.model,
         })
 
-        // TODO: Replace this fresh-child composition with Session.run, preserving admission/execution
-        // separation while returning the assistant response after the admitted boundary.
+        // TODO: Replace this fresh-child-only composition once Session execution exposes a bounded
+        // activity/result identity. An admission ID alone cannot correlate a response when one drain
+        // processes later queued work.
         const run = Effect.gen(function* () {
           yield* sessions.prompt({
             sessionID: child.id,
