@@ -9,6 +9,7 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionInput } from "@opencode-ai/core/session/input"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { TaskTool } from "@opencode-ai/core/tool/task"
+import { Tool } from "@opencode-ai/core/tool/tool"
 import { DateTime, Deferred, Effect, Layer, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 
@@ -49,7 +50,8 @@ const assistant = new SessionMessage.Assistant({
 
 describe("TaskTool", () => {
   const it = testEffect(Layer.empty)
-  const resolveAgent = () => Effect.succeed(AgentV2.Info.empty(AgentV2.ID.make("explore")))
+  const resolveAgent = (): Effect.Effect<AgentV2.Info | undefined> =>
+    Effect.succeed(AgentV2.Info.empty(AgentV2.ID.make("explore")))
 
   it.effect("runs a foreground child with an admit-only steer and explicit resume", () =>
     Effect.gen(function* () {
@@ -64,17 +66,18 @@ describe("TaskTool", () => {
       })
       const tool = yield* TaskTool.make(sessions, resolveAgent)
 
-      const result = yield* tool.execute(
+      const result = yield* execute(
+        tool,
         {
           description: "Map auth",
           prompt: "Map the authentication flow",
           subagent_type: "explore",
           background: false,
         },
-        { sessionID: parentID, id: "call_task", name: "task" },
+        "call_task",
       )
 
-      expect(result).toEqual({ sessionID: childID, status: "completed", output: "Task output" })
+      expect(result.structured).toEqual({ sessionID: childID, status: "completed", output: "Task output" })
       expect(inputs).toHaveLength(1)
       expect(inputs[0]).toMatchObject({ sessionID: childID, delivery: "steer", resume: false })
       expect(resumed).toBe(1)
@@ -95,16 +98,15 @@ describe("TaskTool", () => {
       })
       const tool = yield* TaskTool.make(sessions, () => Effect.succeed(undefined))
 
-      const error = yield* tool
-        .execute(
-          {
-            description: "Map auth",
-            prompt: "Map the authentication flow",
-            subagent_type: "missing",
-          },
-          { sessionID: parentID, id: "call_task_unknown", name: "task" },
-        )
-        .pipe(Effect.flip)
+      const error = yield* execute(
+        tool,
+        {
+          description: "Map auth",
+          prompt: "Map the authentication flow",
+          subagent_type: "missing",
+        },
+        "call_task_unknown",
+      ).pipe(Effect.flip)
 
       expect(error.message).toBe("Unknown subagent: missing")
       expect(created).toBe(false)
@@ -127,17 +129,18 @@ describe("TaskTool", () => {
       })
       const tool = yield* TaskTool.make(sessions, resolveAgent)
 
-      const result = yield* tool.execute(
+      const result = yield* execute(
+        tool,
         {
           description: "Map auth",
           prompt: "Map the authentication flow",
           subagent_type: "explore",
           background: true,
         },
-        { sessionID: parentID, id: "call_task_background", name: "task" },
+        "call_task_background",
       )
 
-      expect(result).toEqual({ sessionID: childID, status: "running" })
+      expect(result.structured).toEqual({ sessionID: childID, status: "running" })
       expect(inputs).toHaveLength(1)
       yield* Deferred.succeed(gate, undefined)
       const notification = yield* Deferred.await(notified)
@@ -182,4 +185,17 @@ function admission(input: Parameters<SessionV2.Interface["prompt"]>[0]) {
     delivery: input.delivery ?? "steer",
     timeCreated: DateTime.makeUnsafe(0),
   })
+}
+
+function execute(tool: Tool.AnyTool, input: unknown, toolCallID: string) {
+  return Tool.settle(
+    tool,
+    { type: "tool-call", id: toolCallID, name: "task", input },
+    {
+      sessionID: parentID,
+      agent: AgentV2.ID.make("build"),
+      assistantMessageID: SessionMessage.ID.make("msg_task_tool"),
+      toolCallID,
+    },
+  )
 }

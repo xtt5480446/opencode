@@ -90,7 +90,7 @@ export const layer = Layer.effect(
     const locations = yield* LocationServiceMap
     const tools = yield* ApplicationTools.Service
     const validation = yield* SessionModelValidation
-    yield* tools.attach({
+    yield* tools.register({
       task: yield* TaskTool.make(sessions, (location, id) =>
         AgentV2.Service.pipe(
           Effect.flatMap((agents) => agents.get(id)),
