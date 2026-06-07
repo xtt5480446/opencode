@@ -1,9 +1,33 @@
-import { describe, expect } from "bun:test"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
+import { describe, expect, test } from "bun:test"
+import { Cause, Deferred, Effect, Equal, Exit, Fiber, Layer, Scope } from "effect"
 import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(Layer.empty)
+
+describe("SessionRunCoordinator.Demand", () => {
+  const Demand = SessionRunCoordinator.Demand
+
+  test("combines associatively with an identity", () => {
+    const left = Demand.run.combine(Demand.wake(1))
+    const right = Demand.wake().combine(Demand.wake(3))
+
+    expect(Equal.equals(Demand.empty.combine(left), left)).toBeTrue()
+    expect(Equal.equals(left.combine(Demand.empty), left)).toBeTrue()
+    expect(Equal.equals(left.combine(right), right.combine(left))).toBeTrue()
+    expect(
+      Equal.equals(left.combine(right).combine(Demand.wake(2)), left.combine(right.combine(Demand.wake(2)))),
+    ).toBeTrue()
+  })
+
+  test("keeps only sequenced wakes newer than an interrupt boundary", () => {
+    const demand = Demand.run.combine(Demand.wake()).combine(Demand.wake(3))
+
+    expect(Equal.equals(demand.afterBoundary(2), Demand.wake(3))).toBeTrue()
+    expect(Equal.equals(demand.afterBoundary(3), Demand.empty)).toBeTrue()
+    expect(Equal.equals(demand.afterBoundary(), Demand.empty)).toBeTrue()
+  })
+})
 
 describe("SessionRunCoordinator", () => {
   it.effect("joins concurrent resumes for one key", () =>
@@ -456,6 +480,53 @@ describe("SessionRunCoordinator", () => {
         yield* coordinator.wake("session", 5)
         yield* Deferred.await(secondStarted)
         yield* coordinator.awaitIdle("session")
+        expect(runs).toBe(2)
+      }),
+    ),
+  )
+
+  it.effect("does not let an interrupted attempt completion settle its successor", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstStarted = yield* Deferred.make<void>()
+        const cleanupStarted = yield* Deferred.make<void>()
+        const cleanupGate = yield* Deferred.make<void>()
+        const secondStarted = yield* Deferred.make<void>()
+        const secondGate = yield* Deferred.make<void>()
+        const idleSettled = yield* Deferred.make<void>()
+        let runs = 0
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () =>
+            Effect.sync(() => ++runs).pipe(
+              Effect.flatMap((run) =>
+                run === 1
+                  ? Deferred.succeed(firstStarted, undefined).pipe(
+                      Effect.andThen(Effect.never),
+                      Effect.onInterrupt(() =>
+                        Deferred.succeed(cleanupStarted, undefined).pipe(Effect.andThen(Deferred.await(cleanupGate))),
+                      ),
+                    )
+                  : Deferred.succeed(secondStarted, undefined).pipe(Effect.andThen(Deferred.await(secondGate))),
+              ),
+            ),
+        })
+
+        yield* coordinator.wake("session", 1)
+        yield* Deferred.await(firstStarted)
+        const interrupt = yield* coordinator.interrupt("session", 2).pipe(Effect.forkChild)
+        yield* Deferred.await(cleanupStarted)
+        yield* coordinator.wake("session", 3)
+        yield* Deferred.succeed(cleanupGate, undefined)
+        yield* Fiber.join(interrupt)
+        yield* Deferred.await(secondStarted)
+        const idle = yield* coordinator
+          .awaitIdle("session")
+          .pipe(Effect.ensuring(Deferred.succeed(idleSettled, undefined)), Effect.forkChild)
+
+        yield* Effect.yieldNow
+        expect(yield* Deferred.isDone(idleSettled)).toBeFalse()
+        yield* Deferred.succeed(secondGate, undefined)
+        yield* Fiber.join(idle)
         expect(runs).toBe(2)
       }),
     ),
