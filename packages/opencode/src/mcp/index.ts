@@ -114,7 +114,7 @@ function isMcpConfigured(entry: McpEntry): entry is ConfigMCPV1.Info {
 const sanitize = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, "_")
 const MAX_LIST_PAGES = 1_000
 
-function remoteURL(key: string, value: string) {
+function remoteURL(value: string) {
   if (URL.canParse(value)) return new URL(value)
 }
 
@@ -196,25 +196,15 @@ function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient, timeout?: number
 }
 
 function defs(client: MCPClient, timeout?: number) {
-  return listTools(client, timeout ?? DEFAULT_TIMEOUT).pipe(
-    Effect.catch((err) => {
-      return Effect.succeed(undefined)
-    }),
-  )
+  return listTools(client, timeout ?? DEFAULT_TIMEOUT).pipe(Effect.catch(() => Effect.void))
 }
 
 function fetchFromClient<T extends { name: string }>(
   clientName: string,
   client: Client,
   listFn: (c: Client) => Promise<T[]>,
-  label: string,
 ) {
-  return Effect.tryPromise({
-    try: () => listFn(client),
-    catch: (e: any) => {
-      return e
-    },
-  }).pipe(
+  return Effect.tryPromise(() => listFn(client)).pipe(
     Effect.map((items) => {
       const out: Record<string, T & { client: string }> = {}
       const sanitizedClient = sanitize(clientName)
@@ -316,7 +306,7 @@ export const layer = Layer.effect(
     ) {
       const oauthDisabled = mcp.oauth === false
       const oauthConfig = typeof mcp.oauth === "object" ? mcp.oauth : undefined
-      const url = remoteURL(key, mcp.url)
+      const url = remoteURL(mcp.url)
       if (!url) {
         return {
           client: undefined as MCPClient | undefined,
@@ -400,12 +390,10 @@ export const layer = Layer.effect(
             }
 
             lastStatus = { status: "failed" as const, error: lastError.message }
-            return Effect.succeed(undefined)
+            return Effect.void
           }),
         )
-        if (result) {
-          return { client: result.client as MCPClient | undefined, status: { status: "connected" } as Status }
-        }
+        if (result) return { client: result.client, status: { status: "connected" } as Status }
         // If this was an auth error, stop trying other transports
         if (lastStatus?.status === "needs_auth" || lastStatus?.status === "needs_client_registration") break
       }
@@ -479,8 +467,8 @@ export const layer = Layer.effect(
         if (process.platform === "win32") return [] as number[]
         const pids: number[] = []
         const queue = [pid]
-        while (queue.length > 0) {
-          const current = queue.shift()!
+        for (let index = 0; index < queue.length; index++) {
+          const current = queue[index]
           const handle = yield* spawner.spawn(ChildProcess.make("pgrep", ["-P", String(current)], { stdin: "ignore" }))
           const text = yield* Stream.mkString(Stream.decodeText(handle.stdout))
           yield* handle.exitCode
@@ -666,92 +654,59 @@ export const layer = Layer.effect(
       const config = cfg.mcp ?? {}
       const defaultTimeout = cfg.experimental?.mcp_timeout
 
-      const connectedClients = Object.entries(s.clients).filter(
-        ([clientName]) => s.status[clientName]?.status === "connected",
-      )
+      for (const [clientName, client] of Object.entries(s.clients)) {
+        if (s.status[clientName]?.status !== "connected") continue
+        const mcpConfig = config[clientName]
+        const entry = mcpConfig && isMcpConfigured(mcpConfig) ? mcpConfig : s.config[clientName]
+        const listed = s.defs[clientName]
+        if (!listed) continue
 
-      yield* Effect.forEach(
-        connectedClients,
-        ([clientName, client]) =>
-          Effect.gen(function* () {
-            const mcpConfig = config[clientName]
-            const entry = mcpConfig && isMcpConfigured(mcpConfig) ? mcpConfig : s.config[clientName]
-
-            const listed = s.defs[clientName]
-            if (!listed) {
-              return
-            }
-
-            const timeout = entry?.timeout ?? defaultTimeout
-            for (const mcpTool of listed) {
-              result[sanitize(clientName) + "_" + sanitize(mcpTool.name)] = convertMcpTool(mcpTool, client, timeout)
-            }
-          }),
-        { concurrency: "unbounded" },
-      )
+        const timeout = entry?.timeout ?? defaultTimeout
+        for (const mcpTool of listed) {
+          result[sanitize(clientName) + "_" + sanitize(mcpTool.name)] = convertMcpTool(mcpTool, client, timeout)
+        }
+      }
       return result
     })
 
-    function collectFromConnected<T extends { name: string }>(
-      s: State,
-      listFn: (c: Client) => Promise<T[]>,
-      label: string,
-    ) {
+    function collectFromConnected<T extends { name: string }>(s: State, listFn: (c: Client) => Promise<T[]>) {
       return Effect.forEach(
         Object.entries(s.clients).filter(([name]) => s.status[name]?.status === "connected"),
         ([clientName, client]) =>
-          fetchFromClient(clientName, client, listFn, label).pipe(Effect.map((items) => Object.entries(items ?? {}))),
+          fetchFromClient(clientName, client, listFn).pipe(Effect.map((items) => Object.entries(items ?? {}))),
         { concurrency: "unbounded" },
       ).pipe(Effect.map((results) => Object.fromEntries<T & { client: string }>(results.flat())))
     }
 
     const prompts = Effect.fn("MCP.prompts")(function* () {
       const s = yield* InstanceState.get(state)
-      return yield* collectFromConnected(
-        s,
-        (c) =>
-          c.getServerCapabilities()?.prompts
-            ? paginate(
-                (cursor) => c.listPrompts(cursor === undefined ? undefined : { cursor }),
-                (result) => result.prompts,
-              )
-            : Promise.resolve([]),
-        "prompts",
+      return yield* collectFromConnected(s, (c) =>
+        c.getServerCapabilities()?.prompts
+          ? paginate(
+              (cursor) => c.listPrompts(cursor === undefined ? undefined : { cursor }),
+              (result) => result.prompts,
+            )
+          : Promise.resolve([]),
       )
     })
 
     const resources = Effect.fn("MCP.resources")(function* () {
       const s = yield* InstanceState.get(state)
-      return yield* collectFromConnected(
-        s,
-        (c) =>
-          c.getServerCapabilities()?.resources
-            ? paginate(
-                (cursor) => c.listResources(cursor === undefined ? undefined : { cursor }),
-                (result) => result.resources,
-              )
-            : Promise.resolve([]),
-        "resources",
+      return yield* collectFromConnected(s, (c) =>
+        c.getServerCapabilities()?.resources
+          ? paginate(
+              (cursor) => c.listResources(cursor === undefined ? undefined : { cursor }),
+              (result) => result.resources,
+            )
+          : Promise.resolve([]),
       )
     })
 
-    const withClient = Effect.fnUntraced(function* <A>(
-      clientName: string,
-      fn: (client: MCPClient) => Promise<A>,
-      label: string,
-      meta?: Record<string, unknown>,
-    ) {
+    const withClient = Effect.fnUntraced(function* <A>(clientName: string, fn: (client: MCPClient) => Promise<A>) {
       const s = yield* InstanceState.get(state)
       const client = s.clients[clientName]
-      if (!client) {
-        return undefined
-      }
-      return yield* Effect.tryPromise({
-        try: () => fn(client),
-        catch: (e: any) => {
-          return e
-        },
-      }).pipe(Effect.orElseSucceed(() => undefined))
+      if (!client) return undefined
+      return yield* Effect.tryPromise(() => fn(client)).pipe(Effect.orElseSucceed(() => undefined))
     })
 
     const getPrompt = Effect.fn("MCP.getPrompt")(function* (
@@ -759,15 +714,11 @@ export const layer = Layer.effect(
       name: string,
       args?: Record<string, string>,
     ) {
-      return yield* withClient(clientName, (client) => client.getPrompt({ name, arguments: args }), "getPrompt", {
-        promptName: name,
-      })
+      return yield* withClient(clientName, (client) => client.getPrompt({ name, arguments: args }))
     })
 
     const readResource = Effect.fn("MCP.readResource")(function* (clientName: string, resourceUri: string) {
-      return yield* withClient(clientName, (client) => client.readResource({ uri: resourceUri }), "readResource", {
-        resourceUri,
-      })
+      return yield* withClient(clientName, (client) => client.readResource({ uri: resourceUri }))
     })
 
     const getMcpConfig = Effect.fnUntraced(function* (mcpName: string) {
@@ -790,7 +741,7 @@ export const layer = Layer.effect(
       const mcpConfig = yield* requireMcpConfig(mcpName)
       if (mcpConfig.type !== "remote") throw new Error(`MCP server ${mcpName} is not a remote server`)
       if (mcpConfig.oauth === false) throw new Error(`MCP server ${mcpName} has OAuth explicitly disabled`)
-      const url = remoteURL(mcpName, mcpConfig.url)
+      const url = remoteURL(mcpConfig.url)
       if (!url) throw new Error(`Invalid MCP URL for "${mcpName}"`)
 
       // OAuth config is optional - if not provided, we'll use auto-discovery
@@ -862,7 +813,7 @@ export const layer = Layer.effect(
           : undefined
         if (!client || !listed) {
           yield* Effect.tryPromise(() => client?.close() ?? Promise.resolve()).pipe(Effect.ignore)
-          return { status: "failed", error: "Failed to get tools" } as Status
+          return { status: "failed", error: "Failed to get tools" } satisfies Status
         }
 
         const s = yield* InstanceState.get(state)
@@ -917,7 +868,7 @@ export const layer = Layer.effect(
       }).pipe(Effect.option)
 
       if (Option.isNone(result)) {
-        return { status: "failed", error: "OAuth completion failed" } as Status
+        return { status: "failed", error: "OAuth completion failed" } satisfies Status
       }
 
       yield* auth.clearCodeVerifier(mcpName)
@@ -946,9 +897,9 @@ export const layer = Layer.effect(
 
     const getAuthStatus = Effect.fn("MCP.getAuthStatus")(function* (mcpName: string) {
       const entry = yield* auth.get(mcpName)
-      if (!entry?.tokens) return "not_authenticated" as AuthStatus
+      if (!entry?.tokens) return "not_authenticated"
       const expired = yield* auth.isTokenExpired(mcpName)
-      return (expired ? "expired" : "authenticated") as AuthStatus
+      return expired ? "expired" : "authenticated"
     })
 
     return Service.of({
