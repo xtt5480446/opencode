@@ -319,6 +319,43 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("does not forward resolved MCP resource references as file downloads", async () => {
+    const messageID = "m-user"
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(messageID),
+        parts: [
+          {
+            ...basePart(messageID, "p1"),
+            type: "text",
+            text: "# Resource contents",
+            synthetic: true,
+          },
+          {
+            ...basePart(messageID, "p2"),
+            type: "file",
+            mime: "text/markdown",
+            filename: "guide",
+            url: "opencode-fixture://guide",
+            source: {
+              type: "resource",
+              clientName: "resource-only-fixture",
+              uri: "opencode-fixture://guide",
+              text: { value: "@fixture-guide", start: 0, end: 14 },
+            },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([
+      {
+        role: "user",
+        content: [{ type: "text", text: "# Resource contents" }],
+      },
+    ])
+  })
+
   test("converts assistant tool completion into tool-call + tool-result messages with attachments", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
