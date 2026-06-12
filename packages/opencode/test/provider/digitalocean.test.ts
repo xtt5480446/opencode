@@ -2,7 +2,7 @@ import { expect } from "bun:test"
 import { Provider } from "../../src/provider/provider"
 
 import { Effect } from "effect"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 
 const DIGITALOCEAN = ProviderV2.ID.make("digitalocean")
@@ -74,8 +74,14 @@ it.instance(
       },
       Effect.gen(function* () {
         const provider = yield* Provider.Service
-        const providers = yield* provider.list()
-        const models = providers[DIGITALOCEAN].models
+        const models = yield* pollWithTimeout(
+          provider.list().pipe(
+            Effect.map((providers) =>
+              providers[DIGITALOCEAN].models["router:my-router"] ? providers[DIGITALOCEAN].models : undefined,
+            ),
+          ),
+          "digitalocean router models were not refreshed",
+        )
         expect(models["router:my-router"]).toBeDefined()
         expect(models["router:my-router"].api.id).toBe("router:my-router")
         expect(models["router:my-router"].api.url).toBe("https://inference.do-ai.run/v1")
@@ -98,8 +104,14 @@ it.instance(
       },
       Effect.gen(function* () {
         const provider = yield* Provider.Service
-        const providers = yield* provider.list()
-        const models = providers[DIGITALOCEAN].models
+        const models = yield* pollWithTimeout(
+          provider.list().pipe(
+            Effect.map((providers) =>
+              providers[DIGITALOCEAN].models["router:stale-router"] ? providers[DIGITALOCEAN].models : undefined,
+            ),
+          ),
+          "digitalocean cached router models were not restored",
+        )
         expect(models["router:stale-router"]).toBeDefined()
       }),
     ),
