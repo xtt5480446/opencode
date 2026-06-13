@@ -8,6 +8,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
+import { createFetchWithInit } from "@modelcontextprotocol/sdk/shared/transport.js"
 import {
   type LoggingMessageNotification,
   LoggingMessageNotificationSchema,
@@ -212,7 +213,7 @@ export const layer = Layer.effect(
       let authProvider: McpOAuthProvider | undefined
 
       if (!oauthDisabled) {
-        authProvider = new McpOAuthProvider(
+        const provider = new McpOAuthProvider(
           key,
           mcp.url,
           {
@@ -227,6 +228,10 @@ export const layer = Layer.effect(
           },
           auth,
         )
+        authProvider = provider
+        yield* Effect.tryPromise(() =>
+          provider.refreshTokensIfExpired(mcp.headers ? createFetchWithInit(fetch, { headers: mcp.headers }) : undefined),
+        ).pipe(Effect.ignore)
       }
 
       const transports: Array<{ name: string; transport: TransportWithAuth }> = [

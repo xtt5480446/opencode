@@ -1,15 +1,18 @@
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js"
+import { discoverOAuthServerInfo, refreshAuthorization, selectResourceURL } from "@modelcontextprotocol/sdk/client/auth.js"
 import type {
   OAuthClientMetadata,
   OAuthTokens,
   OAuthClientInformation,
   OAuthClientInformationFull,
 } from "@modelcontextprotocol/sdk/shared/auth.js"
+import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js"
 import { Effect } from "effect"
 import { McpAuth } from "./auth"
 
 const OAUTH_CALLBACK_PORT = 19876
 const OAUTH_CALLBACK_PATH = "/mcp/oauth/callback"
+const TOKEN_REFRESH_SKEW_SECONDS = 60
 
 export interface McpOAuthConfig {
   clientId?: string
@@ -123,6 +126,28 @@ export class McpOAuthProvider implements OAuthClientProvider {
         this.serverUrl,
       ),
     )
+  }
+
+  async refreshTokensIfExpired(fetchFn?: FetchLike): Promise<boolean> {
+    const entry = await Effect.runPromise(this.auth.getForUrl(this.mcpName, this.serverUrl))
+    if (!entry?.tokens?.refreshToken) return false
+    if (!entry.tokens.expiresAt) return false
+    if (entry.tokens.expiresAt > Date.now() / 1000 + TOKEN_REFRESH_SKEW_SECONDS) return false
+
+    const clientInformation = await this.clientInformation()
+    if (!clientInformation) return false
+
+    const info = await discoverOAuthServerInfo(this.serverUrl, { fetchFn })
+    await this.saveTokens(
+      await refreshAuthorization(info.authorizationServerUrl, {
+        metadata: info.authorizationServerMetadata,
+        clientInformation,
+        refreshToken: entry.tokens.refreshToken,
+        resource: await selectResourceURL(this.serverUrl, this, info.resourceMetadata),
+        fetchFn,
+      }),
+    )
+    return true
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {

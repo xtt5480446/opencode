@@ -3,6 +3,7 @@ import { expect, mock, beforeEach } from "bun:test"
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js"
 import { Cause, Effect, Exit } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
+import type { McpAuth } from "../../src/mcp/auth"
 import { testEffect } from "../lib/effect"
 import { TestInstance } from "../fixture/fixture"
 
@@ -52,6 +53,7 @@ let clientCreateCount = 0
 let transportCloseCount = 0
 // Captures the opts passed to each MockStdioTransport, keyed by lastCreatedClientName
 const stdioOptsByName = new Map<string, any>()
+let refreshAuthorizationCalls = 0
 
 function getOrCreateClientState(name?: string): MockClientState {
   const key = name ?? "default"
@@ -139,6 +141,18 @@ void mock.module("@modelcontextprotocol/sdk/client/auth.js", () => ({
   UnauthorizedError: class extends Error {
     constructor() {
       super("Unauthorized")
+    }
+  },
+  discoverOAuthServerInfo: async () => ({ authorizationServerUrl: "https://auth.example.com" }),
+  selectResourceURL: async () => undefined,
+  refreshAuthorization: async () => {
+    refreshAuthorizationCalls++
+    return {
+      access_token: "new-access-token",
+      token_type: "Bearer",
+      refresh_token: "new-refresh-token",
+      expires_in: 3600,
+      scope: "read",
     }
   },
 }))
@@ -238,11 +252,13 @@ beforeEach(() => {
   connectError = "Mock transport cannot connect"
   clientCreateCount = 0
   transportCloseCount = 0
+  refreshAuthorizationCalls = 0
 })
 
 // Import after mocks
 const { MCP } = await import("../../src/mcp/index")
 const { McpOAuthCallback } = await import("../../src/mcp/oauth-callback")
+const { McpOAuthProvider } = await import("../../src/mcp/oauth-provider")
 
 const it = testEffect(MCP.defaultLayer)
 
@@ -250,6 +266,45 @@ function statusName(status: Record<string, MCPNS.Status> | MCPNS.Status, server:
   if ("status" in status) return status.status
   return status[server]?.status
 }
+
+it.live("McpOAuthProvider refreshes expired stored tokens", () =>
+  Effect.gen(function* () {
+    const entry: McpAuth.Entry = {
+      serverUrl: "https://mcp.example.com/mcp",
+      clientInfo: { clientId: "client-id" },
+      tokens: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: Date.now() / 1000 - 1,
+      },
+    }
+    const auth: Pick<McpAuth.Interface, "getForUrl" | "updateTokens"> = {
+      getForUrl: () => Effect.succeed(entry),
+      updateTokens: (_mcpName: string, tokens: McpAuth.Tokens, serverUrl?: string) =>
+        Effect.sync(() => {
+          entry.tokens = tokens
+          entry.serverUrl = serverUrl ?? entry.serverUrl
+        }),
+    }
+
+    const refreshed = yield* Effect.promise(() =>
+      new McpOAuthProvider(
+        "remote-server",
+        "https://mcp.example.com/mcp",
+        {},
+        { onRedirect: async () => {} },
+        auth as McpAuth.Interface,
+      ).refreshTokensIfExpired(),
+    )
+
+    expect(refreshed).toBe(true)
+    expect(refreshAuthorizationCalls).toBe(1)
+    if (!entry.tokens) throw new Error("tokens were not saved")
+    expect(entry.tokens.accessToken).toBe("new-access-token")
+    expect(entry.tokens.refreshToken).toBe("new-refresh-token")
+    expect(entry.tokens.expiresAt).toBeGreaterThan(Date.now() / 1000)
+  }),
+)
 
 it.instance(
   "local mcp cwd resolves relative paths against instance directory",
