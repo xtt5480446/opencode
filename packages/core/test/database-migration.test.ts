@@ -14,6 +14,7 @@ import sessionMessageProjectionOrderMigration from "@opencode-ai/core/database/m
 import eventSourcedSessionInputMigration from "@opencode-ai/core/database/migration/20260604172448_event_sourced_session_input"
 import contextEpochAgentMigration from "@opencode-ai/core/database/migration/20260605042240_add_context_epoch_agent"
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
+import backfillProjectCopyStrategyMigration from "@opencode-ai/core/database/migration/20260613210000_backfill_project_copy_strategy"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -146,6 +147,29 @@ describe("DatabaseMigration", () => {
         expect(yield* db.get(sql`SELECT connector_id, method_id, active FROM credential WHERE id = 'current'`)).toEqual(
           { connector_id: null, method_id: null, active: null },
         )
+      }),
+    )
+  })
+
+  test("backfills strategies for legacy project copies", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(
+          sql`CREATE TABLE project_directory (project_id text NOT NULL, directory text NOT NULL, type text, strategy text, time_created integer NOT NULL, PRIMARY KEY (project_id, directory))`,
+        )
+        yield* db.run(
+          sql`INSERT INTO project_directory (project_id, directory, type, strategy, time_created) VALUES ('project', '/root', 'main', NULL, 1), ('project', '/copy', 'git_worktree', NULL, 2)`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [backfillProjectCopyStrategyMigration])
+
+        expect(
+          yield* db.all(sql`SELECT directory, strategy FROM project_directory ORDER BY directory`),
+        ).toEqual([
+          { directory: "/copy", strategy: "git_worktree" },
+          { directory: "/root", strategy: null },
+        ])
       }),
     )
   })
