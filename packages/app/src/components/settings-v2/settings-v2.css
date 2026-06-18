@@ -167,6 +167,14 @@
   background-color: var(--v2-background-bg-layer-01);
 }
 
+@media (max-width: 639px) {
+  .settings-v2[data-orientation="vertical"] [data-slot="tabs-v2-list"] {
+    width: 144px;
+    min-width: 144px;
+    padding-inline: 8px;
+  }
+}
+
 .settings-v2-nav-footer {
   display: flex;
   flex-direction: column;
