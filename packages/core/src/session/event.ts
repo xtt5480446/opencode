@@ -124,7 +124,7 @@ export namespace Run {
     ...options,
     schema: {
       ...Base,
-      reason: Schema.Literals(["execution-failed", "step-limit-exceeded", "unknown"]),
+      reason: Schema.Literals(["execution-failed", "unknown"]),
       input: Schema.Struct({
         messageID: SessionMessageID.ID,
         admittedSeq: NonNegativeInt,

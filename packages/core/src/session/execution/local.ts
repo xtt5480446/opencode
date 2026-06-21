@@ -41,7 +41,7 @@ export const layer = Layer.effect(
           yield* events.publish(SessionEvent.Run.Failed, {
             sessionID,
             timestamp: yield* DateTime.now,
-            reason: error instanceof SessionRunner.StepLimitExceededError ? "step-limit-exceeded" : "execution-failed",
+            reason: error === undefined ? "unknown" : "execution-failed",
             ...(input === undefined
               ? {}
               : {

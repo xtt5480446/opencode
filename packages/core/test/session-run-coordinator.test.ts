@@ -915,19 +915,24 @@ describe("SessionRunCoordinator", () => {
       Effect.gen(function* () {
         const failure = new Error("wake failed")
         const reported: Cause.Cause<Error>[] = []
+        const contexts: Array<{ readonly mode: "wake"; readonly seq?: number }> = []
         const reportedOnce = yield* Deferred.make<void>()
         const coordinator = yield* SessionRunCoordinator.make<string, void, Error>({
           drain: () => Effect.fail(failure),
-          onFailure: (_key, cause) =>
-            Effect.sync(() => reported.push(cause)).pipe(Effect.andThen(Deferred.succeed(reportedOnce, undefined))),
+          onFailure: (_key, cause, context) =>
+            Effect.sync(() => {
+              reported.push(cause)
+              contexts.push(context)
+            }).pipe(Effect.andThen(Deferred.succeed(reportedOnce, undefined))),
         })
 
-        yield* coordinator.wake("session")
+        yield* coordinator.wake("session", 7)
         yield* Deferred.await(reportedOnce)
         yield* Effect.yieldNow
 
         expect(reported).toHaveLength(1)
         expect(Cause.squash(reported[0]!)).toBe(failure)
+        expect(contexts).toEqual([{ mode: "wake", seq: 7 }])
       }),
     ),
   )
