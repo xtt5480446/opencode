@@ -4,17 +4,21 @@ import * as TestClock from "effect/testing/TestClock"
 import { Integration } from "@opencode-ai/core/integration"
 import { Credential } from "@opencode-ai/core/credential"
 import { EventV2 } from "@opencode-ai/core/event"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { it } from "./lib/effect"
 
-const layer = Integration.locationLayer.pipe(
-  Layer.provide(EventV2.defaultLayer),
-  Layer.provide(
-    Layer.mock(Credential.Service)({
-      create: () => Effect.die("unexpected credential creation"),
-      list: () => Effect.succeed([]),
-    }),
-  ),
-)
+const root = LayerNode.group([Integration.node, EventV2.node])
+const layer = LayerNode.buildLayer(root, {
+  replacements: [
+    LayerNode.replace(
+      Credential.node,
+      Layer.mock(Credential.Service)({
+        create: () => Effect.die("unexpected credential creation"),
+        list: () => Effect.succeed([]),
+      }),
+    ),
+  ],
+})
 
 function connectionLayer(
   created: Array<{
@@ -23,24 +27,26 @@ function connectionLayer(
     value: Credential.Info
   }>,
 ) {
-  return Integration.locationLayer.pipe(
-    Layer.provideMerge(EventV2.defaultLayer),
-    Layer.provide(
-      Layer.mock(Credential.Service)({
-        create: (input) =>
-          Effect.sync(() => {
-            created.push(input)
-            return new Credential.Stored({
-              id: Credential.ID.create(),
-              integrationID: input.integrationID,
-              label: input.label ?? "default",
-              value: input.value,
-            })
-          }),
-        list: () => Effect.succeed([]),
-      }),
-    ),
-  )
+  return LayerNode.buildLayer(root, {
+    replacements: [
+      LayerNode.replace(
+        Credential.node,
+        Layer.mock(Credential.Service)({
+          create: (input) =>
+            Effect.sync(() => {
+              created.push(input)
+              return new Credential.Stored({
+                id: Credential.ID.create(),
+                integrationID: input.integrationID,
+                label: input.label ?? "default",
+                value: input.value,
+              })
+            }),
+          list: () => Effect.succeed([]),
+        }),
+      ),
+    ],
+  })
 }
 
 describe("Integration", () => {
@@ -357,14 +363,16 @@ describe("Integration", () => {
         value: new Credential.Key({ type: "key", key: "b" }),
       },
     ]
-    const projectionLayer = Integration.locationLayer.pipe(
-      Layer.provide(EventV2.defaultLayer),
-      Layer.provide(
-        Layer.mock(Credential.Service)({
-          list: () => Effect.succeed(rows.map((row) => new Credential.Stored(row))),
-        }),
-      ),
-    )
+    const projectionLayer = LayerNode.buildLayer(root, {
+      replacements: [
+        LayerNode.replace(
+          Credential.node,
+          Layer.mock(Credential.Service)({
+            list: () => Effect.succeed(rows.map((row) => new Credential.Stored(row))),
+          }),
+        ),
+      ],
+    })
     return Effect.acquireUseRelease(
       Effect.sync(() => {
         const previous = process.env.INTEGRATION_TEST_ACME_KEY

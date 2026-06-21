@@ -9,6 +9,7 @@ import { State } from "./state"
 import { Identifier } from "./util/identifier"
 import { EventV2 } from "./event"
 import { IntegrationConnection } from "./integration/connection"
+import { LayerNode } from "./effect/layer-node"
 
 export const ID = IntegrationSchema.ID
 export type ID = IntegrationSchema.ID
@@ -567,3 +568,5 @@ export const locationLayer = Layer.effect(
     })
   }),
 )
+
+export const node = LayerNode.make(locationLayer, [Credential.node, EventV2.node])
