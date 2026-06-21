@@ -10,6 +10,10 @@ import ignore from "ignore"
 import path from "path"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
+import { InvalidRequestError } from "../errors"
+
+const invalidRequest = (error: FileSystem.PathError | FSUtil.Error) =>
+  new InvalidRequestError({ message: error.message, kind: error._tag })
 
 export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handlers) =>
   Effect.gen(function* () {
@@ -79,7 +83,9 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
             .readFileString(path.join(location.project.directory, ".ignore"))
             .pipe(Effect.catch(() => Effect.succeed("")))
           if (ignorefile) ignored.add(ignorefile)
-          return (yield* fs.list({ path: RelativePath.make(ctx.query.path) })).map((item) => ({
+          return (yield* fs
+            .list({ path: RelativePath.make(ctx.query.path) })
+            .pipe(Effect.mapError(invalidRequest))).map((item) => ({
             name: path.basename(item.path),
             path: item.path,
             absolute: path.resolve(location.directory, item.path),
@@ -101,6 +107,7 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
       return yield* filesystem(
         FileSystem.Service.use((fs) => fs.read({ path: RelativePath.make(ctx.query.path) })),
       ).pipe(
+        Effect.mapError(invalidRequest),
         Effect.flatMap((item) =>
           Effect.gen(function* () {
             const text = item.content.includes(0)

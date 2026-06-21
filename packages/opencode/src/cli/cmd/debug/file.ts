@@ -1,10 +1,11 @@
 import { EOL } from "os"
 import { Effect } from "effect"
 import { FileSystem } from "@opencode-ai/core/filesystem"
+import { FSUtil } from "@opencode-ai/core/fs-util"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath, RelativePath } from "@opencode-ai/core/schema"
-import { effectCmd } from "../../effect-cmd"
+import { CliError, effectCmd } from "../../effect-cmd"
 import { cmd } from "../cmd"
 
 const filesystem = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -12,6 +13,8 @@ const filesystem = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.provide(LocationServiceMap.get(Location.Ref.make({ directory: AbsolutePath.make(process.cwd()) }))),
     Effect.provide(LocationServiceMap.layer),
   )
+
+const fileError = (error: FileSystem.PathError | FSUtil.Error) => new CliError({ message: error.message })
 
 const FileSearchCommand = effectCmd({
   command: "search <query>",
@@ -38,7 +41,9 @@ const FileReadCommand = effectCmd({
       description: "File path to read",
     }),
   handler: Effect.fn("Cli.debug.file.read")(function* (args) {
-    const file = yield* filesystem(FileSystem.Service.use((svc) => svc.read({ path: RelativePath.make(args.path) })))
+    const file = yield* filesystem(
+      FileSystem.Service.use((svc) => svc.read({ path: RelativePath.make(args.path) })),
+    ).pipe(Effect.mapError(fileError))
     process.stdout.write(
       JSON.stringify(
         { content: Buffer.from(file.content).toString("base64"), encoding: "base64", mime: file.mime },
@@ -59,7 +64,9 @@ const FileListCommand = effectCmd({
       description: "File path to list",
     }),
   handler: Effect.fn("Cli.debug.file.list")(function* (args) {
-    const files = yield* filesystem(FileSystem.Service.use((svc) => svc.list({ path: RelativePath.make(args.path) })))
+    const files = yield* filesystem(
+      FileSystem.Service.use((svc) => svc.list({ path: RelativePath.make(args.path) })),
+    ).pipe(Effect.mapError(fileError))
     process.stdout.write(JSON.stringify(files, null, 2) + EOL)
   }),
 })
