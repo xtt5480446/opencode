@@ -24,7 +24,7 @@ bun run verify:package
 
 After the release PR reaches `dev`, manually dispatch the `http-recorder release` workflow from the `dev` branch. The workflow repeats the focused tests, builds and verifies the exact tarball in a clean npm consumer, and publishes it with provenance under the `beta` tag.
 
-The bootstrap release requires an npm automation token in the repository's `NPM_TOKEN` secret. After the package exists, configure npm trusted publishing for `.github/workflows/http-recorder-release.yml` and the `npm` GitHub environment, then remove the token so later releases use GitHub OIDC.
+The bootstrap release uses the repository's existing `NPM_TOKEN` secret because npm trusted publishing cannot be configured for a package that does not exist yet. After the package exists, configure its npm trusted publisher for repository `anomalyco/opencode` and workflow `http-recorder-release.yml`, then remove `NODE_AUTH_TOKEN` from the workflow so later releases authenticate through GitHub OIDC like the repository's other npm packages.
 
 Verify the result:
 

@@ -13,11 +13,15 @@ jobs:
   release:
     if: github.repository == 'anomalyco/opencode' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
-    environment: npm
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - uses: ./.github/actions/setup-bun
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
 
       - name: Verify package
         working-directory: packages/http-recorder
@@ -26,10 +30,6 @@ jobs:
           bun typecheck
 
       - name: Publish beta
-        run: |
-          if [ -n "$NODE_AUTH_TOKEN" ]; then
-            npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
-          fi
-          bun run release:http-recorder
+        run: bun run release:http-recorder
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
