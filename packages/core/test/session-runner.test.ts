@@ -2927,6 +2927,43 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("leaves queued input pending after a terminal provider error", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const { db } = yield* Database.Service
+      yield* session.prompt({ sessionID, prompt: new Prompt({ text: "Fail first" }), resume: false })
+      yield* session.prompt({
+        sessionID,
+        prompt: new Prompt({ text: "Run after explicit resume" }),
+        delivery: "queue",
+        resume: false,
+      })
+
+      requests.length = 0
+      responses = [
+        [LLMEvent.stepStart({ index: 0 }), LLMEvent.providerError({ message: "Provider unavailable" })],
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+          LLMEvent.finish({ reason: "stop" }),
+        ],
+      ]
+
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(1)
+      expect(yield* SessionInput.hasPending(db, sessionID, "queue")).toBe(true)
+      expect(userTexts(requests[0]!)).toEqual(["Fail first"])
+
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(2)
+      expect(yield* SessionInput.hasPending(db, sessionID, "queue")).toBe(false)
+      expect(userTexts(requests[1]!)).toEqual(["Fail first", "Run after explicit resume"])
+    }),
+  )
+
   it.effect("projects provider errors emitted before assistant step start", () =>
     Effect.gen(function* () {
       yield* setup
