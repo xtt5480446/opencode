@@ -24782,7 +24782,7 @@
             "properties": {
               "type": {
                 "type": "string",
-                "enum": ["session.next.step.ended.2"]
+                "enum": ["session.next.step.ended.1"]
               },
               "id": {
                 "type": "string",
@@ -24874,7 +24874,7 @@
             "properties": {
               "type": {
                 "type": "string",
-                "enum": ["session.next.step.failed.2"]
+                "enum": ["session.next.step.failed.1"]
               },
               "id": {
                 "type": "string",

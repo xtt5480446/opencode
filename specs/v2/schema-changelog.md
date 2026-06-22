@@ -3,6 +3,7 @@
 ## 2026-06-22: Reset Unpublished Compaction Event
 
 - Replace the unpublished `session.next.compaction.ended.1` payload with the current checkpoint payload and remove its legacy decoder.
+- Reset the current `session.next.step.ended` and `session.next.step.failed` payloads to version `1` now that incompatible experimental history has been discarded.
 - Reset experimental events, sequences, Session inputs, projected Session messages, Context Epochs, synchronized workspace rows, and Session workspace links.
 - Preserve canonical V1 `session`, `message`, and `part` rows.
 
@@ -96,11 +97,11 @@ Compatibility:
 - Existing generated Session and Event IDs retain their current prefixes and generation behavior.
 - Deterministic constructors are additive internal helpers; public ID schemas remain strings with their existing prefixes.
 
-### Durable Step Settlement Ownership
+### Earlier Durable Step Settlement Ownership
 
 Affected schema:
 
-- `session.next.step.ended` and `session.next.step.failed` synchronized event version `2`.
+- Earlier experimental `session.next.step.ended` and `session.next.step.failed` synchronized event version `2`.
 
 Change:
 
@@ -112,7 +113,7 @@ Reason:
 
 Compatibility:
 
-- Step settlement uses synchronized event version `2` because the durable payload changed.
+- The payload originally used synchronized event version `2`; the June 22 reset later made the current payload version `1`.
 
 ### Durable Session Input Inbox
 

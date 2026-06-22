@@ -180,7 +180,7 @@ describe("SessionRunnerLLM recorded", () => {
         "session.next.step.started.1",
         "session.next.text.started.1",
         "session.next.text.ended.1",
-        "session.next.step.ended.2",
+        "session.next.step.ended.1",
       ])
     }),
   )

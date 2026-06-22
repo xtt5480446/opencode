@@ -41,6 +41,55 @@ const assistantRow = (
 }
 
 describe("SessionProjector", () => {
+  it.effect("stores step settlement events as version 1", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "test",
+          directory: "/project",
+          title: "test",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+
+      const events = yield* EventV2.Service
+      const assistantMessageID = SessionMessage.ID.make("msg_assistant")
+      yield* events.publish(SessionEvent.Step.Ended, {
+        sessionID,
+        assistantMessageID,
+        timestamp: created,
+        finish: "stop",
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      })
+      yield* events.publish(SessionEvent.Step.Failed, {
+        sessionID,
+        assistantMessageID,
+        timestamp: created,
+        error: { type: "unknown", message: "failed" },
+      })
+
+      expect(
+        (yield* db
+          .select({ type: EventTable.type })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, sessionID))
+          .orderBy(EventTable.seq)
+          .all()).map((event) => event.type),
+      ).toEqual(["session.next.step.ended.1", "session.next.step.failed.1"])
+    }),
+  )
+
   it.effect("orders projected messages and context by durable aggregate sequence", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service

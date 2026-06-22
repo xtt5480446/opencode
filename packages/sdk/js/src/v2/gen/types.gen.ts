@@ -3334,7 +3334,7 @@ export type SyncEventSessionNextStepEnded = {
   type: "sync"
   id: string
   syncEvent: {
-    type: "session.next.step.ended.2"
+    type: "session.next.step.ended.1"
     id: string
     seq: number
     aggregateID: string
@@ -3362,7 +3362,7 @@ export type SyncEventSessionNextStepFailed = {
   type: "sync"
   id: string
   syncEvent: {
-    type: "session.next.step.failed.2"
+    type: "session.next.step.failed.1"
     id: string
     seq: number
     aggregateID: string

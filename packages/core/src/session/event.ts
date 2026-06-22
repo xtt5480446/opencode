@@ -32,12 +32,6 @@ const options = {
     version: 1,
   },
 } as const
-const stepSettlementOptions = {
-  durable: {
-    aggregate: "sessionID",
-    version: 2,
-  },
-} as const
 
 export const UnknownError = Schema.Struct({
   type: Schema.Literal("unknown"),
@@ -181,7 +175,7 @@ export namespace Step {
 
   export const Ended = EventV2.define({
     type: "session.next.step.ended",
-    ...stepSettlementOptions,
+    ...options,
     schema: {
       ...Base,
       assistantMessageID: SessionMessageID.ID,
@@ -203,7 +197,7 @@ export namespace Step {
 
   export const Failed = EventV2.define({
     type: "session.next.step.failed",
-    ...stepSettlementOptions,
+    ...options,
     schema: {
       ...Base,
       assistantMessageID: SessionMessageID.ID,
