@@ -30,11 +30,19 @@ export interface RemoveInput {
 
 export class StaleContentError extends Schema.TaggedErrorClass<StaleContentError>()("FileMutation.StaleContentError", {
   path: Schema.String,
-}) {}
+}) {
+  override get message() {
+    return `File changed since it was read: ${this.path}`
+  }
+}
 
 export class TargetExistsError extends Schema.TaggedErrorClass<TargetExistsError>()("FileMutation.TargetExistsError", {
   path: Schema.String,
-}) {}
+}) {
+  override get message() {
+    return `File already exists: ${this.path}`
+  }
+}
 
 export interface WriteResult {
   readonly operation: "write"

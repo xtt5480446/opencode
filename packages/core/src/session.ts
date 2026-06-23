@@ -83,21 +83,33 @@ type CompactInput = {
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Session.NotFoundError", {
   sessionID: SessionSchema.ID,
-}) {}
+}) {
+  override get message() {
+    return `Session not found: ${this.sessionID}`
+  }
+}
 
 export class OperationUnavailableError extends Schema.TaggedErrorClass<OperationUnavailableError>()(
   "Session.OperationUnavailableError",
   {
     operation: Schema.Literals(["move", "shell", "skill", "switchAgent", "compact", "wait"]),
   },
-) {}
+) {
+  override get message() {
+    return `Session ${this.operation} is not available yet`
+  }
+}
 
 export { ContextSnapshotDecodeError, MessageDecodeError } from "./session/error"
 
 export class PromptConflictError extends Schema.TaggedErrorClass<PromptConflictError>()("Session.PromptConflictError", {
   sessionID: SessionSchema.ID,
   messageID: SessionMessage.ID,
-}) {}
+}) {
+  override get message() {
+    return `Prompt message ${this.messageID} conflicts with an existing durable record in session ${this.sessionID}`
+  }
+}
 
 export type Error = NotFoundError | MessageDecodeError | OperationUnavailableError | PromptConflictError
 

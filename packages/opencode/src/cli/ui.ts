@@ -9,6 +9,7 @@ const wordmark = [
   `▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀`,
 ]
 
+// oxlint-disable-next-line opencode/tagged-error-message -- CLI cancellation intentionally renders without an error message.
 export class CancelledError extends Schema.TaggedErrorClass<CancelledError>()("UICancelledError", {}) {}
 
 export const Style = {

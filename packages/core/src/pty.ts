@@ -94,11 +94,19 @@ export type Attachment = {
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Pty.NotFoundError", {
   ptyID: PtyID,
-}) {}
+}) {
+  override get message() {
+    return `PTY session not found: ${this.ptyID}`
+  }
+}
 
 export class ExitedError extends Schema.TaggedErrorClass<ExitedError>()("Pty.ExitedError", {
   ptyID: PtyID,
-}) {}
+}) {
+  override get message() {
+    return `PTY session has exited: ${this.ptyID}`
+  }
+}
 
 export const Event = {
   Created: EventV2.define({ type: "pty.created", schema: { info: Info } }),

@@ -16,11 +16,19 @@ export namespace EffectFlock {
 
   export class LockTimeoutError extends Schema.TaggedErrorClass<LockTimeoutError>()("LockTimeoutError", {
     key: Schema.String,
-  }) {}
+  }) {
+    override get message() {
+      return `Timed out acquiring lock: ${this.key}`
+    }
+  }
 
   export class LockCompromisedError extends Schema.TaggedErrorClass<LockCompromisedError>()("LockCompromisedError", {
     detail: Schema.String,
-  }) {}
+  }) {
+    override get message() {
+      return `Lock was compromised: ${this.detail}`
+    }
+  }
 
   class ReleaseError extends Schema.TaggedErrorClass<ReleaseError>()("ReleaseError", {
     detail: Schema.String,
@@ -32,6 +40,7 @@ export namespace EffectFlock {
   }
 
   /** Internal: signals "lock is held, retry later". Never leaks to callers. */
+  // oxlint-disable-next-line opencode/tagged-error-message -- internal retry sentinel for lock contention
   class NotAcquired extends Schema.TaggedErrorClass<NotAcquired>()("NotAcquired", {}) {}
 
   export type LockError = LockTimeoutError | LockCompromisedError

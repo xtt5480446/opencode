@@ -3,50 +3,86 @@ import { Schema } from "effect"
 
 export class SessionNotFoundError extends Schema.TaggedErrorClass<SessionNotFoundError>()("ACPSessionNotFoundError", {
   sessionId: Schema.String,
-}) {}
+}) {
+  override get message() {
+    return `session not found: ${this.sessionId}`
+  }
+}
 
 export class InvalidConfigOptionError extends Schema.TaggedErrorClass<InvalidConfigOptionError>()(
   "ACPInvalidConfigOptionError",
   {
     configId: Schema.String,
   },
-) {}
+) {
+  override get message() {
+    return `unknown config option: ${this.configId}`
+  }
+}
 
 export class InvalidModelError extends Schema.TaggedErrorClass<InvalidModelError>()("ACPInvalidModelError", {
   modelId: Schema.String,
   providerId: Schema.optional(Schema.String),
-}) {}
+}) {
+  override get message() {
+    return `model not found: ${this.modelId}`
+  }
+}
 
 export class InvalidEffortError extends Schema.TaggedErrorClass<InvalidEffortError>()("ACPInvalidEffortError", {
   effort: Schema.String,
-}) {}
+}) {
+  override get message() {
+    return `effort not found: ${this.effort}`
+  }
+}
 
 export class InvalidModeError extends Schema.TaggedErrorClass<InvalidModeError>()("ACPInvalidModeError", {
   mode: Schema.String,
-}) {}
+}) {
+  override get message() {
+    return `mode not found: ${this.mode}`
+  }
+}
 
 export class AuthRequiredError extends Schema.TaggedErrorClass<AuthRequiredError>()("ACPAuthRequiredError", {
   providerId: Schema.optional(Schema.String),
-}) {}
+}) {
+  override get message() {
+    return "provider authentication required"
+  }
+}
 
 export class UnknownAuthMethodError extends Schema.TaggedErrorClass<UnknownAuthMethodError>()(
   "ACPUnknownAuthMethodError",
   {
     methodId: Schema.String,
   },
-) {}
+) {
+  override get message() {
+    return `unknown auth method: ${this.methodId}`
+  }
+}
 
 export class UnsupportedOperationError extends Schema.TaggedErrorClass<UnsupportedOperationError>()(
   "ACPUnsupportedOperationError",
   {
     method: Schema.String,
   },
-) {}
+) {
+  override get message() {
+    return `method not found: ${this.method}`
+  }
+}
 
 export class ServiceFailureError extends Schema.TaggedErrorClass<ServiceFailureError>()("ACPServiceFailureError", {
   safeMessage: Schema.String,
   service: Schema.optional(Schema.String),
-}) {}
+}) {
+  override get message() {
+    return this.safeMessage
+  }
+}
 
 export type Error =
   | SessionNotFoundError

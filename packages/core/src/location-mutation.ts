@@ -23,7 +23,13 @@ export type ResolveInput = typeof ResolveInput.Type
 export class PathError extends Schema.TaggedErrorClass<PathError>()("LocationMutation.PathError", {
   path: Schema.String,
   reason: Schema.Literals(["relative_escape", "location_escape", "non_directory_ancestor"]),
-}) {}
+}) {
+  override get message() {
+    if (this.reason === "relative_escape") return `Relative path escapes the location: ${this.path}`
+    if (this.reason === "location_escape") return `Path resolves outside the location: ${this.path}`
+    return `Path has a non-directory ancestor: ${this.path}`
+  }
+}
 
 export interface ExternalDirectoryAuthorization {
   readonly action: "external_directory"

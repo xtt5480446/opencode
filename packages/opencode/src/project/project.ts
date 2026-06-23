@@ -102,7 +102,11 @@ export type UpdatePayload = Types.DeepMutable<Schema.Schema.Type<typeof UpdatePa
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Project.NotFoundError", {
   projectID: ProjectV2.ID,
-}) {}
+}) {
+  override get message() {
+    return `Project not found: ${this.projectID}`
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Effect service

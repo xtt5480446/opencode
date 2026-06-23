@@ -58,32 +58,56 @@ export type ListEntry = typeof ListEntry.Type
 export class SourceDirectoryNotFoundError extends Schema.TaggedErrorClass<SourceDirectoryNotFoundError>()(
   "ProjectCopy.SourceDirectoryNotFoundError",
   { directory: AbsolutePath },
-) {}
+) {
+  override get message() {
+    return `Project copy source directory not found: ${this.directory}`
+  }
+}
 
 export class DestinationExistsError extends Schema.TaggedErrorClass<DestinationExistsError>()(
   "ProjectCopy.DestinationExistsError",
   { directory: AbsolutePath },
-) {}
+) {
+  override get message() {
+    return `Project copy destination already exists: ${this.directory}`
+  }
+}
 
 export class DirectoryUnavailableError extends Schema.TaggedErrorClass<DirectoryUnavailableError>()(
   "ProjectCopy.DirectoryUnavailableError",
   { directory: AbsolutePath },
-) {}
+) {
+  override get message() {
+    return `Project copy directory is unavailable: ${this.directory}`
+  }
+}
 
 export class InvalidDirectoryError extends Schema.TaggedErrorClass<InvalidDirectoryError>()(
   "ProjectCopy.InvalidDirectoryError",
   { directory: AbsolutePath },
-) {}
+) {
+  override get message() {
+    return `Invalid project copy directory: ${this.directory}`
+  }
+}
 
 export class StrategyUnavailableError extends Schema.TaggedErrorClass<StrategyUnavailableError>()(
   "ProjectCopy.StrategyUnavailableError",
   { strategy: StrategyID },
-) {}
+) {
+  override get message() {
+    return `Project copy strategy is unavailable: ${this.strategy}`
+  }
+}
 
 export class DuplicateStrategyError extends Schema.TaggedErrorClass<DuplicateStrategyError>()(
   "ProjectCopy.DuplicateStrategyError",
   { strategy: StrategyID },
-) {}
+) {
+  override get message() {
+    return `Project copy strategy is already registered: ${this.strategy}`
+  }
+}
 
 export type Error =
   | SourceDirectoryNotFoundError

@@ -1,5 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicolo-ribaudo/oxc-project.github.io/refs/heads/json-schema/src/public/.oxlintrc.schema.json",
+  "jsPlugins": ["./script/lint/opencode.mjs"],
   "options": {
     "typeAware": true
   },
@@ -7,6 +8,7 @@
     "suspicious": "warn"
   },
   "rules": {
+    "opencode/tagged-error-message": "error",
     "typescript/no-base-to-string": "warn",
     // Effect uses `function*` with Effect.gen/Effect.fnUntraced that don't always yield
     "require-yield": "off",
@@ -47,5 +49,5 @@
   "options": {
     "typeAware": true
   },
-  "ignorePatterns": ["**/node_modules", "**/dist", "**/.build", "**/.sst", "**/*.d.ts", "**/sdk.gen.ts"]
+  "ignorePatterns": ["**/node_modules", "**/dist", "**/.build", "**/.sst", "**/.lint-tmp-*", "**/*.d.ts", "**/sdk.gen.ts"]
 }

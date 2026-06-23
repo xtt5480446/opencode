@@ -8,7 +8,9 @@ export interface Runner<A, E = never> {
   readonly cancel: Effect.Effect<void>
 }
 
+// oxlint-disable-next-line opencode/tagged-error-message -- Internal coordinator signal, not a user-facing error.
 export class Cancelled extends Schema.TaggedErrorClass<Cancelled>()("RunnerCancelled", {}) {}
+// oxlint-disable-next-line opencode/tagged-error-message -- Internal coordinator signal, not a user-facing error.
 export class Busy extends Schema.TaggedErrorClass<Busy>()("RunnerBusy", {}) {}
 
 interface RunHandle<A, E> {

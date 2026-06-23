@@ -68,7 +68,11 @@ export class NameMismatchError extends Schema.TaggedErrorClass<NameMismatchError
   path: Schema.String,
   expected: Schema.String,
   actual: Schema.String,
-}) {}
+}) {
+  override get message() {
+    return `Skill name mismatch at ${this.path}: expected "${this.expected}", got "${this.actual}"`
+  }
+}
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Skill.NotFoundError", {
   name: Schema.String,

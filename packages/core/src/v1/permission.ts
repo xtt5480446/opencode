@@ -91,6 +91,10 @@ export class DeniedError extends Schema.TaggedErrorClass<DeniedError>()("Permiss
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Permission.NotFoundError", {
   requestID: ID,
-}) {}
+}) {
+  override get message() {
+    return `Permission request not found: ${this.requestID}`
+  }
+}
 
 export type Error = DeniedError | RejectedError | CorrectedError

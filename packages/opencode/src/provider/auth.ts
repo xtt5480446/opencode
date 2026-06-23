@@ -67,16 +67,28 @@ export type CallbackInput = Schema.Schema.Type<typeof CallbackInput>
 
 export class OauthMissing extends Schema.TaggedErrorClass<OauthMissing>()("ProviderAuthOauthMissing", {
   providerID: ProviderV2.ID,
-}) {}
+}) {
+  override get message() {
+    return `No pending OAuth authorization for provider: ${this.providerID}`
+  }
+}
 
 export class OauthCodeMissing extends Schema.TaggedErrorClass<OauthCodeMissing>()("ProviderAuthOauthCodeMissing", {
   providerID: ProviderV2.ID,
-}) {}
+}) {
+  override get message() {
+    return `OAuth authorization code is required for provider: ${this.providerID}`
+  }
+}
 
 export class OauthCallbackFailed extends Schema.TaggedErrorClass<OauthCallbackFailed>()(
   "ProviderAuthOauthCallbackFailed",
   {},
-) {}
+) {
+  override get message() {
+    return "OAuth callback failed"
+  }
+}
 
 export class ValidationFailed extends Schema.TaggedErrorClass<ValidationFailed>()("ProviderAuthValidationFailed", {
   field: Schema.String,

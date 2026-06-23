@@ -30,7 +30,11 @@ export class DestinationProjectMismatchError extends Schema.TaggedErrorClass<Des
     expected: ProjectV2.ID,
     actual: ProjectV2.ID,
   },
-) {}
+) {
+  override get message() {
+    return `Destination project ${this.actual} does not match session project ${this.expected}`
+  }
+}
 
 export class ApplyChangesError extends Schema.TaggedErrorClass<ApplyChangesError>()("MoveSession.ApplyChangesError", {
   message: Schema.String,

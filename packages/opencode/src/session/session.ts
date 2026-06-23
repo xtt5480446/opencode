@@ -454,7 +454,11 @@ export const getUsage = (input: { model: Provider.Model; usage: Usage; metadata?
 
 export class BusyError extends Schema.TaggedErrorClass<BusyError>()("SessionBusyError", {
   sessionID: SessionID,
-}) {}
+}) {
+  override get message() {
+    return `Session is busy: ${this.sessionID}`
+  }
+}
 
 export type NotFound = NotFoundError
 

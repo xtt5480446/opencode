@@ -98,7 +98,11 @@ export class RejectedError extends Schema.TaggedErrorClass<RejectedError>()("Que
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Question.NotFoundError", {
   requestID: QuestionID,
-}) {}
+}) {
+  override get message() {
+    return `Question request not found: ${this.requestID}`
+  }
+}
 
 interface PendingEntry {
   info: Request

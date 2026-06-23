@@ -80,7 +80,11 @@ export const Failed = NamedError.create("MCPFailed", {
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("MCP.NotFoundError", {
   name: Schema.String,
-}) {}
+}) {
+  override get message() {
+    return `MCP server not found: ${this.name}`
+  }
+}
 
 type MCPClient = Client
 

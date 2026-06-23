@@ -83,19 +83,36 @@ export const Event = {
   }),
 }
 
-export class RejectedError extends Schema.TaggedErrorClass<RejectedError>()("PermissionV2.RejectedError", {}) {}
+export class RejectedError extends Schema.TaggedErrorClass<RejectedError>()("PermissionV2.RejectedError", {}) {
+  override get message() {
+    return "The user rejected this permission request"
+  }
+}
 
 export class CorrectedError extends Schema.TaggedErrorClass<CorrectedError>()("PermissionV2.CorrectedError", {
   feedback: Schema.String,
-}) {}
+}) {
+  override get message() {
+    return `The user rejected this permission request with feedback: ${this.feedback}`
+  }
+}
 
 export class DeniedError extends Schema.TaggedErrorClass<DeniedError>()("PermissionV2.DeniedError", {
   rules: PermissionSchema.Ruleset,
-}) {}
+}) {
+  override get message() {
+    if (this.rules.length === 0) return "Permission denied by configured rules"
+    return `Permission denied by configured rules: ${this.rules.map((rule) => `${rule.action} ${rule.resource}`).join(", ")}`
+  }
+}
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("PermissionV2.NotFoundError", {
   requestID: ID,
-}) {}
+}) {
+  override get message() {
+    return `Permission request not found: ${this.requestID}`
+  }
+}
 
 export type Error = DeniedError | RejectedError | CorrectedError
 

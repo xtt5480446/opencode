@@ -5,6 +5,7 @@ import { Cause, Context, Effect, Layer, Schema, Scope } from "effect"
 import { ModelV2 } from "./model"
 import { ProviderV2 } from "./provider"
 import { State } from "./state"
+import { errorMessage } from "./util/error"
 
 type SDK = any
 
@@ -123,7 +124,11 @@ function prepareOptions(model: ModelV2.Info, pkg: string) {
 export class InitError extends Schema.TaggedErrorClass<InitError>()("AISDK.InitError", {
   providerID: ProviderV2.ID,
   cause: Schema.Defect(),
-}) {}
+}) {
+  override get message() {
+    return `Failed to initialize AI SDK provider ${this.providerID}: ${errorMessage(this.cause)}`
+  }
+}
 
 function initError(providerID: ProviderV2.ID) {
   return Effect.catchCause((cause) => Effect.fail(new InitError({ providerID, cause: Cause.squash(cause) })))

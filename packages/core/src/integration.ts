@@ -169,11 +169,20 @@ export type AttemptStatus = typeof AttemptStatus.Type
 
 export class CodeRequiredError extends Schema.TaggedErrorClass<CodeRequiredError>()("Integration.CodeRequired", {
   attemptID: AttemptID,
-}) {}
+}) {
+  override get message() {
+    return `Authorization code required for OAuth attempt ${this.attemptID}`
+  }
+}
 
 export class AuthorizationError extends Schema.TaggedErrorClass<AuthorizationError>()("Integration.Authorization", {
   cause: Schema.Defect(),
-}) {}
+}) {
+  override get message() {
+    const detail = this.cause instanceof Error ? this.cause.message : String(this.cause)
+    return `Integration authorization failed${detail ? `: ${detail}` : ""}`
+  }
+}
 
 export type Error = CodeRequiredError | AuthorizationError
 

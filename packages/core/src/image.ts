@@ -7,7 +7,11 @@ import { FileSystem } from "./filesystem"
 export class ResizerUnavailableError extends Schema.TaggedErrorClass<ResizerUnavailableError>()(
   "Image.ResizerUnavailableError",
   {},
-) {}
+) {
+  override get message() {
+    return "Image resizer is unavailable"
+  }
+}
 
 export class DecodeError extends Schema.TaggedErrorClass<DecodeError>()("Image.DecodeError", {
   resource: Schema.String,

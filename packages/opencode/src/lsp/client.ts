@@ -29,7 +29,11 @@ export type Diagnostic = VSCodeDiagnostic
 export class InitializeError extends Schema.TaggedErrorClass<InitializeError>()("LSPInitializeError", {
   serverID: Schema.String,
   cause: Schema.optional(Schema.Defect()),
-}) {}
+}) {
+  override get message() {
+    return `Failed to initialize LSP server: ${this.serverID}`
+  }
+}
 
 type DocumentDiagnosticReport = {
   items?: Diagnostic[]

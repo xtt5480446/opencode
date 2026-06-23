@@ -87,7 +87,11 @@ export class RejectedError extends Schema.TaggedErrorClass<RejectedError>()("Que
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("QuestionV2.NotFoundError", {
   requestID: ID,
-}) {}
+}) {
+  override get message() {
+    return `Question request not found: ${this.requestID}`
+  }
+}
 
 export interface AskInput {
   readonly sessionID: SessionSchema.ID
