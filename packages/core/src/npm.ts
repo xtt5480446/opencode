@@ -11,7 +11,6 @@ import { LayerNode } from "./effect/layer-node"
 import { filesystem } from "./effect/layer-node-platform"
 import { makeRuntime } from "./effect/runtime"
 import { NpmConfig } from "./npm-config"
-import { errorMessage } from "./util/error"
 
 export class InstallFailedError extends Schema.TaggedErrorClass<InstallFailedError>()("NpmInstallFailedError", {
   add: Schema.Array(Schema.String).pipe(Schema.optional),
@@ -19,8 +18,7 @@ export class InstallFailedError extends Schema.TaggedErrorClass<InstallFailedErr
   cause: Schema.optional(Schema.Defect()),
 }) {
   override get message() {
-    const detail = this.cause === undefined ? undefined : errorMessage(this.cause)
-    return `Failed to install ${this.add?.join(", ") || "dependencies"} in ${this.dir}${detail ? `: ${detail}` : ""}`
+    return `Failed to install dependencies in ${this.dir}`
   }
 }
 

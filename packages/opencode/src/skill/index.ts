@@ -60,7 +60,7 @@ function isSkillFrontmatter(data: unknown): data is { name: string; description?
 
 export class InvalidError extends Schema.TaggedErrorClass<InvalidError>()("SkillInvalidError", {
   path: Schema.String,
-  message: Schema.optional(Schema.String),
+  message: Schema.String,
   issues: Schema.optional(Schema.Array(Issue)),
 }) {}
 
