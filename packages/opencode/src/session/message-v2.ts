@@ -676,6 +676,14 @@ export function fromError(
         },
         { cause: e },
       ).toObject()
+    case e instanceof ProviderError.AuthenticationError:
+      return new AuthError(
+        {
+          providerID: ctx.providerID,
+          message: e.message,
+        },
+        { cause: e },
+      ).toObject()
     case e instanceof ProviderError.ResponseStreamError:
       return new APIError(
         {

@@ -188,6 +188,23 @@ describe("plugin.openai.ws-pool", () => {
     fetch.close()
   })
 
+  test("recovers websocket connection failures over HTTP when requested", async () => {
+    let attempts = 0
+    await using server = await createRejectingWebSocketServer(() => attempts++)
+    const fetch = OpenAIWebSocketPool.createWebSocketFetch({
+      url: server.url,
+      recoverWithHttp: true,
+      httpFetch: Object.assign(async () => new Response("unauthorized", { status: 401 }), { preconnect() {} }),
+    })
+
+    const response = await fetch(server.url, streamRequest())
+
+    expect(response.status).toBe(401)
+    expect(await response.text()).toBe("unauthorized")
+    expect(attempts).toBe(1)
+    fetch.close()
+  })
+
   test("falls back to HTTP after websocket setup retries are exhausted", async () => {
     const attempts: string[] = []
     await using server = await createRejectingWebSocketServer(() => attempts.push("websocket"))

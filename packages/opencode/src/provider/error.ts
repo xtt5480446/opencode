@@ -20,6 +20,10 @@ export class ResponseStreamError extends Error {
   }
 }
 
+export class AuthenticationError extends Error {
+  public override readonly name = "ProviderAuthenticationError"
+}
+
 function isOpenAiErrorRetryable(e: APICallError) {
   const status = e.statusCode
   if (!status) return e.isRetryable

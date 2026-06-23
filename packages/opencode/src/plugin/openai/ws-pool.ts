@@ -12,6 +12,7 @@ export interface CreateWebSocketFetchOptions {
   idleTimeout?: number
   maxConnectionAge?: number
   streamRetries?: number
+  recoverWithHttp?: boolean
 }
 
 interface PoolEntry {
@@ -151,7 +152,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
 
       recordStreamFailure(entry)
       invalidate(entry)
-      if (entry.fallback) return httpFetch(input, httpInit)
+      if (options?.recoverWithHttp || entry.fallback) return httpFetch(input, httpInit)
       return failedResponse(
         new ProviderError.ResponseStreamError(error instanceof Error ? error.message : String(error), {
           cause: error,

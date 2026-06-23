@@ -7,6 +7,7 @@ import {
   renderOAuthError,
   type IdTokenClaims,
 } from "../../src/plugin/openai/codex"
+import { ProviderError } from "../../src/provider/error"
 
 function createTestJwt(payload: object): string {
   const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")
@@ -153,8 +154,8 @@ describe("plugin.codex", () => {
     let auth = {
       type: "oauth" as const,
       refresh: "refresh-old",
-      access: "",
-      expires: 0,
+      access: "access-old",
+      expires: Date.now() + 60_000,
     }
     const authUpdates: Array<{
       body: { refresh: string; access: string; expires: number; accountId?: string }
@@ -245,7 +246,94 @@ describe("plugin.codex", () => {
       { authorization: "Bearer access-new", accountId: "acc-123" },
     ])
   })
+
+  test("refreshes and retries once after an unauthorized response", async () => {
+    let auth = {
+      type: "oauth" as const,
+      refresh: "refresh-old",
+      access: "access-old",
+      expires: Date.now() + 60 * 60 * 1000,
+    }
+    const authorizations: Array<string | null> = []
+    let refreshRequests = 0
+
+    using server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url)
+        if (url.pathname === "/oauth/token") {
+          refreshRequests += 1
+          return Response.json({
+            id_token: createTestJwt({ chatgpt_account_id: "acc-123" }),
+            access_token: "access-new",
+            refresh_token: "refresh-new",
+            expires_in: 3600,
+          })
+        }
+        if (url.pathname === "/backend-api/codex/responses") {
+          authorizations.push(request.headers.get("authorization"))
+          return new Response("{}", { status: authorizations.length === 1 ? 401 : 200 })
+        }
+        return new Response("unexpected request", { status: 500 })
+      },
+    })
+    const hooks = await CodexAuthPlugin(
+      pluginInput(async (next) => {
+        auth = { type: "oauth", ...next.body }
+      }),
+      {
+        issuer: server.url.origin,
+        codexApiEndpoint: new URL("/backend-api/codex/responses", server.url).toString(),
+      },
+    )
+    const loaded = await hooks.auth!.loader!(async () => auth as never, {} as never)
+
+    const response = await loaded.fetch!("https://api.openai.com/v1/responses")
+
+    expect(response.status).toBe(200)
+    expect(refreshRequests).toBe(1)
+    expect(authorizations).toEqual(["Bearer access-old", "Bearer access-new"])
+  })
+
+  test("requests reauthentication when token refresh is permanently rejected", async () => {
+    const auth = {
+      type: "oauth" as const,
+      refresh: "refresh-old",
+      access: "access-old",
+      expires: 0,
+    }
+    using server = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json({ error: { code: "refresh_token_invalidated" } }, { status: 401 })
+      },
+    })
+    const hooks = await CodexAuthPlugin(
+      pluginInput(async () => {}),
+      { issuer: server.url.origin },
+    )
+    const loaded = await hooks.auth!.loader!(async () => auth as never, {} as never)
+
+    const error = await loaded.fetch!("https://api.openai.com/v1/responses").catch((error: unknown) => error)
+
+    expect(error).toBeInstanceOf(ProviderError.AuthenticationError)
+    expect(error.message).toContain("opencode auth login")
+  })
 })
+
+function pluginInput(
+  set: (input: { body: { refresh: string; access: string; expires: number; accountId?: string } }) => Promise<void>,
+) {
+  return {
+    client: { auth: { set } },
+    project: {},
+    directory: "",
+    worktree: "",
+    experimental_workspace: { register() {} },
+    serverUrl: new URL("https://example.com"),
+    $: {},
+  } as never
+}
 
 async function waitFor(predicate: () => boolean) {
   const started = Date.now()

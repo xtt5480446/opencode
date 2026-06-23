@@ -182,6 +182,13 @@ describe("session.retry.retryable", () => {
     })
   })
 
+  test("does not retry provider authentication errors", () => {
+    const request = MessageV2.fromError(new ProviderError.AuthenticationError("Sign in again"), { providerID })
+
+    expect(SessionV1.AuthError.isInstance(request)).toBe(true)
+    expect(SessionRetry.retryable(request, retryProvider)).toBeUndefined()
+  })
+
   test("does not retry context overflow errors", () => {
     const error = new SessionV1.ContextOverflowError({
       message: "Input exceeds context window of this model",

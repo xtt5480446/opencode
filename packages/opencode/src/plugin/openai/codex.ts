@@ -6,12 +6,14 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { createServer } from "http"
 import { OpenAIWebSocketPool } from "./ws-pool"
 import { escapeHtml } from "@/util/html"
+import { ProviderError } from "@/provider/error"
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const ISSUER = "https://auth.openai.com"
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 const OAUTH_PORT = 1455
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3000
+const TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000
 const ALLOWED_MODELS = new Set(["gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini"])
 const DISALLOWED_MODELS = new Set(["gpt-5.5-pro"])
 
@@ -133,6 +135,25 @@ async function refreshAccessToken(refreshToken: string, issuer = ISSUER): Promis
     }).toString(),
   })
   if (!response.ok) {
+    const body = await response.text()
+    const code = (() => {
+      try {
+        const parsed = JSON.parse(body)
+        return parsed?.error?.code ?? parsed?.code
+      } catch {
+        return undefined
+      }
+    })()
+    if (
+      response.status === 401 ||
+      code === "refresh_token_expired" ||
+      code === "refresh_token_reused" ||
+      code === "refresh_token_invalidated"
+    ) {
+      throw new ProviderError.AuthenticationError(
+        "Your ChatGPT login could not be refreshed. Run `opencode auth login` to sign in again.",
+      )
+    }
     throw new Error(`Token refresh failed: ${response.status}`)
   }
   return response.json()
@@ -401,7 +422,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
       async loader(getAuth) {
         const auth = await getAuth()
         const websocketFetch = options.experimentalWebSockets
-          ? OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: fetch })
+          ? OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: fetch, recoverWithHttp: auth.type === "oauth" })
           : undefined
         if (websocketFetch) {
           websocketFetches.push(websocketFetch)
@@ -411,7 +432,9 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
 
         let refreshPromise:
           | Promise<{
+              refresh: string
               access: string
+              expires: number
               accountId: string | undefined
             }>
           | undefined
@@ -436,24 +459,26 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
               return websocketFetch ? websocketFetch(requestInput, init) : fetch(requestInput, init)
 
             const authWithAccount = currentAuth as typeof currentAuth & { accountId?: string }
-
-            if (!currentAuth.access || currentAuth.expires < Date.now()) {
+            const refresh = async () => {
               if (!refreshPromise) {
                 refreshPromise = refreshAccessToken(currentAuth.refresh, issuer)
                   .then(async (tokens) => {
                     const accountId = extractAccountId(tokens) || authWithAccount.accountId
+                    const expires = Date.now() + (tokens.expires_in ?? 3600) * 1000
                     await input.client.auth.set({
                       path: { id: "openai" },
                       body: {
                         type: "oauth",
                         refresh: tokens.refresh_token,
                         access: tokens.access_token,
-                        expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+                        expires,
                         ...(accountId && { accountId }),
                       },
                     })
                     return {
+                      refresh: tokens.refresh_token,
                       access: tokens.access_token,
+                      expires,
                       accountId,
                     }
                   })
@@ -463,9 +488,13 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
               }
 
               const refreshed = await refreshPromise
+              currentAuth.refresh = refreshed.refresh
               currentAuth.access = refreshed.access
+              currentAuth.expires = refreshed.expires
               authWithAccount.accountId = refreshed.accountId
             }
+
+            if (!currentAuth.access || currentAuth.expires < Date.now() + TOKEN_REFRESH_WINDOW_MS) await refresh()
 
             const headers = new Headers()
             if (init?.headers) {
@@ -482,9 +511,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
               }
             }
             headers.set("authorization", `Bearer ${currentAuth.access}`)
-            if (authWithAccount.accountId) {
-              headers.set("ChatGPT-Account-Id", authWithAccount.accountId)
-            }
+            if (authWithAccount.accountId) headers.set("ChatGPT-Account-Id", authWithAccount.accountId)
 
             const parsed =
               requestInput instanceof URL
@@ -499,8 +526,24 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
               ...init,
               headers,
             }
-            if (websocketFetch && parsed.pathname.endsWith("/responses")) return websocketFetch(url, requestInit)
-            return fetch(url, OpenAIWebSocketPool.withoutInternalHeaders(requestInit))
+            const request = () =>
+              websocketFetch && parsed.pathname.endsWith("/responses")
+                ? websocketFetch(url, requestInit)
+                : fetch(url, OpenAIWebSocketPool.withoutInternalHeaders(requestInit))
+            const response = await request()
+            if (response.status !== 401) return response
+            await response.body?.cancel()
+            const latestAuth = await getAuth()
+            if (latestAuth.type === "oauth") {
+              currentAuth.refresh = latestAuth.refresh
+              currentAuth.access = latestAuth.access
+              currentAuth.expires = latestAuth.expires
+              authWithAccount.accountId = (latestAuth as typeof latestAuth & { accountId?: string }).accountId
+            }
+            await refresh()
+            headers.set("authorization", `Bearer ${currentAuth.access}`)
+            if (authWithAccount.accountId) headers.set("ChatGPT-Account-Id", authWithAccount.accountId)
+            return request()
           },
         }
       },
