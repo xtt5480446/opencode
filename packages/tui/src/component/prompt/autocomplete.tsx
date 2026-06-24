@@ -261,7 +261,7 @@ export function Autocomplete(props: {
       filename,
       part: {
         type: "file" as const,
-        mime: item.mime,
+        mime: "text/plain",
         filename,
         url: urlObj.href,
         source: {
