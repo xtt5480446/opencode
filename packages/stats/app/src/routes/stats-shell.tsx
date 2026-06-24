@@ -206,6 +206,7 @@ export function Footer(props: {
   themePreference: ThemePreference
   onThemePreferenceChange: (preference: ThemePreference) => void
   links?: readonly HeaderLink[]
+  bridge?: HeaderLink | null
 }) {
   const [subscribeOpen, setSubscribeOpen] = createSignal(false)
   const modelStats = props.links ?? [
@@ -228,10 +229,12 @@ export function Footer(props: {
     githubLink,
     { href: "https://www.youtube.com/@anomaly-co", label: "YouTube" },
   ]
+  const bridge = () =>
+    props.bridge === undefined ? { href: "#geo-breakdown", label: "GEO BREAKDOWN" } : props.bridge
 
   return (
     <footer data-component="footer">
-      <SectionBridge label="GEO BREAKDOWN" href="#geo-breakdown" />
+      <Show when={bridge()}>{(link) => <SectionBridge label={link().label} href={link().href} />}</Show>
       <div data-slot="footer-grid">
         <a data-slot="footer-mark" href="https://opencode.ai" aria-label="OpenCode home">
           <OpenCodeMark />

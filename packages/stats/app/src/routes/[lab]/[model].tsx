@@ -23,10 +23,17 @@ import {
   findModelCatalogEntry,
   formatCatalogLabName,
   getModelCatalog,
+  type ModelCatalog,
   type ModelCatalogCost,
   type ModelCatalogEntry,
 } from "../model-catalog"
 import { runStatsEffect } from "../../stats-runtime"
+import {
+  ComparisonCardsSection,
+  modelRefFromCatalog,
+  uniqueComparisonPairs,
+  type ComparisonModelRef,
+} from "../compare-cards"
 import {
   applyThemePreference,
   Footer,
@@ -180,6 +187,11 @@ export default function StatsModel() {
                 <ModelEfficiencySection data={stats() ?? null} catalog={catalogEntry() ?? null} />
                 <ModelGeoBreakdownSection data={stats()?.country ?? emptyCountryRecord()} />
                 <ModelPeersSection data={stats() ?? null} />
+                <ComparisonCardsSection
+                  pairs={modelComparisonPairs(catalog(), catalogEntry() ?? null, stats() ?? null)}
+                  title="Compare This Model"
+                  description="Other models to compare with this one."
+                />
               </>
             </Show>
           </Show>
@@ -188,6 +200,7 @@ export default function StatsModel() {
           themePreference={themePreference()}
           onThemePreferenceChange={updateThemePreference}
           links={modelFooterLinks}
+          bridge={{ href: "#model-comparison", label: "MODEL COMPARISONS" }}
         />
       </div>
     </main>
@@ -204,7 +217,7 @@ function ModelLoading() {
               Data
             </a>
             <h1>Model Data</h1>
-            <p>Reading model aggregates from model_stat.</p>
+            <p>Loading model data.</p>
           </div>
         </div>
       </section>
@@ -225,7 +238,7 @@ function ModelNotFound(props: { lab: string; model: string }) {
               Data
             </a>
             <h1>{props.model || "Model"}</h1>
-            <p>No model facts or model_stat rows matched {props.lab ? `${props.lab}/${props.model}` : props.model}.</p>
+            <p>No model data found for {props.lab ? `${props.lab}/${props.model}` : props.model}.</p>
           </div>
         </div>
       </section>
@@ -575,9 +588,7 @@ function ModelGeoBreakdownSection(props: { data: Record<UsageRange, CountryEntry
       <SectionTitle title="Geo Breakdown" description="OpenCode Go model tokens used by country." />
       <Show
         when={data().length > 0}
-        fallback={
-          <ModelEmptyState title="No geo data" description="No OpenCode Go geo_stat rows matched this model." />
-        }
+        fallback={<ModelEmptyState title="No geo data" description="No country data for this model." />}
       >
         <div data-component="geo-breakdown">
           <div data-slot="geo-map-panel">
@@ -794,6 +805,53 @@ function ModelEmptyState(props: { title: string; description: string; compact?: 
       <p>{props.description}</p>
     </div>
   )
+}
+
+function modelComparisonPairs(
+  catalog: ModelCatalog | undefined,
+  catalogEntry: ModelCatalogEntry | null,
+  data: StatsModelData | null,
+) {
+  const current = modelComparisonRef(catalogEntry, data)
+  if (!current) return []
+  const peerPairs = (data?.peers ?? [])
+    .filter((peer) => peer.model !== data?.model)
+    .slice(0, 3)
+    .map((peer) => ({
+      first: current,
+      second: {
+        name: peer.model,
+        lab: peer.provider,
+        slug: peer.slug,
+        labName: peer.author,
+        metric: `#${peer.rank} / ${formatTokens(peer.tokens)}`,
+      },
+      detail: "Usage peer",
+    }))
+  const catalogPairs = (catalogEntry && catalog ? catalog.labs.find((lab) => lab.id === catalogEntry.lab)?.models ?? [] : [])
+    .filter((model) => model.id !== catalogEntry?.id)
+    .slice(0, 3)
+    .map((model) => ({
+      first: current,
+      second: modelRefFromCatalog(model),
+      detail: "Same lab pair",
+    }))
+  return uniqueComparisonPairs([...peerPairs, ...catalogPairs])
+}
+
+function modelComparisonRef(
+  catalogEntry: ModelCatalogEntry | null,
+  data: StatsModelData | null,
+): ComparisonModelRef | undefined {
+  if (catalogEntry) return modelRefFromCatalog(catalogEntry)
+  if (!data) return undefined
+  return {
+    name: data.model,
+    lab: data.provider,
+    slug: data.slug,
+    labName: data.author,
+    metric: `#${data.rank}`,
+  }
 }
 
 function getProviderIconId(author: string) {

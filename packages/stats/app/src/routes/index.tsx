@@ -28,6 +28,7 @@ import type { FeatureCollection, GeometryObject, GeoJsonProperties } from "geojs
 import type { GeometryCollection, Topology } from "topojson-specification"
 import { runStatsEffect } from "../stats-runtime"
 import { findModelCatalogEntry, getModelCatalog, type ModelCatalog } from "./model-catalog"
+import { ComparisonCardsSection, uniqueComparisonPairs, type ComparisonModelRef } from "./compare-cards"
 import {
   applyThemePreference,
   Footer,
@@ -49,6 +50,12 @@ const rangeLabels: Record<UsageRange, string> = {
   "1M": "1 Month",
   "2M": "2 Months",
 }
+const comparisonPairIndexes = [
+  [0, 1, "Top two by recent usage"],
+  [0, 2, "Leader vs challenger"],
+  [1, 2, "Adjacent leaderboard pair"],
+  [2, 3, "Top model alternative"],
+] as const
 const statsHomeTitle = "AI Model Usage Rankings | OpenCode Data"
 const statsHomeDescription =
   "Explore OpenCode Go usage across AI models, including token volume, rankings, market share, token pricing, session cost, cache ratio, and geo breakdowns."
@@ -177,11 +184,20 @@ export default function StatsHome() {
                 <CacheRatioSection data={stats().cacheRatio} />
                 <MarketShareSection data={stats().market} />
                 <GeoBreakdownSection data={stats().country} />
+                <ComparisonCardsSection
+                  pairs={homeComparisonPairs(stats().leaderboard["All Users"]["2M"])}
+                  title="Model Comparisons"
+                  description="Popular model pairs from the leaderboard."
+                />
               </>
             )}
           </Show>
         </div>
-        <Footer themePreference={themePreference()} onThemePreferenceChange={updateThemePreference} />
+        <Footer
+          themePreference={themePreference()}
+          onThemePreferenceChange={updateThemePreference}
+          bridge={{ href: "#model-comparison", label: "MODEL COMPARISONS" }}
+        />
       </div>
     </main>
   )
@@ -296,7 +312,7 @@ function StatsLoading() {
     <>
       <Hero updatedAt={null} />
       <ChartSection title="Usage">
-        <EmptyState title="Loading data" description="Reading model aggregates from model_stat." />
+        <EmptyState title="Loading data" description="Loading model data." />
       </ChartSection>
     </>
   )
@@ -407,7 +423,7 @@ function TopModelsSection(props: { data: StatsHomeData["usage"]; leaderboard: St
       </h2>
       <Show
         when={data().some((item) => usageTotal(item) > 0)}
-        fallback={<EmptyState title="No usage data" description="No model_stat rows matched this product and range." />}
+        fallback={<EmptyState title="No usage data" description="No usage data for this product and range." />}
       >
         <TopModelsChart
           data={data()}
@@ -419,7 +435,7 @@ function TopModelsSection(props: { data: StatsHomeData["usage"]; leaderboard: St
       <Show
         when={leaderboard().length > 0}
         fallback={
-          <EmptyState title="No leaderboard data" description="No model_stat rows matched this product and range." />
+          <EmptyState title="No leaderboard data" description="No leaderboard data for this product and range." />
         }
       >
         <Leaderboard data={leaderboard()} activeModel={activeModel()} onActiveModelChange={setActiveModel} />
@@ -1060,7 +1076,7 @@ function MarketShareSection(props: { data: StatsHomeData["market"] }) {
       <SectionTitle title="Market Share" description="Compare token share by model author." />
       <Show
         when={activeDay()}
-        fallback={<EmptyState title="No market data" description="No model_stat rows matched this range." />}
+        fallback={<EmptyState title="No market data" description="No market data for this range." />}
       >
         {(day) => (
           <>
@@ -1277,7 +1293,7 @@ function GeoBreakdownSection(props: { data: StatsHomeData["country"] }) {
       <SectionTitle title="Geo Breakdown" description="Tokens used by country." />
       <Show
         when={data().length > 0}
-        fallback={<EmptyState title="No geo data" description="No geo_stat rows matched this range." />}
+        fallback={<EmptyState title="No geo data" description="No country data for this range." />}
       >
         <div data-component="geo-breakdown">
           <div data-slot="geo-map-panel">
@@ -1557,7 +1573,7 @@ function TokenCostSection(props: { data: StatsHomeData["tokenCost"]; catalog: Mo
       <Show
         when={visible().length > 0}
         fallback={
-          <EmptyState title="No token cost data" description="No cost-bearing model_stat rows matched this product." />
+	          <EmptyState title="No token cost data" description="No token cost data for this product." />
         }
       >
         <TokenCostChart data={visible()} activeIndex={selectedIndex()} onActiveIndexChange={setActiveIndex} />
@@ -1637,7 +1653,7 @@ function CacheRatioSection(props: { data: StatsHomeData["cacheRatio"] }) {
       <Show
         when={visible().length > 0}
         fallback={
-          <EmptyState title="No cache ratio data" description="No input-token model_stat rows matched this product." />
+	          <EmptyState title="No cache ratio data" description="No cache ratio data for this product." />
         }
       >
         <CacheRatioChart data={visible()} activeIndex={selectedIndex()} onActiveIndexChange={setActiveIndex} />
@@ -1764,7 +1780,7 @@ function SessionCostSection(props: { data: StatsHomeData["sessionCost"] }) {
         fallback={
           <EmptyState
             title="No session cost data"
-            description="No session-bearing model_stat rows matched this product."
+	            description="No session cost data for this product."
           />
         }
       >
@@ -1874,6 +1890,26 @@ function catalogModelCost(catalog: ModelCatalog, model: string) {
 
 function formatSessionCost(value: number) {
   return `$${value.toFixed(4)}`
+}
+
+function homeComparisonPairs(leaderboard: LeaderboardEntry[]) {
+  return uniqueComparisonPairs(
+    comparisonPairIndexes.flatMap(([firstIndex, secondIndex, detail]) => {
+      const first = leaderboard[firstIndex]
+      const second = leaderboard[secondIndex]
+      return first && second ? [{ first: leaderboardRef(first), second: leaderboardRef(second), detail }] : []
+    }),
+  )
+}
+
+function leaderboardRef(entry: LeaderboardEntry): ComparisonModelRef {
+  return {
+    name: entry.model,
+    lab: entry.provider,
+    slug: modelSlug(entry.model),
+    labName: entry.author,
+    metric: `#${entry.rank} / ${formatBillions(entry.tokens)}`,
+  }
 }
 
 function modelSlug(value: string) {
