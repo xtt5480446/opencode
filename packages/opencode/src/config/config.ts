@@ -114,6 +114,77 @@ type Info = ConfigV1.Info & {
   plugin_origins?: ConfigPlugin.Origin[]
 }
 
+const redacted = "[redacted]"
+
+export function toPublicInfo(info: Info): Info {
+  return {
+    ...info,
+    provider: info.provider
+      ? Object.fromEntries(
+          Object.entries(info.provider).map(([id, provider]) => [
+            id,
+            {
+              ...provider,
+              options: provider.options
+                ? (redactProviderOptions(provider.options) as typeof provider.options)
+                : undefined,
+            },
+          ]),
+        )
+      : undefined,
+    mcp: info.mcp
+      ? Object.fromEntries(
+          Object.entries(info.mcp).map(([id, server]) => {
+            if (!("type" in server)) return [id, server]
+            if (server.type === "local") {
+              return [
+                id,
+                {
+                  ...server,
+                  environment: server.environment
+                    ? Object.fromEntries(Object.keys(server.environment).map((key) => [key, redacted]))
+                    : undefined,
+                },
+              ]
+            }
+            return [
+              id,
+              {
+                ...server,
+                headers: server.headers
+                  ? Object.fromEntries(Object.keys(server.headers).map((key) => [key, redacted]))
+                  : undefined,
+                oauth:
+                  server.oauth && server.oauth.clientSecret
+                    ? { ...server.oauth, clientSecret: redacted }
+                    : server.oauth,
+              },
+            ]
+          }),
+        )
+      : undefined,
+  }
+}
+
+function redactProviderOptions(value: unknown, key?: string): unknown {
+  const normalized = key?.replaceAll(/[-_]/g, "").toLowerCase()
+  if (
+    normalized &&
+    (normalized.endsWith("apikey") ||
+      normalized.endsWith("token") ||
+      normalized.includes("secret") ||
+      normalized.includes("password") ||
+      normalized.includes("credential") ||
+      normalized === "accesskeyid" ||
+      normalized === "authorization" ||
+      normalized.endsWith("cookie"))
+  )
+    return redacted
+  if (Array.isArray(value)) return value.map((item) => redactProviderOptions(item))
+  if (!isRecord(value)) return value
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactProviderOptions(item, key)]))
+}
+
 type State = {
   config: Info
   directories: string[]
