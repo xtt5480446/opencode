@@ -859,6 +859,7 @@ export const layer = Layer.effect(
     })
 
     const authenticate = Effect.fn("MCP.authenticate")(function* (mcpName: string) {
+      const previousTokens = (yield* auth.get(mcpName))?.tokens
       const result = yield* startAuth(mcpName)
       if (!result.authorizationUrl) {
         const client = "client" in result ? result.client : undefined
@@ -874,6 +875,17 @@ export const layer = Layer.effect(
         if (!client || !listed) {
           yield* Effect.tryPromise(() => client?.close() ?? Promise.resolve()).pipe(Effect.ignore)
           return { status: "failed", error: "Failed to get tools" } satisfies Status
+        }
+
+        const currentTokens = (yield* auth.get(mcpName))?.tokens
+        if (!currentTokens || JSON.stringify(currentTokens) === JSON.stringify(previousTokens)) {
+          yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+          yield* auth.clearOAuthState(mcpName)
+          return {
+            status: "failed",
+            error:
+              "The server did not issue a standard OAuth challenge. Anonymous MCP access remains available, but authentication was not completed. Verify the server's OAuth configuration or use credentials supported by the server.",
+          } satisfies Status
         }
 
         const s = yield* InstanceState.get(state)
