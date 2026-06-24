@@ -173,15 +173,11 @@ function migrateProvider(info: ConfigProviderV1.Info) {
   return {
     name: info.name,
     env: info.env,
-    api: info.npm
-      ? {
-          type: "aisdk" as const,
-          package: info.npm,
-          url: info.api ?? options.url,
-          settings: options.settings ?? {},
-        }
-      : undefined,
-    request: info.options && { headers: options.headers, body: options.body },
+    package: info.npm,
+    aisdk: info.npm ? (true as const) : undefined,
+    settings: info.api ? { ...options.settings, baseURL: info.api } : options.settings,
+    headers: info.options && options.headers,
+    body: info.options && options.body,
     models:
       info.models &&
       Object.fromEntries(Object.entries(info.models).map(([name, model]) => [name, migrateModel(model, info.npm)])),
@@ -191,7 +187,7 @@ function migrateProvider(info: ConfigProviderV1.Info) {
 function migrateModel(info: typeof ConfigProviderV1.Model.Type, packageName?: string) {
   const packageID = info.provider?.npm ?? packageName
   const lowerer = ConfigProviderOptionsV1.get(packageID)
-  const request = info.options && lowerer.request(info.options)
+  const settings = info.options && lowerer.model(info.options)
   const costs = info.cost && [
     {
       input: info.cost.input,
@@ -214,29 +210,19 @@ function migrateModel(info: typeof ConfigProviderV1.Model.Type, packageName?: st
       ? { tools: info.tool_call ?? false, input: info.modalities?.input ?? [], output: info.modalities?.output ?? [] }
       : undefined
   return {
+    id: info.id,
     family: info.family,
     name: info.name,
-    api: info.provider?.npm
-      ? {
-          ...(info.id === undefined ? {} : { id: info.id }),
-          type: "aisdk" as const,
-          package: info.provider.npm,
-          url: info.provider.api,
-          settings: {},
-        }
-      : info.id === undefined
-        ? undefined
-        : { id: info.id },
+    package: info.provider?.npm,
+    aisdk: info.provider?.npm ? (true as const) : undefined,
+    settings: info.provider?.api ? { ...settings, baseURL: info.provider.api } : settings,
     capabilities,
-    request: (info.headers || request) && {
-      headers: info.headers,
-      body: request,
-    },
+    headers: info.headers,
     variants:
       info.variants &&
       Object.entries(info.variants).map(([id, options]) => ({
         id,
-        body: lowerer.request(options),
+        settings: lowerer.model(options),
       })),
     cost: costs,
     disabled: info.status === "deprecated" ? true : undefined,

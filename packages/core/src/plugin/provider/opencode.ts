@@ -144,12 +144,12 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
             const packageName = config.provider?.npm ?? item.npm
             const lowerer = ConfigProviderOptionsV1.get(packageName)
             Object.assign(model.request.headers, config.headers)
-            Object.assign(model.request.body, lowerer.request(withoutCredentials(config.options)))
+            Object.assign(model.request.body, lowerer.model(withoutCredentials(config.options)))
             if (config.variants !== undefined) {
               model.variants = Object.entries(config.variants).map(([id, options]) => ({
                 id: ModelV2.VariantID.make(id),
                 headers: { ...(options.headers ?? {}) },
-                body: lowerer.request(withoutCredentials(options)),
+                body: lowerer.model(withoutCredentials(options)),
               }))
             }
             if (config.release_date !== undefined) {

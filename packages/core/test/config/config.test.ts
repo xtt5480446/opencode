@@ -93,6 +93,7 @@ describe("Config", () => {
         provider: {
           bedrock: {
             npm: "@ai-sdk/amazon-bedrock",
+            api: "https://bedrock.example.com",
             options: {
               headers: { "x-test": "1" },
               body: { trace: true },
@@ -103,13 +104,10 @@ describe("Config", () => {
         },
       })
 
-      expect(migrated.providers?.bedrock?.api).toEqual({
-        type: "aisdk",
+      expect(migrated.providers?.bedrock).toMatchObject({
         package: "@ai-sdk/amazon-bedrock",
-        url: undefined,
-        settings: { region: "us-east-1", profile: "dev" },
-      })
-      expect(migrated.providers?.bedrock?.request).toEqual({
+        aisdk: true,
+        settings: { baseURL: "https://bedrock.example.com", region: "us-east-1", profile: "dev" },
         headers: { "x-test": "1" },
         body: { trace: true },
       })
@@ -585,34 +583,32 @@ describe("Config", () => {
             })
             expect(documents[0]?.info.attachments).toEqual({ image: { auto_resize: false, max_width: 1200 } })
             expect(documents[0]?.info.providers?.custom).toMatchObject({
-              request: { body: { apiKey: "secret" } },
+              settings: { apiKey: "secret" },
               models: {
                 model: {
-                  request: { body: { reasoningEffort: "high" } },
-                  variants: [{ id: "fast", body: { temperature: 0.2 } }],
+                  settings: { reasoningEffort: "high" },
+                  variants: [{ id: "fast", settings: { temperature: 0.2 } }],
                 },
               },
             })
             expect(documents[0]?.info.providers?.openai).toMatchObject({
-              api: { settings: {} },
-              request: { headers: { Authorization: "Bearer secret", "OpenAI-Organization": "org" } },
+              package: "@ai-sdk/openai",
+              aisdk: true,
+              settings: { apiKey: "secret", organization: "org" },
               models: {
                 model: {
-                  request: {
-                    body: { temperature: 0.3, reasoning_effort: "high", service_tier: "priority" },
-                  },
-                  variants: [{ id: "high", body: { reasoning_effort: "high", reasoning_summary: "auto" } }],
+                  settings: { temperature: 0.3, reasoningEffort: "high", serviceTier: "priority" },
+                  variants: [{ id: "high", settings: { reasoningEffort: "high", reasoningSummary: "auto" } }],
                 },
               },
             })
             expect(documents[0]?.info.providers?.anthropic).toMatchObject({
               models: {
                 model: {
-                  request: {
-                    body: {
-                      output_config: { effort: "high", task_budget: 4096 },
-                      metadata: { user_id: "user-1" },
-                    },
+                  settings: {
+                    effort: "high",
+                    taskBudget: 4096,
+                    metadata: { userId: "user-1" },
                   },
                 },
               },

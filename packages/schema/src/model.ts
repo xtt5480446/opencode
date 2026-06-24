@@ -41,17 +41,11 @@ export const Cost = Schema.Struct({
   }),
 })
 
-export const Api = Schema.Union([
-  Schema.Struct({
-    id: ID,
-    ...Provider.AISDK.fields,
-  }),
-  Schema.Struct({
-    id: ID,
-    ...Provider.Native.fields,
-  }),
-]).pipe(Schema.toTaggedUnion("type"))
-export type Api = typeof Api.Type
+export interface Variant extends Schema.Schema.Type<typeof Variant> {}
+export const Variant = Schema.Struct({
+  id: VariantID,
+  ...Provider.Overlays,
+})
 
 export interface Info extends Schema.Schema.Type<typeof Info> {}
 export const Info = Schema.Struct({
@@ -59,16 +53,11 @@ export const Info = Schema.Struct({
   providerID: Provider.ID,
   family: Family.pipe(Schema.optional),
   name: Schema.String,
-  api: Api,
+  package: Schema.String.pipe(Schema.optional),
+  aisdk: Schema.Literal(true).pipe(Schema.optional),
+  ...Provider.Overlays,
   capabilities: Capabilities,
-  request: Schema.Struct({
-    ...Provider.Request.fields,
-    variant: Schema.String.pipe(Schema.optional),
-  }),
-  variants: Schema.Struct({
-    id: VariantID,
-    ...Provider.Request.fields,
-  }).pipe(Schema.Array, Schema.mutable),
+  variants: Variant.pipe(Schema.Array, Schema.mutable, Schema.optional),
   time: Schema.Struct({
     released: Schema.Finite,
   }),
@@ -89,10 +78,7 @@ export const Info = Schema.Struct({
           id: modelID,
           providerID,
           name: modelID,
-          api: { id: modelID, type: "native", settings: {} },
           capabilities: { tools: false, input: [], output: [] },
-          request: { headers: {}, body: {} },
-          variants: [],
           time: { released: 0 },
           cost: [],
           status: "active",

@@ -22,23 +22,11 @@ export const ID = Schema.String.pipe(
 )
 export type ID = typeof ID.Type
 
-export interface AISDK extends Schema.Schema.Type<typeof AISDK> {}
-export const AISDK = Schema.Struct({
-  type: Schema.Literal("aisdk"),
-  package: Schema.String,
-  url: Schema.String.pipe(Schema.optional),
+export const Overlays = {
   settings: Schema.Record(Schema.String, Schema.Unknown).pipe(Schema.optional),
-})
-
-export interface Native extends Schema.Schema.Type<typeof Native> {}
-export const Native = Schema.Struct({
-  type: Schema.Literal("native"),
-  url: Schema.String.pipe(Schema.optional),
-  settings: Schema.Record(Schema.String, Schema.Unknown),
-})
-
-export const Api = Schema.Union([AISDK, Native]).pipe(Schema.toTaggedUnion("type"))
-export type Api = typeof Api.Type
+  headers: Schema.Record(Schema.String, Schema.String).pipe(Schema.optional),
+  body: Schema.Record(Schema.String, Schema.Unknown).pipe(Schema.optional),
+}
 
 export interface Request extends Schema.Schema.Type<typeof Request> {}
 export const Request = Schema.Struct({
@@ -52,8 +40,9 @@ export const Info = Schema.Struct({
   integrationID: Integration.ID.pipe(Schema.optional),
   name: Schema.String,
   disabled: Schema.Boolean.pipe(Schema.optional),
-  api: Api,
-  request: Request,
+  package: Schema.String,
+  aisdk: Schema.Literal(true).pipe(Schema.optional),
+  ...Overlays,
 })
   .annotate({ identifier: "ProviderV2.Info" })
   .pipe(
@@ -62,8 +51,7 @@ export const Info = Schema.Struct({
         schema.make({
           id,
           name: id,
-          api: { type: "native", settings: {} },
-          request: { headers: {}, body: {} },
+          package: "",
         }),
     })),
   )
