@@ -606,10 +606,11 @@ export const layer = Layer.effect(
       yield* reconnectAttempt(s, name, mcp, generation, 0).pipe(
         Effect.flatMap((result) => {
           if (!result?.mcpClient || !result.defs) return Effect.void
+          const client = result.mcpClient
           if (!ownsGeneration(s, name, generation)) {
-            return Effect.tryPromise(() => result.mcpClient.close()).pipe(Effect.ignore)
+            return Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
           }
-          return storeClient(s, name, result.mcpClient, result.defs, result.instructions, mcp, generation).pipe(
+          return storeClient(s, name, client, result.defs, result.instructions, mcp, generation).pipe(
             Effect.andThen(events.publish(ToolsChanged, { server: name })),
             Effect.ignore,
           )
