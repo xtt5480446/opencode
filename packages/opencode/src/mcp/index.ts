@@ -146,6 +146,9 @@ interface State {
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
   instructions: Record<string, string>
+  generation: Record<string, number>
+  reconnecting: Record<string, number>
+  disposed: boolean
 }
 
 export interface ServerInstructions {
@@ -428,16 +431,24 @@ export const layer = Layer.effect(
       Effect.catch(() => Effect.succeed([] as number[])),
     )
 
-    function watch(s: State, name: string, client: MCPClient, bridge: EffectBridge.Shape, timeout?: number) {
+    function watch(
+      s: State,
+      name: string,
+      client: MCPClient,
+      bridge: EffectBridge.Shape,
+      mcp: ConfigMCPV1.Info,
+      generation: number,
+    ) {
       client.onclose = () => {
-        if (s.clients[name] !== client) return
+        if (s.disposed || s.clients[name] !== client || s.generation[name] !== generation) return
         delete s.clients[name]
         delete s.defs[name]
         delete s.instructions[name]
         s.status[name] = { status: "failed", error: "Connection closed" }
         bridge.fork(
           Effect.logWarning("MCP connection closed", { server: name }).pipe(
-            Effect.andThen(events.publish(ToolsChanged, { server: name })),
+            Effect.andThen(events.publish(ToolsChanged, { server: name }).pipe(Effect.ignore)),
+            Effect.andThen(mcp.type === "remote" ? reconnect(s, name, mcp, generation) : Effect.void),
             Effect.ignore,
           ),
         )
@@ -451,7 +462,7 @@ export const layer = Layer.effect(
       client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
         if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
 
-        const listed = await bridge.promise(McpCatalog.defs(client, timeout))
+        const listed = await bridge.promise(McpCatalog.defs(client, mcp.timeout))
         if (!listed) return
         if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
 
@@ -489,6 +500,9 @@ export const layer = Layer.effect(
           clients: {},
           defs: {},
           instructions: {},
+          generation: {},
+          reconnecting: {},
+          disposed: false,
         }
 
         yield* Effect.forEach(
@@ -505,13 +519,14 @@ export const layer = Layer.effect(
                 return
               }
 
+              const generation = nextGeneration(s, key)
               const result = yield* create(key, mcp)
               s.status[key] = result.status
               if (result.mcpClient) {
                 s.clients[key] = result.mcpClient
                 s.defs[key] = result.defs!
                 if (result.instructions) s.instructions[key] = result.instructions
-                watch(s, key, result.mcpClient, bridge, mcp.timeout)
+                watch(s, key, result.mcpClient, bridge, mcp, generation)
               }
             }),
           { concurrency: "unbounded" },
@@ -519,6 +534,7 @@ export const layer = Layer.effect(
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
+            s.disposed = true
             const clients = Object.values(s.clients)
             s.clients = {}
             s.defs = {}
@@ -563,7 +579,8 @@ export const layer = Layer.effect(
       client: MCPClient,
       listed: MCPToolDef[],
       instructions: string | undefined,
-      timeout?: number,
+      mcp: ConfigMCPV1.Info,
+      generation: number,
     ) {
       const bridge = yield* EffectBridge.make()
       const previous = s.clients[name]
@@ -572,10 +589,65 @@ export const layer = Layer.effect(
       s.defs[name] = listed
       if (instructions) s.instructions[name] = instructions
       else delete s.instructions[name]
-      watch(s, name, client, bridge, timeout)
+      watch(s, name, client, bridge, mcp, generation)
       if (previous) yield* Effect.tryPromise(() => previous.close()).pipe(Effect.ignore)
       return s.status[name]
     })
+
+    const reconnect = Effect.fnUntraced(function* (
+      s: State,
+      name: string,
+      mcp: ConfigMCPV1.Info & { type: "remote" },
+      generation: number,
+    ) {
+      if (s.reconnecting[name] === generation) return
+      s.reconnecting[name] = generation
+
+      yield* reconnectAttempt(s, name, mcp, generation, 0).pipe(
+        Effect.flatMap((result) => {
+          if (!result?.mcpClient || !result.defs) return Effect.void
+          if (!ownsGeneration(s, name, generation)) {
+            return Effect.tryPromise(() => result.mcpClient.close()).pipe(Effect.ignore)
+          }
+          return storeClient(s, name, result.mcpClient, result.defs, result.instructions, mcp, generation).pipe(
+            Effect.andThen(events.publish(ToolsChanged, { server: name })),
+            Effect.ignore,
+          )
+        }),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (s.reconnecting[name] === generation) delete s.reconnecting[name]
+          }),
+        ),
+      )
+    })
+
+    function reconnectAttempt(
+      s: State,
+      name: string,
+      mcp: ConfigMCPV1.Info & { type: "remote" },
+      generation: number,
+      attempt: number,
+    ): Effect.Effect<CreateResult | undefined> {
+      return Effect.gen(function* () {
+        if (!ownsGeneration(s, name, generation)) return undefined
+        const result = yield* create(name, mcp)
+        if (result.mcpClient) return result
+        if (result.status.status !== "failed" || attempt >= 4) return undefined
+        yield* Effect.sleep(Math.min(250 * 2 ** attempt, 2_000))
+        return yield* reconnectAttempt(s, name, mcp, generation, attempt + 1)
+      })
+    }
+
+    function nextGeneration(s: State, name: string) {
+      const generation = (s.generation[name] ?? 0) + 1
+      s.generation[name] = generation
+      return generation
+    }
+
+    function ownsGeneration(s: State, name: string, generation: number) {
+      return !s.disposed && s.generation[name] === generation
+    }
 
     const status = Effect.fn("MCP.status")(function* () {
       const s = yield* InstanceState.get(state)
@@ -615,8 +687,14 @@ export const layer = Layer.effect(
 
     const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCPV1.Info) {
       const s = yield* InstanceState.get(state)
+      const generation = nextGeneration(s, name)
       const result = yield* create(name, mcp)
 
+      if (!ownsGeneration(s, name, generation)) {
+        const client = result.mcpClient
+        if (client) yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+        return s.status[name]
+      }
       s.status[name] = result.status
       if (!result.mcpClient) {
         yield* closeClient(s, name)
@@ -624,7 +702,7 @@ export const layer = Layer.effect(
         return result.status
       }
 
-      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout)
+      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp, generation)
     })
 
     const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCPV1.Info) {
@@ -642,6 +720,7 @@ export const layer = Layer.effect(
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
       yield* requireMcpConfig(name)
       const s = yield* InstanceState.get(state)
+      nextGeneration(s, name)
       yield* closeClient(s, name)
       delete s.clients[name]
       s.status[name] = { status: "disabled" }
@@ -878,7 +957,8 @@ export const layer = Layer.effect(
 
         const s = yield* InstanceState.get(state)
         yield* auth.clearOAuthState(mcpName)
-        return yield* storeClient(s, mcpName, client, listed, client.getInstructions()?.trim(), mcpConfig.timeout)
+        const generation = nextGeneration(s, mcpName)
+        return yield* storeClient(s, mcpName, client, listed, client.getInstructions()?.trim(), mcpConfig, generation)
       }
 
       const callbackPromise = McpOAuthCallback.waitForCallback(result.oauthState, mcpName)
