@@ -18,7 +18,7 @@ const lowerer: Lowerer = {
     return {
       settings: Object.fromEntries(Object.entries(options).filter(([key]) => key !== "headers" && key !== "body")),
       headers: record(options.headers, (value): value is string => typeof value === "string"),
-      body: record(options.body, () => true),
+      body: record(options.body, (_value): _value is unknown => true),
     }
   },
   model: (options) => ({ ...options }),
