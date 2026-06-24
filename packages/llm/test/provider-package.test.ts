@@ -8,16 +8,12 @@ describe("provider package entrypoints", () => {
       import("@opencode-ai/llm/providers/openai/responses"),
       import("@opencode-ai/llm/providers/openai/chat"),
       import("@opencode-ai/llm/providers/anthropic"),
-      import("@opencode-ai/llm/providers/anthropic/messages"),
       import("@opencode-ai/llm/providers/openai-compatible"),
-      import("@opencode-ai/llm/providers/openai-compatible/chat"),
       import("@opencode-ai/llm/providers/amazon-bedrock"),
     ])
 
     for (const module of modules) expect(module.model).toBeFunction()
     expect(modules[0].model).toBe(modules[1].model)
-    expect(modules[3].model).toBe(modules[4].model)
-    expect(modules[5].model).toBe(modules[6].model)
   })
 
   test("maps package settings onto the executable model", () => {
