@@ -502,6 +502,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     Object.assign(tools, mcpTools)
     return tools
   }
+  if (McpToolSearch.collides(tools)) {
+    Object.assign(tools, mcpTools)
+    return tools
+  }
 
   const schemas = Object.fromEntries(Object.keys(searchable).map((key) => [key, mcpSchemas[key]]))
   const controls = McpToolSearch.create({
@@ -509,8 +513,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     schemas,
     transformSchema: (schema) => ProviderTransform.schema(input.model, schema),
   })
-  const collision = Object.keys(controls).find((key) => tools[key])
-  if (collision) throw new Error(`Tool name reserved for MCP tool search: ${collision}`)
   Object.assign(tools, controls)
   return tools
 })

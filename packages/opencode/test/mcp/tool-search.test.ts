@@ -60,6 +60,11 @@ describe("MCP tool search", () => {
     expect(McpToolSearch.shouldUse(tools, schemas)).toBe(true)
   })
 
+  test("detects control-name collisions", () => {
+    expect(McpToolSearch.collides({ mcp_call: target("mcp_call", "Plugin tool") })).toBe(true)
+    expect(McpToolSearch.collides({ other: target("other", "Plugin tool") })).toBe(false)
+  })
+
   test("exposes only the three stable control tools", async () => {
     expect(Object.keys(await catalog())).toEqual(["mcp_search", "mcp_describe", "mcp_call"])
   })
@@ -118,6 +123,37 @@ describe("MCP tool search", () => {
       { toolCallId: "call", messages: [], abortSignal: new AbortController().signal },
     )) as { output: string }
     expect(result.output).toBe('{"title":"Cache bug"}')
+  })
+
+  test("validates hidden target arguments before execution", async () => {
+    let calls = 0
+    const tools = McpToolSearch.create({
+      tools: {
+        create_issue: tool({
+          inputSchema: jsonSchema({}),
+          async execute() {
+            calls++
+            return { output: "called" }
+          },
+        }),
+      },
+      schemas: {
+        create_issue: {
+          type: "object",
+          properties: { title: { type: "string" } },
+          required: ["title"],
+          additionalProperties: false,
+        },
+      },
+      transformSchema: (schema) => schema,
+    })
+    expect(
+      tools.mcp_call!.execute?.(
+        { id: "create_issue", args: {} },
+        { toolCallId: "call", messages: [], abortSignal: new AbortController().signal },
+      ),
+    ).rejects.toThrow('Invalid arguments for MCP tool "create_issue"')
+    expect(calls).toBe(0)
   })
 
   test("suggests but does not execute inexact tool names", async () => {

@@ -1,19 +1,24 @@
 import { jsonSchema, tool, type JSONSchema7, type Tool, type ToolExecutionOptions } from "ai"
 import fuzzysort from "fuzzysort"
 import { Token } from "@opencode-ai/core/util/token"
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv"
+import type { JsonSchemaType, JsonSchemaValidator } from "@modelcontextprotocol/sdk/validation"
 
 // Match Hermes defaults. OpenClaw independently uses the same maximum.
 const DEFAULT_SEARCH_LIMIT = 5
 const MAX_SEARCH_LIMIT = 20
 const MAX_SEARCH_DESCRIPTION = 400
 const SEARCH_THRESHOLD_TOKENS = 15_000
+const CONTROL_NAMES = ["mcp_search", "mcp_describe", "mcp_call"]
 const controls = new WeakSet<Tool>()
+const validator = new AjvJsonSchemaValidator()
 
 type Entry = {
   id: string
   description: string
   parameters: string
   schema: JSONSchema7
+  validate: JsonSchemaValidator<Record<string, unknown>>
   tool: Tool
 }
 
@@ -27,6 +32,10 @@ export function shouldUse(tools: Record<string, Tool>, schemas: Record<string, J
 
 export function isControl(item: Tool) {
   return controls.has(item)
+}
+
+export function collides(tools: Record<string, Tool>) {
+  return CONTROL_NAMES.some((name) => tools[name])
 }
 
 export function create(input: {
@@ -46,6 +55,7 @@ export function create(input: {
             description: item.description ?? "",
             parameters: Object.keys(schema.properties ?? {}).join(" "),
             schema,
+            validate: validator.getValidator<Record<string, unknown>>(schema as JsonSchemaType),
             tool: item,
           },
         ] as const
@@ -139,7 +149,9 @@ export function create(input: {
       async execute(args: { id: string; args?: Record<string, unknown> }, options: ToolExecutionOptions) {
         const entry = resolve(entries, args.id)
         if (!entry.tool.execute) throw new Error(`MCP tool "${entry.id}" is not executable`)
-        return entry.tool.execute(args.args ?? {}, options)
+        const result = entry.validate(args.args ?? {})
+        if (!result.valid) throw new Error(`Invalid arguments for MCP tool "${entry.id}": ${result.errorMessage}`)
+        return entry.tool.execute(result.data, options)
       },
     }),
   }
