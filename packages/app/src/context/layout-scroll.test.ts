@@ -65,7 +65,7 @@ describe("createScrollPersistence", () => {
   test("persists semantic scroll anchors", () => {
     vi.useFakeTimers()
     try {
-      let snapshot: Record<string, { x: number; y: number; anchor?: { id: string; offset: number } }> = {}
+      let snapshot: Record<string, { x: number; y: number; anchor?: { id: string; key?: string; offset: number } }> = {}
       const scroll = createScrollPersistence({
         debounceMs: 10,
         getSnapshot: () => snapshot,
@@ -77,14 +77,14 @@ describe("createScrollPersistence", () => {
       scroll.setScroll("session", "timeline", {
         x: 1_000,
         y: 400,
-        anchor: { id: "message-1", offset: 24 },
+        anchor: { id: "message-1", key: "assistant-part:message-1:part-2", offset: 24 },
       })
       vi.advanceTimersByTime(10)
 
       expect(snapshot.timeline).toEqual({
         x: 1_000,
         y: 400,
-        anchor: { id: "message-1", offset: 24 },
+        anchor: { id: "message-1", key: "assistant-part:message-1:part-2", offset: 24 },
       })
       scroll.dispose()
     } finally {

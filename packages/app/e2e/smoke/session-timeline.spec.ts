@@ -115,7 +115,7 @@ test.describe("smoke: session timeline", () => {
       .toBeLessThanOrEqual(1)
   })
 
-  test("restores the persisted timeline position after reload", async ({ page }) => {
+  test("restores the persisted timeline position across tabs and reload", async ({ page }) => {
     let messages = timelineMessages(140)
     await mockOpenCodeServer(page, {
       sessions: fixture.sessions,
@@ -126,8 +126,25 @@ test.describe("smoke: session timeline", () => {
         sessionID === fixture.targetID ? pageMessageList(messages, limit, before) : pageMessages(sessionID, limit, before),
     })
     await configureSmokePage(page, fixture.directory)
+    await page.addInitScript(
+      ({ dirBase64, sourceID, targetID }) => {
+        localStorage.setItem(
+          "opencode.global.dat:tabs",
+          JSON.stringify(
+            [sourceID, targetID].map((sessionId) => ({
+              type: "session",
+              server: "http://127.0.0.1:4096",
+              dirBase64,
+              sessionId,
+            })),
+          ),
+        )
+      },
+      { dirBase64: base64Encode(fixture.directory), sourceID: fixture.sourceID, targetID: fixture.targetID },
+    )
 
-    await navigateToSession(page, fixture.directory, fixture.targetID, fixture.expected.targetTitle)
+    await navigateToSession(page, fixture.directory, fixture.sourceID, fixture.expected.sourceTitle)
+    await switchTitlebarSession(page, fixture.targetID, fixture.expected.targetTitle)
     await waitForTimelineStable(page)
     await pointAtTimeline(page)
     await page.mouse.wheel(0, -1_000)
@@ -145,8 +162,12 @@ test.describe("smoke: session timeline", () => {
         (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
       ),
     ).toBeGreaterThan(100)
-    const anchor = await firstVisibleMessage(page)
-    expect(anchor).toBeTruthy()
+    const anchor = await firstVisibleTimelineRow(page)
+    expect(anchor?.id).toBeTruthy()
+    expect(anchor?.key).toBeTruthy()
+    await switchTitlebarSession(page, fixture.sourceID, fixture.expected.sourceTitle)
+    await switchTitlebarSession(page, fixture.targetID, fixture.expected.targetTitle)
+    await expect.poll(() => firstVisibleTimelineRow(page)).toEqual(anchor)
     messages = [...messages, ...timelineMessages(120, 140)]
     await page.reload()
     await waitForTimelineStable(page)
@@ -158,7 +179,7 @@ test.describe("smoke: session timeline", () => {
         ),
       )
       .toBeGreaterThan(100)
-    await expect.poll(() => firstVisibleMessage(page)).toBe(anchor)
+    await expect.poll(() => firstVisibleTimelineRow(page)).toEqual(anchor)
   })
 
   test("paints cached session tabs at the latest message", async ({ page }) => {
@@ -603,13 +624,20 @@ function timelineScroller(page: Page) {
   return page.locator(".scroll-view__viewport", { has: page.locator("[data-timeline-row]") })
 }
 
-function firstVisibleMessage(page: Page) {
+function firstVisibleTimelineRow(page: Page) {
   return timelineScroller(page).evaluate((element) => {
     const box = element.getBoundingClientRect()
-    return [...element.querySelectorAll<HTMLElement>("[data-message-id]")]
-      .map((message) => ({ id: message.dataset.messageId, rect: message.getBoundingClientRect() }))
-      .filter((message) => message.rect.bottom > box.top && message.rect.top < box.bottom)
-      .sort((a, b) => a.rect.top - b.rect.top)[0]?.id
+    const row = [...element.querySelectorAll<HTMLElement>("[data-timeline-key]")]
+      .map((row) => ({
+        id: row.querySelector<HTMLElement>("[data-message-id]")?.dataset.messageId,
+        key: row.dataset.timelineKey,
+        offset: Math.round(row.getBoundingClientRect().top - box.top),
+        rect: row.getBoundingClientRect(),
+      }))
+      .filter((row) => row.rect.bottom > box.top && row.rect.top < box.bottom)
+      .sort((a, b) => a.rect.top - b.rect.top)[0]
+    if (!row) return
+    return { id: row.id, key: row.key, offset: row.offset }
   })
 }
 

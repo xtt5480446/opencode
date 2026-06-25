@@ -5,6 +5,7 @@ export type SessionScroll = {
   y: number
   anchor?: {
     id: string
+    key?: string
     offset: number
   }
 }
@@ -33,7 +34,7 @@ export function createScrollPersistence(opts: Options) {
       out[key] = {
         x: pos.x,
         y: pos.y,
-        anchor: pos.anchor ? { id: pos.anchor.id, offset: pos.anchor.offset } : undefined,
+        anchor: pos.anchor ? { id: pos.anchor.id, key: pos.anchor.key, offset: pos.anchor.offset } : undefined,
       }
     }
 
@@ -75,6 +76,7 @@ export function createScrollPersistence(opts: Options) {
       prev?.x === pos.x &&
       prev?.y === pos.y &&
       prev?.anchor?.id === pos.anchor?.id &&
+      prev?.anchor?.key === pos.anchor?.key &&
       prev?.anchor?.offset === pos.anchor?.offset
     )
       return
@@ -82,7 +84,7 @@ export function createScrollPersistence(opts: Options) {
     setCache(sessionKey, tab, {
       x: pos.x,
       y: pos.y,
-      anchor: pos.anchor ? { id: pos.anchor.id, offset: pos.anchor.offset } : undefined,
+      anchor: pos.anchor ? { id: pos.anchor.id, key: pos.anchor.key, offset: pos.anchor.offset } : undefined,
     })
     dirty.add(sessionKey)
     schedule(sessionKey)

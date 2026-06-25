@@ -1134,16 +1134,24 @@ export default function Page() {
     if (!layout.ready() || timelineScrollSession !== sessionKey()) return
     const max = el.scrollHeight - el.clientHeight
     const box = el.getBoundingClientRect()
-    const anchor = [...el.querySelectorAll<HTMLElement>("[data-message-id]")]
-      .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+    const anchor = [...el.querySelectorAll<HTMLElement>("[data-timeline-key]")]
+      .map((element) => ({
+        element,
+        message: element.querySelector<HTMLElement>("[data-message-id]"),
+        rect: element.getBoundingClientRect(),
+      }))
       .filter((item) => item.rect.bottom > box.top && item.rect.top < box.bottom)
       .sort((a, b) => a.rect.top - b.rect.top)[0]
     view().setScroll("timeline", {
       x: max,
       y: max <= 1 || max - el.scrollTop <= 2 ? Number.MAX_SAFE_INTEGER : el.scrollTop,
       anchor:
-        max > 1 && max - el.scrollTop > 2 && anchor?.element.dataset.messageId
-          ? { id: anchor.element.dataset.messageId, offset: anchor.rect.top - box.top }
+        max > 1 && max - el.scrollTop > 2 && anchor?.message?.dataset.messageId && anchor.element.dataset.timelineKey
+          ? {
+              id: anchor.message.dataset.messageId,
+              key: anchor.element.dataset.timelineKey,
+              offset: anchor.rect.top - box.top,
+            }
           : undefined,
     })
   }
@@ -1564,9 +1572,11 @@ export default function Page() {
         if (!scroller || !current()) return
         autoScroll.pause()
         const max = scroller.scrollHeight - scroller.clientHeight
-        const target = saved.anchor
-          ? scroller.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(saved.anchor.id)}"]`)
-          : undefined
+        const target = saved.anchor?.key
+          ? scroller.querySelector<HTMLElement>(`[data-timeline-key="${CSS.escape(saved.anchor.key)}"]`)
+          : saved.anchor
+            ? scroller.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(saved.anchor.id)}"]`)
+            : undefined
         if (saved.anchor && !target) {
           revealMessage(saved.anchor.id)
           return false
