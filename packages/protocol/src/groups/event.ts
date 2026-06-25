@@ -11,18 +11,21 @@ const fields = {
   location: Schema.optional(Location.Ref),
 }
 
+const DurableEnvelope = Schema.Struct({ aggregateID: Schema.String, seq: Schema.Int, version: Schema.Int })
+
 const schema = (definitions: ReadonlyArray<Definition>) =>
   Schema.Union([
     ...definitions.map((definition) =>
       definition.durable
         ? Schema.Struct({
             ...fields,
-            durable: Event.durableEnvelope(definition.durable.version),
+            durable: DurableEnvelope,
             type: Schema.Literal(definition.type),
             data: definition.data,
           }).annotate({ identifier: `V2Event.${definition.type}` })
         : Schema.Struct({
             ...fields,
+            durable: Schema.optional(Schema.Never),
             type: Schema.Literal(definition.type),
             data: definition.data,
           }).annotate({ identifier: `V2Event.${definition.type}` }),
@@ -32,6 +35,7 @@ const schema = (definitions: ReadonlyArray<Definition>) =>
       : [
           Schema.Struct({
             ...fields,
+            durable: Schema.optional(Schema.Never),
             type: Schema.Literal("server.connected"),
             data: Schema.Struct({}),
           }).annotate({ identifier: "V2Event.server.connected" }),
@@ -62,4 +66,5 @@ export const makeEventGroup = (definitions: ReadonlyArray<Definition>) => make(d
 
 const event = make(EventManifest.ServerDefinitions)
 export const EventGroup = event.group
-export type Event = typeof event.schema.Type
+export const EventSchema = event.schema
+export type Event = typeof EventSchema.Type

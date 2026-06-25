@@ -58,6 +58,17 @@ if (sseTypesPatched === sseTypesSource) {
 }
 await Bun.write(sseTypesPath, sseTypesPatched)
 
+// OpenAPI represents Schema.Never as `not: {}`, which @hey-api currently
+// widens to unknown. Preserve impossible optional event fields as never.
+const eventTypesPath = "./src/v2/gen/types.gen.ts"
+const eventTypesFile = Bun.file(eventTypesPath)
+const eventTypesSource = await eventTypesFile.text()
+const eventTypesPatched = eventTypesSource.replaceAll("  durable?: unknown", "  durable?: never")
+if (eventTypesPatched === eventTypesSource) {
+  throw new Error(`Event never patch did not apply; @hey-api/openapi-ts output may have changed (${eventTypesPath})`)
+}
+await Bun.write(eventTypesPath, eventTypesPatched)
+
 await $`bun prettier --write src/gen`
 await $`bun prettier --write src/v2`
 await $`rm -rf dist`

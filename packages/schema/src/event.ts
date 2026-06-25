@@ -3,7 +3,7 @@ export * as Event from "./event"
 import { Schema } from "effect"
 import { ascending } from "./identifier"
 import { Location } from "./location"
-import { NonNegativeInt, statics } from "./schema"
+import { statics } from "./schema"
 
 export const ID = Schema.String.check(Schema.isStartsWith("evt_")).pipe(
   Schema.brand("Event.ID"),
@@ -16,15 +16,17 @@ export type DurableOptions = {
   readonly aggregate: string
 }
 
-export type DurableEnvelope<Version extends number = number> = {
+export type DurableEnvelope = {
   readonly aggregateID: string
   readonly seq: number
-  readonly version: Version
+  readonly version: number
 }
 
-export const durableEnvelope = <const Version extends number>(version: Version) =>
-  Schema.Struct({ aggregateID: Schema.String, seq: NonNegativeInt, version: Schema.Literal(version) })
-
+const PublishedDurableEnvelope = Schema.Struct({
+  aggregateID: Schema.String,
+  seq: Schema.Number,
+  version: Schema.Number,
+})
 const NoDurableEnvelope = Schema.optional(Schema.Never)
 
 export type LiveDefinition<
@@ -46,7 +48,10 @@ export type DurableDefinition<
   readonly durable: Durability
 }
 
-export type Definition = LiveDefinition | DurableDefinition
+export type Definition<
+  Type extends string = string,
+  DataSchema extends Schema.Codec<unknown, unknown> = Schema.Codec<unknown, unknown>,
+> = LiveDefinition<Type, DataSchema> | DurableDefinition<Type, DataSchema>
 
 export type Data<D extends Definition> = Schema.Schema.Type<D["data"]>
 
@@ -60,18 +65,10 @@ export type UncommittedPayload<D extends Definition = Definition> = D extends De
     }
   : never
 
-export type DurablePublishedPayload<D extends DurableDefinition = DurableDefinition> = UncommittedPayload<D> & {
-  readonly durable: DurableEnvelope<D["durable"]["version"]>
-}
-
-export type LivePublishedPayload<D extends LiveDefinition = LiveDefinition> = UncommittedPayload<D> & {
-  readonly durable?: never
-}
-
 export type PublishedPayload<D extends Definition = Definition> = D extends DurableDefinition
-  ? DurablePublishedPayload<D>
+  ? UncommittedPayload<D> & { readonly durable: DurableEnvelope }
   : D extends LiveDefinition
-    ? LivePublishedPayload<D>
+    ? UncommittedPayload<D> & { readonly durable?: never }
     : never
 
 export type Payload<D extends Definition = Definition> = PublishedPayload<D>
@@ -117,7 +114,7 @@ export function define(input: {
   }
   if (input.durable) {
     return Object.assign(
-      Schema.Struct({ ...fields, durable: durableEnvelope(input.durable.version) }).annotate({
+      Schema.Struct({ ...fields, durable: PublishedDurableEnvelope }).annotate({
         identifier: input.type,
       }),
       { type: input.type, durable: input.durable, data },

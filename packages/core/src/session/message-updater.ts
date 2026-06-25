@@ -1,14 +1,11 @@
 import { castDraft, produce, type WritableDraft } from "immer"
-import { Effect, Match } from "effect"
-import type { UncommittedPayload } from "@opencode-ai/schema/event"
+import { Effect } from "effect"
 import { SessionEvent } from "./event"
 import { SessionMessage } from "./message"
 
 export type MemoryState = {
   messages: SessionMessage.Message[]
 }
-
-export type Input = UncommittedPayload<(typeof SessionEvent.Definitions)[number]>
 
 export interface Adapter {
   readonly getCurrentAssistant: () => Effect.Effect<SessionMessage.Assistant | undefined>
@@ -78,7 +75,7 @@ export function memory(state: MemoryState): Adapter {
   }
 }
 
-export function update(adapter: Adapter, event: Input) {
+export function update(adapter: Adapter, event: SessionEvent.Event) {
   type DraftAssistant = WritableDraft<SessionMessage.Assistant>
   type DraftTool = WritableDraft<SessionMessage.AssistantTool>
   type DraftText = WritableDraft<SessionMessage.AssistantText>
@@ -101,8 +98,8 @@ export function update(adapter: Adapter, event: Input) {
       if (assistant) yield* adapter.updateAssistant(produce(assistant, recipe))
     })
 
-  return Match.value(event).pipe(
-    Match.discriminatorsExhaustive("type")({
+  return Effect.gen(function* () {
+    yield* SessionEvent.All.match(event, {
       "session.next.agent.switched": (event) => {
         return adapter.appendMessage(
           SessionMessage.AgentSwitched.make({
@@ -391,8 +388,8 @@ export function update(adapter: Adapter, event: Input) {
       "session.next.revert.staged": () => Effect.void,
       "session.next.revert.cleared": () => Effect.void,
       "session.next.revert.committed": () => Effect.void,
-    }),
-  )
+    })
+  })
 }
 
 export * as SessionMessageUpdater from "./message-updater"

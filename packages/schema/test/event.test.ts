@@ -56,9 +56,6 @@ describe("public event schemas", () => {
         data: { id: "aggregate" },
       }),
     ).toBe(false)
-    expect(Schema.is(definition)({ ...payload, durable: { ...payload.durable, seq: -1 } })).toBe(false)
-    expect(Schema.is(definition)({ ...payload, durable: { ...payload.durable, version: 2 } })).toBe(false)
-
     // @ts-expect-error Published durable payloads require commit metadata.
     const missing: typeof definition.Type = { id: Event.ID.create(), type: definition.type, data: { id: "aggregate" } }
     void missing
@@ -119,10 +116,10 @@ describe("public event schemas", () => {
 
     // @ts-expect-error Durable union members require commit metadata.
     const uncommitted: Mixed = { id: Event.ID.create(), type: durable.type, data: { id: "aggregate" } }
+    // @ts-expect-error Live union members cannot carry durable commit metadata.
     const falselyCommitted: Mixed = {
       id: Event.ID.create(),
       type: live.type,
-      // @ts-expect-error Live union members cannot carry durable commit metadata.
       durable: { aggregateID: "aggregate", seq: 0, version: 2 },
       data: { value: "value" },
     }

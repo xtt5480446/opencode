@@ -23,6 +23,7 @@ function request(route: string, directory: string, init: RequestInit = {}) {
 const Event = Schema.Struct({
   id: EventV2.ID,
   type: Schema.String,
+  durable: Schema.optional(Schema.Struct({ aggregateID: Schema.String, seq: Schema.Int, version: Schema.Int })),
   location: Schema.optional(Location.Ref),
   data: Schema.Unknown,
 })
@@ -81,12 +82,15 @@ describe("v2 location HttpApi", () => {
     const reader = response.body!.getReader()
     const connected = await readEvent(reader)
     expect(connected.type).toBe("server.connected")
+    expect(connected).not.toHaveProperty("durable")
     expect(connected.location).toBeUndefined()
 
     const created = await request("/session", publisher.path, { method: "POST" })
     expect(created.status).toBe(200)
+    const session = (await created.json()) as { id: string }
     expect(await readEventType(reader, "session.created")).toMatchObject({
       type: "session.created",
+      durable: { aggregateID: session.id, seq: 0, version: 1 },
       location: { directory: publisher.path },
       data: { sessionID: expect.any(String) },
     })

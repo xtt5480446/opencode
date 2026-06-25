@@ -17,7 +17,14 @@ const capture = () => {
   const events = EventV2.Service.of({
     publish: (definition, data) =>
       Effect.sync(() => {
-        const event = { id: EventV2.ID.create(), type: definition.type, data } as EventV2.Payload<typeof definition>
+        const event = {
+          id: EventV2.ID.create(),
+          type: definition.type,
+          ...(definition.durable
+            ? { durable: { aggregateID: sessionID, seq: published.length, version: definition.durable.version } }
+            : {}),
+          data,
+        } as EventV2.Payload<typeof definition>
         published.push({
           type: definition.durable
             ? EventV2.versionedType(definition.type, definition.durable.version)

@@ -106,7 +106,8 @@ describe("PublicApi OpenAPI v2 errors", () => {
 
     expect(durable?.required).toContain("durable")
     expect(durable?.properties?.durable).toBeDefined()
-    expect(live?.properties?.durable).toBeUndefined()
+    expect(live?.required).not.toContain("durable")
+    expect(Reflect.get(live?.properties?.durable ?? {}, "not")).toEqual({})
   })
 
   test("preserves /api auth responses", () => {

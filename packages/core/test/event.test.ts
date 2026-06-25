@@ -138,6 +138,50 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("preserves same-type projector routing across durable versions", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const historical = EventV2.define({
+        type: "test.projector-version",
+        durable: { version: 1, aggregate: "id" },
+        schema: { id: Schema.String },
+      })
+      const current = EventV2.define({
+        type: "test.projector-version",
+        durable: { version: 2, aggregate: "id" },
+        schema: { id: Schema.String },
+      })
+      const received = new Array<EventV2.Payload>()
+      yield* events.project(historical, (event) => Effect.sync(() => received.push(event)))
+
+      const published = yield* events.publish(current, { id: "aggregate" })
+
+      expect(received).toEqual([published])
+    }),
+  )
+
+  it.effect("preserves same-type subscription routing across durable versions", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const historical = EventV2.define({
+        type: "test.subscription-version",
+        durable: { version: 1, aggregate: "id" },
+        schema: { id: Schema.String },
+      })
+      const current = EventV2.define({
+        type: "test.subscription-version",
+        durable: { version: 2, aggregate: "id" },
+        schema: { id: Schema.String },
+      })
+      const fiber = yield* events.subscribe(historical).pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+      yield* Effect.yieldNow
+
+      const published = yield* events.publish(current, { id: "aggregate" })
+
+      expect(Array.from(yield* Fiber.join(fiber))).toEqual([published])
+    }),
+  )
+
   it.effect("publishes to typed and wildcard subscriptions", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
