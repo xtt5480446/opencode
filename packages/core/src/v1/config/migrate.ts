@@ -173,14 +173,15 @@ function migrateProvider(info: ConfigProviderV1.Info) {
   return {
     name: info.name,
     env: info.env,
-    package: info.npm,
-    aiSDK: info.npm ? true : undefined,
-    settings: {
-      ...options.settings,
-      ...(info.api ?? options.url ? { baseURL: info.api ?? options.url } : {}),
-    },
-    headers: options.headers,
-    body: options.body,
+    api: info.npm
+      ? {
+          type: "aisdk" as const,
+          package: info.npm,
+          url: info.api ?? options.url,
+          settings: options.settings ?? {},
+        }
+      : undefined,
+    request: info.options && { headers: options.headers, body: options.body },
     models:
       info.models &&
       Object.fromEntries(Object.entries(info.models).map(([name, model]) => [name, migrateModel(model, info.npm)])),
@@ -215,13 +216,22 @@ function migrateModel(info: typeof ConfigProviderV1.Model.Type, packageName?: st
   return {
     family: info.family,
     name: info.name,
-    id: info.id,
-    package: info.provider?.npm,
-    aiSDK: info.provider?.npm ? true : undefined,
-    settings: info.provider?.api ? { baseURL: info.provider.api } : undefined,
+    api: info.provider?.npm
+      ? {
+          ...(info.id === undefined ? {} : { id: info.id }),
+          type: "aisdk" as const,
+          package: info.provider.npm,
+          url: info.provider.api,
+          settings: {},
+        }
+      : info.id === undefined
+        ? undefined
+        : { id: info.id },
     capabilities,
-    headers: info.headers,
-    body: request,
+    request: (info.headers || request) && {
+      headers: info.headers,
+      body: request,
+    },
     variants:
       info.variants &&
       Object.entries(info.variants).map(([id, options]) => ({

@@ -5,7 +5,6 @@ import { Effect } from "effect"
 import { Config } from "../../config"
 import { ModelV2 } from "../../model"
 import { ProviderV2 } from "../../provider"
-import { ProviderOverlay } from "../../provider-overlay"
 
 export const Plugin = define({
   id: "config-provider",
@@ -48,90 +47,22 @@ export const Plugin = define({
           const model = ModelV2.parse(configuredDefault)
           catalog.model.default.set(model.providerID, model.modelID)
         }
-        const providerAiSDK = new Map<string, boolean>()
-        const modelAiSDK = new Map<string, boolean>()
         for (const file of files) {
           for (const [id, item] of Object.entries(file.info.providers ?? {})) {
             const providerID = id
-            if (item.aiSDK !== undefined) providerAiSDK.set(providerID, item.aiSDK)
             catalog.provider.update(providerID, (provider) => {
               if (item.name !== undefined) provider.name = item.name
-              if (item.package !== undefined) {
-                const settings = ProviderOverlay.mergeRecords(provider.api.settings, item.settings)
-                const url =
-                  item.settings && Object.hasOwn(item.settings, "baseURL")
-                    ? typeof settings.baseURL === "string"
-                      ? settings.baseURL
-                      : undefined
-                    : provider.api.url
-                provider.api = (providerAiSDK.get(providerID) ?? provider.api.type === "aisdk")
-                  ? { type: "aisdk", package: item.package, ...(url === undefined ? {} : { url }), settings }
-                  : { type: "native", package: item.package, ...(url === undefined ? {} : { url }), settings }
-              } else if (item.settings !== undefined) {
-                provider.api.settings = ProviderOverlay.mergeRecords(provider.api.settings, item.settings)
-                if (Object.hasOwn(item.settings, "baseURL")) {
-                  provider.api.url =
-                    typeof provider.api.settings.baseURL === "string" ? provider.api.settings.baseURL : undefined
-                }
+              if (item.api !== undefined) provider.api = { ...item.api }
+              if (item.request !== undefined) {
+                Object.assign(provider.request.headers, item.request.headers)
+                Object.assign(provider.request.body, item.request.body)
               }
-              if (item.package === undefined && item.aiSDK !== undefined) {
-                if (item.aiSDK && provider.api.type === "native" && provider.api.package !== undefined) {
-                  provider.api = { ...provider.api, type: "aisdk", package: provider.api.package }
-                }
-                if (!item.aiSDK && provider.api.type === "aisdk") {
-                  provider.api = { ...provider.api, type: "native", settings: provider.api.settings ?? {} }
-                }
-              }
-              ProviderOverlay.assign(provider.request, { headers: item.headers, body: item.body })
             })
-            const providerApi = catalog.provider.get(providerID)?.provider.api
             for (const [id, config] of Object.entries(item.models ?? {})) {
-              const modelKey = `${providerID}/${id}`
-              if (config.aiSDK !== undefined) modelAiSDK.set(modelKey, config.aiSDK)
               catalog.model.update(providerID, id, (model) => {
                 if (config.family !== undefined) model.family = config.family
                 if (config.name !== undefined) model.name = config.name
-                if (config.id !== undefined) model.api.id = config.id
-                if (config.package !== undefined) {
-                  const aiSDK =
-                    modelAiSDK.get(modelKey) ?? providerAiSDK.get(providerID) ?? providerApi?.type === "aisdk"
-                  const settings = ProviderOverlay.mergeRecords(model.api.settings, config.settings)
-                  const url =
-                    config.settings && Object.hasOwn(config.settings, "baseURL")
-                      ? typeof settings.baseURL === "string"
-                        ? settings.baseURL
-                        : undefined
-                      : model.api.url
-                  model.api = aiSDK
-                    ? {
-                        id: model.api.id,
-                        type: "aisdk",
-                        package: config.package,
-                        ...(url === undefined ? {} : { url }),
-                        settings,
-                      }
-                    : {
-                        id: model.api.id,
-                        type: "native",
-                        package: config.package,
-                        ...(url === undefined ? {} : { url }),
-                        settings,
-                      }
-                } else if (config.settings !== undefined) {
-                  model.api.settings = ProviderOverlay.mergeRecords(model.api.settings, config.settings)
-                  if (Object.hasOwn(config.settings, "baseURL")) {
-                    model.api.url =
-                      typeof model.api.settings.baseURL === "string" ? model.api.settings.baseURL : undefined
-                  }
-                }
-                if (config.package === undefined && config.aiSDK !== undefined) {
-                  if (config.aiSDK && model.api.type === "native" && model.api.package !== undefined) {
-                    model.api = { ...model.api, type: "aisdk", package: model.api.package }
-                  }
-                  if (!config.aiSDK && model.api.type === "aisdk") {
-                    model.api = { ...model.api, type: "native", settings: model.api.settings ?? {} }
-                  }
-                }
+                if (config.api !== undefined) model.api = { ...model.api, ...config.api }
                 if (config.capabilities !== undefined) {
                   model.capabilities = {
                     tools: config.capabilities.tools,
@@ -139,24 +70,24 @@ export const Plugin = define({
                     output: [...config.capabilities.output],
                   }
                 }
-                if (config.headers !== undefined || config.body !== undefined) {
-                  ProviderOverlay.assign(model.request, { headers: config.headers, body: config.body })
+                if (config.request !== undefined) {
+                  Object.assign(model.request.headers, config.request.headers)
+                  Object.assign(model.request.body, config.request.body)
+                  if (config.request.variant !== undefined) model.request.variant = config.request.variant
                 }
-                if (config.variant !== undefined) model.request.variant = config.variant
                 if (config.variants !== undefined) {
                   for (const variant of config.variants) {
                     let existing = model.variants.find((item) => item.id === variant.id)
                     if (!existing) {
                       existing = {
                         id: variant.id,
-                        settings: {},
                         headers: {},
                         body: {},
                       }
                       model.variants.push(existing)
                     }
-                    existing.settings = ProviderOverlay.mergeRecords(existing.settings, variant.settings)
-                    ProviderOverlay.assign(existing, { headers: variant.headers, body: variant.body })
+                    Object.assign(existing.headers, variant.headers)
+                    Object.assign(existing.body, variant.body)
                   }
                 }
                 if (config.cost !== undefined) {

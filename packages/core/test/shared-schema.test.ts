@@ -96,20 +96,12 @@ test("Core reuses the canonical shared schemas", async () => {
     [coreLLM.ToolContent, LLM.ToolContent],
     [ModelV2.ID, Model.ID],
     [ModelV2.VariantID, Model.VariantID],
-    [ModelV2.Package, Model.Package],
     [ModelV2.Ref, Model.Ref],
     [ModelV2.Family, Model.Family],
     [ModelV2.Capabilities, Model.Capabilities],
     [ModelV2.Cost, Model.Cost],
-    [ModelV2.Api, Model.Api],
-    [ModelV2.Info, Model.Info],
     [ProviderV2.ID, Provider.ID],
-    [ProviderV2.Package, Provider.Package],
-    [ProviderV2.AISDK, Provider.AISDK],
-    [ProviderV2.Native, Provider.Native],
-    [ProviderV2.Api, Provider.Api],
     [ProviderV2.Request, Provider.Request],
-    [ProviderV2.Info, Provider.Info],
     [corePermission.Effect, Permission.Effect],
     [corePermission.Rule, Permission.Rule],
     [corePermission.Ruleset, Permission.Ruleset],
@@ -157,13 +149,48 @@ test("Core reuses the canonical shared schemas", async () => {
   for (const [core, shared] of schemas) expect(core).toBe(shared)
 
   expect(Agent.Info.empty(Agent.ID.make("test"))).toEqual(AgentV2.Info.empty(AgentV2.ID.make("test")))
-  expect(Model.Info.empty(Provider.ID.make("test"), Model.ID.make("model"))).toEqual(
-    ModelV2.Info.empty(ProviderV2.ID.make("test"), ModelV2.ID.make("model")),
-  )
-  expect(Provider.Info.empty(Provider.ID.make("test"))).toEqual(ProviderV2.Info.empty(ProviderV2.ID.make("test")))
   expect(Skill.Source.key(Skill.DirectorySource.make({ type: "directory", path: AbsolutePath.make("/tmp") }))).toBe(
     "directory:/tmp",
   )
+})
+
+test("shared provider schemas use flat package identity", () => {
+  expect(
+    Schema.decodeUnknownSync(Provider.Info)({
+      id: "openai",
+      name: "OpenAI",
+      package: "@opencode-ai/llm/providers/openai",
+      settings: { baseURL: "https://api.openai.com/v1" },
+      headers: { "x-application": "opencode" },
+      body: { service_tier: "priority" },
+    }),
+  ).toMatchObject({ package: "@opencode-ai/llm/providers/openai" })
+  expect(
+    Schema.decodeUnknownSync(Provider.Info)({
+      id: "legacy",
+      name: "Legacy",
+      package: "aisdk:@ai-sdk/openai",
+    }),
+  ).toMatchObject({ package: "aisdk:@ai-sdk/openai" })
+  expect(
+    Schema.decodeUnknownSync(Model.Info)({
+      id: "claude-sonnet",
+      modelID: "us.anthropic.claude-sonnet-4-6",
+      providerID: "amazon-bedrock",
+      name: "Claude Sonnet",
+      package: "@opencode-ai/llm/providers/amazon-bedrock",
+      settings: { region: "us-west-2" },
+      headers: {},
+      body: { additionalModelRequestFields: { reasoning_config: { type: "enabled" } } },
+      capabilities: { tools: true, input: ["text"], output: ["text"] },
+      variants: [{ id: "max", settings: {}, body: { budget_tokens: 31999 } }],
+      time: { released: 0 },
+      cost: [],
+      status: "active",
+      enabled: true,
+      limit: { context: 200000, output: 64000 },
+    }),
+  ).toMatchObject({ id: "claude-sonnet", modelID: "us.anthropic.claude-sonnet-4-6" })
 })
 
 test("shared record schemas construct and decode plain objects", () => {

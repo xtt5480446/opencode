@@ -7,7 +7,6 @@ import { EventV2 } from "./event"
 import { Policy } from "./policy"
 import { State } from "./state"
 import { Integration } from "./integration"
-import { ProviderOverlay } from "./provider-overlay"
 
 export type ProviderRecord = {
   provider: ProviderV2.MutableInfo
@@ -78,32 +77,16 @@ export const layer = Layer.effect(
 
     const projectModel = (model: ModelV2.Info, provider: ProviderV2.Info) => {
       const api =
-        model.api.type === "native" && !model.api.package
-          ? {
-              ...provider.api,
-              id: model.api.id,
-              url: model.api.url ?? provider.api.url,
-              settings: ProviderOverlay.mergeRecords(provider.api.settings, model.api.settings),
-            }
-          : model.api.type === "native" && provider.api.type === "native" && !model.api.url
-            ? {
-                ...model.api,
-                package: model.api.package ?? provider.api.package,
-                url: provider.api.url,
-                settings: ProviderOverlay.mergeRecords(provider.api.settings, model.api.settings),
-              }
+        model.api.type === "native" && !model.api.url && Object.keys(model.api.settings).length === 0
+          ? { ...provider.api, id: model.api.id }
           : model.api.type === "aisdk" && provider.api.type === "aisdk" && !model.api.url
-            ? {
-                ...model.api,
-                url: provider.api.url,
-                settings: ProviderOverlay.mergeRecords(provider.api.settings, model.api.settings),
-              }
+            ? { ...model.api, url: provider.api.url, settings: { ...provider.api.settings, ...model.api.settings } }
             : model.api.type === "aisdk" && provider.api.type === "aisdk"
-              ? { ...model.api, settings: ProviderOverlay.mergeRecords(provider.api.settings, model.api.settings) }
+              ? { ...model.api, settings: { ...provider.api.settings, ...model.api.settings } }
               : model.api
       const request = {
-        headers: ProviderOverlay.mergeHeaders(provider.request.headers, model.request.headers),
-        body: ProviderOverlay.mergeRecords(provider.request.body, model.request.body),
+        headers: { ...provider.request.headers, ...model.request.headers },
+        body: { ...provider.request.body, ...model.request.body },
         variant: model.request.variant,
       }
       return ModelV2.Info.make({

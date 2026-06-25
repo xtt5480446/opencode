@@ -45,90 +45,16 @@ function withEnv<A, E, R>(vars: Record<string, string | undefined>, effect: () =
   )
 }
 
+function request(headers: Record<string, string>, variant?: string) {
+  return {
+    headers,
+    variant,
+  }
+}
+
 const decode = Schema.decodeUnknownSync(Config.Info)
 
 describe("ConfigProviderPlugin.Plugin", () => {
-  it.effect("merges flat provider and model overlays", () =>
-    Effect.gen(function* () {
-      const catalog = yield* Catalog.Service
-      const providerID = ProviderV2.ID.make("custom")
-      const modelID = ModelV2.ID.make("chat")
-      const config = Config.Service.of({
-        entries: () =>
-          Effect.succeed([
-            new Config.Document({
-              type: "document",
-              info: decode({ providers: { custom: { aiSDK: true } } }),
-            }),
-            new Config.Document({
-              type: "document",
-              info: decode({
-                providers: {
-                  custom: {
-                    package: "custom-provider",
-                    settings: { auth: { type: "token", region: "us-east-1" } },
-                    headers: { "X-Test": "provider" },
-                    body: { reasoning: { type: "enabled", budget: 8_000 }, tags: ["provider"] },
-                    models: {
-                      chat: {
-                        package: "custom-model-provider",
-                        settings: { auth: { region: "us-west-2" } },
-                        headers: { "x-test": "model" },
-                        body: { reasoning: { budget: 32_000 }, tags: ["model"] },
-                      },
-                      inherit: {
-                        settings: { auth: { region: "eu-west-1" }, baseURL: "https://model.example/v1" },
-                      },
-                      clear: { settings: { baseURL: "https://old.example/v1" } },
-                    },
-                  },
-                },
-              }),
-            }),
-            new Config.Document({
-              type: "document",
-              info: decode({
-                providers: {
-                  custom: { models: { clear: { package: "custom-provider", settings: { baseURL: null } } } },
-                },
-              }),
-            }),
-          ]),
-      })
-
-      yield* addPlugin(config)
-
-      const model = required(yield* catalog.model.get(providerID, modelID))
-      expect(model.api).toEqual({
-        id: modelID,
-        type: "aisdk",
-        package: "custom-model-provider",
-        settings: { auth: { type: "token", region: "us-west-2" } },
-      })
-      expect(model.request.headers).toEqual({ "x-test": "model" })
-      expect(model.request.body).toEqual({
-        reasoning: { type: "enabled", budget: 32_000 },
-        tags: ["model"],
-      })
-      expect(required(yield* catalog.model.get(providerID, ModelV2.ID.make("inherit"))).api).toEqual({
-        id: ModelV2.ID.make("inherit"),
-        type: "aisdk",
-        package: "custom-provider",
-        url: "https://model.example/v1",
-        settings: {
-          auth: { type: "token", region: "eu-west-1" },
-          baseURL: "https://model.example/v1",
-        },
-      })
-      expect(required(yield* catalog.model.get(providerID, ModelV2.ID.make("clear"))).api).toEqual({
-        id: ModelV2.ID.make("clear"),
-        type: "aisdk",
-        package: "custom-provider",
-        settings: { auth: { type: "token", region: "us-east-1" }, baseURL: null },
-      })
-    }),
-  )
-
   it.effect("keeps configured model variant bodies unchanged", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service
@@ -142,9 +68,7 @@ describe("ConfigProviderPlugin.Plugin", () => {
               info: decode({
                 providers: {
                   opencode: {
-                    package: "@ai-sdk/openai",
-                    aiSDK: true,
-                    settings: { baseURL: "https://opencode.test/v1" },
+                    api: { type: "aisdk", package: "@ai-sdk/openai", url: "https://opencode.test/v1" },
                     models: {
                       "alpha-gpt-next": {
                         variants: [
@@ -195,9 +119,7 @@ describe("ConfigProviderPlugin.Plugin", () => {
               info: decode({
                 providers: {
                   opencode: {
-                    package: "@ai-sdk/openai",
-                    aiSDK: true,
-                    settings: { baseURL: "https://opencode.test/v1" },
+                    api: { type: "aisdk", package: "@ai-sdk/openai", url: "https://opencode.test/v1" },
                   },
                 },
               }),
@@ -247,8 +169,8 @@ describe("ConfigProviderPlugin.Plugin", () => {
                     custom: {
                       name: "Configured",
                       env: ["CUSTOM_API_KEY"],
-                      package: "custom-native",
-                      headers: { first: "first", shared: "first" },
+                      api: { type: "native", settings: {} },
+                      request: request({ first: "first", shared: "first" }),
                       models: {
                         chat: {
                           name: "First",
@@ -256,8 +178,7 @@ describe("ConfigProviderPlugin.Plugin", () => {
                           disabled: true,
                           limit: { context: 100, output: 50 },
                           cost: { input: 1, output: 2 },
-                          headers: { first: "first", shared: "first" },
-                          variant: "retained",
+                          request: request({ first: "first", shared: "first" }, "retained"),
                           variants: [
                             {
                               id: "fast",
@@ -276,19 +197,17 @@ describe("ConfigProviderPlugin.Plugin", () => {
                   model: "custom/default",
                   providers: {
                     custom: {
-                      package: "custom-sdk",
-                      aiSDK: true,
-                      settings: { baseURL: "https://example.test" },
-                      headers: { last: "last", shared: "last" },
+                      api: { type: "aisdk", package: "custom-sdk", url: "https://example.test" },
+                      request: request({ last: "last", shared: "last" }),
                       models: {
                         default: {
                           name: "Default",
                         },
                         chat: {
-                          id: "api-chat",
+                          api: { id: "api-chat" },
                           name: "Last",
                           limit: { output: 75 },
-                          headers: { last: "last", shared: "last" },
+                          request: request({ last: "last", shared: "last" }),
                           variants: [
                             {
                               id: "fast",
@@ -328,12 +247,7 @@ describe("ConfigProviderPlugin.Plugin", () => {
         })
         expect((yield* integrations.get(Integration.ID.make("custom")))?.name).toBe("Renamed")
         expect(provider.disabled).toBeUndefined()
-        expect(provider.api).toEqual({
-          type: "aisdk",
-          package: "custom-sdk",
-          url: "https://example.test",
-          settings: { baseURL: "https://example.test" },
-        })
+        expect(provider.api).toEqual({ type: "aisdk", package: "custom-sdk", url: "https://example.test" })
         expect(provider.request.headers).toEqual({ first: "first", shared: "last", last: "last" })
         expect(model.api.id).toBe(ModelV2.ID.make("api-chat"))
         expect(model.name).toBe("Last")

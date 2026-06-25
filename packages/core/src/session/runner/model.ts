@@ -12,7 +12,6 @@ import { Credential } from "../../credential"
 import { Integration } from "../../integration"
 import { ModelV2 } from "../../model"
 import { ProviderV2 } from "../../provider"
-import { ProviderOverlay } from "../../provider-overlay"
 import { SessionSchema } from "../schema"
 
 export class ModelNotSelectedError extends Schema.TaggedErrorClass<ModelNotSelectedError>()(
@@ -118,13 +117,8 @@ const withVariant = (
   return Effect.succeed(
     variant
       ? produce(model, (draft) => {
-          if (variant.settings !== undefined) {
-            draft.api.settings = ProviderOverlay.mergeRecords(draft.api.settings, variant.settings)
-            if (Object.hasOwn(variant.settings, "baseURL")) {
-              draft.api.url = typeof draft.api.settings.baseURL === "string" ? draft.api.settings.baseURL : undefined
-            }
-          }
-          ProviderOverlay.assign(draft.request, variant)
+          Object.assign(draft.request.headers, variant.headers)
+          Object.assign(draft.request.body, variant.body)
         })
       : model,
   )

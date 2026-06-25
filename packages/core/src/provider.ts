@@ -1,30 +1,61 @@
 export * as ProviderV2 from "./provider"
 
-import { Types } from "effect"
+import { Schema } from "effect"
 import { Provider } from "@opencode-ai/schema/provider"
+import { Integration } from "./integration"
+import { withStatics } from "./schema"
+import type { DeepMutable } from "./schema"
 
 export const ID = Provider.ID
 export type ID = typeof ID.Type
 
-export const Overlays = Provider.Overlays
+// Temporary runtime schema until core catalog consumers migrate to the flat
+// package identity in @opencode-ai/schema.
+export interface AISDK extends Schema.Schema.Type<typeof AISDK> {}
+export const AISDK = Schema.Struct({
+  type: Schema.Literal("aisdk"),
+  package: Schema.String,
+  url: Schema.String.pipe(Schema.optional),
+  settings: Schema.Record(Schema.String, Schema.Unknown).pipe(Schema.optional),
+})
 
-export const Package = Provider.Package
-export type Package = Provider.Package
+export interface Native extends Schema.Schema.Type<typeof Native> {}
+export const Native = Schema.Struct({
+  type: Schema.Literal("native"),
+  url: Schema.String.pipe(Schema.optional),
+  settings: Schema.Record(Schema.String, Schema.Unknown),
+})
 
-export const AISDK = Provider.AISDK
-
-export const Native = Provider.Native
-
-export const Api = Provider.Api
-export type Api = Provider.Api
-export type MutableApi<T extends Api = Api> = T extends Api
-  ? Omit<Types.DeepMutable<T>, "settings"> & (undefined extends T["settings"] ? { settings?: any } : { settings: any })
-  : never
+export const Api = Schema.Union([AISDK, Native]).pipe(Schema.toTaggedUnion("type"))
+export type Api = typeof Api.Type
 
 export const Request = Provider.Request
 export type Request = Provider.Request
 
-export const Info = Provider.Info
-export type Info = Provider.Info
+export interface Info extends Schema.Schema.Type<typeof Info> {}
+export const Info = Schema.Struct({
+  id: ID,
+  integrationID: Integration.ID.pipe(Schema.optional),
+  name: Schema.String,
+  disabled: Schema.Boolean.pipe(Schema.optional),
+  api: Api,
+  request: Request,
+})
+  .annotate({ identifier: "ProviderV2.Info" })
+  .pipe(
+    withStatics((schema) => ({
+      empty: (id: ID) =>
+        schema.make({
+          id,
+          name: id,
+          api: { type: "native", settings: {} },
+          request: { headers: {}, body: {} },
+        }),
+    })),
+  )
 
-export type MutableInfo = Omit<Types.DeepMutable<Info>, "api"> & { api: MutableApi }
+export type MutableApi<T extends Api = Api> = T extends Api
+  ? Omit<DeepMutable<T>, "settings"> & (undefined extends T["settings"] ? { settings?: any } : { settings: any })
+  : never
+
+export type MutableInfo = Omit<DeepMutable<Info>, "api"> & { api: MutableApi }
