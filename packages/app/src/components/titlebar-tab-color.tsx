@@ -136,8 +136,8 @@ export function TabColorPill(props: { color?: string }) {
         <span
           data-slot="tab-color"
           aria-hidden="true"
-          class="pointer-events-none absolute bottom-px left-2 right-2 h-0.5 rounded-full"
-          style={{ "background-color": color() }}
+          class="pointer-events-none absolute bottom-px left-1 right-1 h-1 rounded-b-[5px] border border-t-0"
+          style={{ "border-color": color() }}
         />
       )}
     </Show>
