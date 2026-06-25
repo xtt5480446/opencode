@@ -1,6 +1,6 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { base64Encode } from "@opencode-ai/core/util/encode"
-import { useParams } from "@solidjs/router"
+import { useParams, useSearchParams } from "@solidjs/router"
 import { batch, createEffect, createMemo } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useModels } from "@/context/models"
@@ -11,21 +11,22 @@ import { useSDK } from "./sdk"
 import { useSync } from "./sync"
 import { useServerSDK } from "./server-sdk"
 import { ScopedKey, type ServerScope } from "@/utils/server-scope"
+import {
+  cloneModelSelectionState,
+  createModelSelectionState,
+  createTabModelSelectionState,
+  type ModelSelectionState,
+} from "./model-selection-state"
+import { useTabs } from "./tabs"
 
 export type ModelKey = { providerID: string; modelID: string; variant?: string }
 
-type State = {
-  agent?: string
-  model?: ModelKey
-  variant?: string | null
-}
-
 type Saved = {
-  session: Record<string, State | undefined>
+  session: Record<string, ModelSelectionState | undefined>
 }
 
 const WORKSPACE_KEY = "__workspace__"
-const handoff = new Map<string, State>()
+const handoff = new Map<string, ModelSelectionState>()
 
 const handoffKey = (scope: ServerScope, dir: string, id: string) => ScopedKey.from(scope, dir, id)
 
@@ -33,8 +34,8 @@ const migrate = (value: unknown) => {
   if (!value || typeof value !== "object") return { session: {} }
 
   const item = value as {
-    session?: Record<string, State | undefined>
-    pick?: Record<string, State | undefined>
+    session?: Record<string, ModelSelectionState | undefined>
+    pick?: Record<string, ModelSelectionState | undefined>
   }
 
   if (item.session && typeof item.session === "object") return { session: item.session }
@@ -43,14 +44,6 @@ const migrate = (value: unknown) => {
   return {
     session: Object.fromEntries(Object.entries(item.pick).filter(([key]) => key !== WORKSPACE_KEY)),
   }
-}
-
-const clone = (value: State | undefined) => {
-  if (!value) return
-  return {
-    ...value,
-    model: value.model ? { ...value.model } : undefined,
-  } satisfies State
 }
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
@@ -62,6 +55,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const serverSDK = useServerSDK()
     const providers = useProviders(() => sdk().directory)
     const models = useModels()
+    const tabs = useTabs()
+    const [search] = useSearchParams<{ draftId?: string }>()
 
     const id = createMemo(() => params.id || undefined)
     const list = createMemo(() => sync().data.agent.filter((item) => item.mode !== "subagent" && !item.hidden))
@@ -79,7 +74,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const [store, setStore] = createStore<{
       current?: string
-      draft?: State
+      draft?: ModelSelectionState
       last?: {
         type: "agent" | "model" | "variant"
         agent?: string
@@ -121,10 +116,35 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       setStore("current", items[0]?.name)
     })
 
-    const scope = createMemo<State | undefined>(() => {
+    const draft = createMemo(() => {
+      const draftID = search.draftId
+      if (!draftID) return
+      const tab = tabs.store.find((item) => item.type === "draft" && item.draftID === draftID)
+      if (!tab || tab.type !== "draft") return
+      return createTabModelSelectionState(tabs, tab, () => {
+        const [state, setState] = persisted(
+          Persist.draft(tab.draftID, "model-selection"),
+          createStore<{ value?: ModelSelectionState }>({}),
+        )
+        return createModelSelectionState([state, setState])
+      })
+    })
+
+    const setDraft = (value: ModelSelectionState | undefined) => {
+      const state = draft()
+      if (state) {
+        state.set(value)
+        return
+      }
+      setStore("draft", cloneModelSelectionState(value))
+    }
+
+    const scope = createMemo<ModelSelectionState | undefined>(() => {
       const session = id()
-      if (!session) return store.draft
-      return saved.session[session] ?? handoff.get(handoffKey(serverSDK().scope, sdk().directory, session))
+      if (session) return saved.session[session] ?? handoff.get(handoffKey(serverSDK().scope, sdk().directory, session))
+      const state = draft()
+      if (state) return state.current()
+      return store.draft
     })
 
     createEffect(() => {
@@ -139,7 +159,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         return
       }
 
-      setSaved("session", session, clone(next))
+      setSaved("session", session, cloneModelSelectionState(next))
       handoff.delete(key)
     })
 
@@ -200,13 +220,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             agent: item.name,
             model: item.model ?? prev?.model,
             variant: item.variant ?? prev?.variant,
-          } satisfies State
+          } satisfies ModelSelectionState
           const session = id()
           if (session) {
             setSaved("session", session, next)
             return
           }
-          setStore("draft", next)
+          setDraft(next)
         })
       },
       move(direction: 1 | -1) {
@@ -253,21 +273,21 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         agent: agent.current()?.name,
         model: model ? { providerID: model.provider.id, modelID: model.id } : undefined,
         variant: selected(),
-      } satisfies State
+      } satisfies ModelSelectionState
     }
 
-    const write = (next: Partial<State>) => {
+    const write = (next: Partial<ModelSelectionState>) => {
       const state = {
         ...(scope() ?? { agent: agent.current()?.name }),
         ...next,
-      } satisfies State
+      } satisfies ModelSelectionState
 
       const session = id()
       if (session) {
         setSaved("session", session, state)
         return
       }
-      setStore("draft", state)
+      setDraft(state)
     }
 
     const recent = createMemo(() => models.recent.list().map(models.find).filter(Boolean))
@@ -369,20 +389,20 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       agent,
       session: {
         reset() {
-          setStore("draft", undefined)
+          setDraft(undefined)
         },
         promote(dir: string, session: string) {
-          const next = clone(snapshot())
+          const next = cloneModelSelectionState(snapshot())
           if (!next) return
 
           if (dir === sdk().directory) {
             setSaved("session", session, next)
-            setStore("draft", undefined)
+            setDraft(undefined)
             return
           }
 
           handoff.set(handoffKey(serverSDK().scope, dir, session), next)
-          setStore("draft", undefined)
+          setDraft(undefined)
         },
         restore(msg: { sessionID: string; agent: string; model: ModelKey }) {
           const session = id()
