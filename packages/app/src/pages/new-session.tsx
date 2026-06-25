@@ -72,7 +72,6 @@ export default function NewSessionPage() {
                 state={composer}
                 sessionKey={route.sessionKey()}
                 sessionID={route.params.id}
-                serverKey={route.params.serverKey}
                 controls={composerControls()}
                 promptInput={{
                   ref: (el) => {

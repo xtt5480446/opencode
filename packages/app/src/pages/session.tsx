@@ -29,7 +29,7 @@ import { previewSelectedLines } from "@opencode-ai/session-ui/pierre/selection-b
 import { Button } from "@opencode-ai/ui/button"
 import { showToast } from "@/utils/toast"
 import { base64Encode, checksum } from "@opencode-ai/core/util/encode"
-import { useLocation, useSearchParams } from "@solidjs/router"
+import { useLocation, useNavigate, useSearchParams } from "@solidjs/router"
 import { NewSessionView, SessionHeader } from "@/components/session"
 import { useComments } from "@/context/comments"
 import { useServerSync } from "@/context/server-sync"
@@ -70,6 +70,7 @@ import { diffs as list } from "@/utils/diffs"
 import { Persist, persisted } from "@/utils/persist"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { formatServerError } from "@/utils/server-errors"
+import { legacySessionHref, requireServerKey, sessionHref } from "@/utils/session-route"
 import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
 
 type FollowupItem = FollowupDraft & { id: string }
@@ -80,6 +81,7 @@ type ChangeMode = "git" | "branch" | "turn"
 type VcsMode = "git" | "branch"
 
 export default function Page() {
+  const navigate = useNavigate()
   const serverSync = useServerSync()
   const layout = useLayout()
   const local = useLocal()
@@ -1550,7 +1552,6 @@ export default function Page() {
       state={composer}
       sessionKey={sessionKey()}
       sessionID={params.id}
-      serverKey={params.serverKey}
       controls={composerControls()}
       promptInput={{
         ref: (el) => {
@@ -1570,6 +1571,15 @@ export default function Page() {
       ready={!store.deferRender && messagesReady()}
       centered={placement === "dock" && centered()}
       placement={placement}
+      openParent={() => {
+        const id = info()?.parentID
+        if (!id) return
+        navigate(
+          params.serverKey
+            ? sessionHref(requireServerKey(params.serverKey), id)
+            : legacySessionHref(sdk().directory, id),
+        )
+      }}
       onResponseSubmit={resumeScroll}
       followup={
         params.id && !isChildSession()

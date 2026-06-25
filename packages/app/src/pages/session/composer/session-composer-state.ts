@@ -62,6 +62,7 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
   const live = createMemo(() => sync().data.session_working(params.id ?? "") || blocked())
 
   const [store, setStore] = createStore({
+    sessionID: params.id,
     responding: undefined as string | undefined,
     dock: todos().length > 0 && !done() && live(),
     closing: false,
@@ -132,7 +133,7 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
         if (!previous || previous[0] !== id) {
           if (timer) window.clearTimeout(timer)
           timer = undefined
-          setStore({ dock: todoDockAtBoundary(next), closing: false, opening: false })
+          setStore({ sessionID: id, dock: todoDockAtBoundary(next), closing: false, opening: false })
           if (next === "clear") clear()
           return
         }
@@ -191,9 +192,12 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
     permissionResponding,
     decide,
     todos,
-    dock: () => store.dock,
-    closing: () => store.closing,
-    opening: () => store.opening,
+    dock: () =>
+      store.sessionID === params.id
+        ? store.dock
+        : todoDockAtBoundary(todoState({ count: todos().length, done: done(), live: live() })),
+    closing: () => store.sessionID === params.id && store.closing,
+    opening: () => store.sessionID === params.id && store.opening,
   }
 }
 

@@ -1,6 +1,5 @@
 import { Show, createEffect, createMemo, createResource, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
-import { useNavigate } from "@solidjs/router"
 import { useSpring } from "@opencode-ai/ui/motion-spring"
 import { PromptInput, type PromptInputControls, type PromptInputProps } from "@/components/prompt-input"
 import { useLanguage } from "@/context/language"
@@ -16,14 +15,11 @@ import { SessionTodoDock } from "@/pages/session/composer/session-todo-dock"
 import type { FollowupDraft } from "@/components/prompt-input/submit"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { NEW_SESSION_CONTENT_WIDTH } from "@/pages/session/new-session-layout"
-import { useSDK } from "@/context/sdk"
-import { legacySessionHref, requireServerKey, sessionHref } from "@/utils/session-route"
 
 export function SessionComposerRegion(props: {
   state: SessionComposerState
   sessionKey: string
   sessionID?: string
-  serverKey?: string
   controls: PromptInputControls
   promptInput: Omit<PromptInputProps, "controls" | "variant">
   todo: {
@@ -33,6 +29,7 @@ export function SessionComposerRegion(props: {
   ready: boolean
   centered: boolean
   placement?: "dock" | "inline"
+  openParent?: () => void
   onResponseSubmit: () => void
   followup?: {
     queue: () => boolean
@@ -53,11 +50,9 @@ export function SessionComposerRegion(props: {
   }
   setPromptDockRef: (el: HTMLDivElement) => void
 }) {
-  const navigate = useNavigate()
   const prompt = props.promptInput.state ?? usePrompt()
   const language = useLanguage()
   const sync = useSync()
-  const sdk = useSDK()
 
   const handoffPrompt = createMemo(() => getSessionHandoff(props.sessionKey)?.prompt)
   const info = createMemo(() => (props.sessionID ? sync().session.get(props.sessionID) : undefined))
@@ -136,14 +131,6 @@ export function SessionComposerRegion(props: {
   const rolled = createMemo(() => (props.revert?.items.length ? props.revert : undefined))
   const lift = createMemo(() => (rolled() ? 18 : 36 * value()))
   const full = createMemo(() => Math.max(78, store.height))
-
-  const openParent = () => {
-    const id = parentID()
-    if (!id) return
-    navigate(
-      props.serverKey ? sessionHref(requireServerKey(props.serverKey), id) : legacySessionHref(sdk().directory, id),
-    )
-  }
 
   createEffect(() => {
     const el = store.body
@@ -301,11 +288,11 @@ export function SessionComposerRegion(props: {
                   class="w-full rounded-[12px] border border-border-weak-base bg-background-base p-3 text-16-regular text-text-weak"
                 >
                   <span>{language.t("session.child.promptDisabled")} </span>
-                  <Show when={parentID()}>
+                  <Show when={parentID() && props.openParent}>
                     <button
                       type="button"
                       class="text-text-base transition-colors hover:text-text-strong"
-                      onClick={openParent}
+                      onClick={props.openParent}
                     >
                       {language.t("session.child.backToParent")}
                     </button>

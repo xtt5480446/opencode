@@ -51,7 +51,13 @@ import LegacyLayout from "@/pages/layout"
 import NewLayout from "@/pages/layout-new"
 import { ErrorPage } from "./pages/error"
 import { useCheckServerHealth } from "./utils/server-health"
-import { legacySessionHref, requireServerKey, sessionHref } from "./utils/session-route"
+import {
+  legacySessionHref,
+  legacySessionServer,
+  requireServerKey,
+  selectSessionLineage,
+  sessionHref,
+} from "./utils/session-route"
 
 import Session from "@/pages/session"
 import { NewHome, LegacyHome } from "@/pages/home"
@@ -67,7 +73,15 @@ const SessionRoute = () => {
   const tabs = useTabs()
 
   if (params.id && settings.general.newLayoutDesigns()) {
-    return <Navigate href={sessionHref(server.key, params.id)} />
+    const sessionID = params.id
+    return (
+      <Show when={tabs.ready()}>
+        {(_) => {
+          const persisted = tabs.store.filter((item) => item.type === "session")
+          return <Navigate href={sessionHref(legacySessionServer(persisted, sessionID, server.key), sessionID)} />
+        }}
+      </Show>
+    )
   }
 
   // When the new layout is enabled, the legacy new-session route (/:dir/session with no id)
@@ -95,7 +109,7 @@ const TargetSessionRoute = () => {
   })
 
   return (
-    <Show when={`${params.serverKey}\0${params.id}`} keyed>
+    <Show when={requireServerKey(params.serverKey)} keyed>
       <ServerSDKProvider server={conn}>
         <ServerSyncProvider server={conn}>
           <ResolvedTargetSessionRoute />
@@ -119,7 +133,7 @@ function ResolvedTargetSessionRoute() {
     },
     ({ id, sync }) => sync.session.lineage.resolve(id),
   )
-  const current = createMemo(() => cached() ?? resolved())
+  const current = createMemo(() => selectSessionLineage(params.id, cached(), resolved()))
   const directory = createMemo(() => current()?.session.directory)
   const targetDirectory = () => directory()!
 
@@ -134,7 +148,7 @@ function ResolvedTargetSessionRoute() {
 
   return (
     <TargetServerScopedProviders directory={directory} sessionID={() => params.id}>
-      <Show when={!resolved.error} fallback={<ErrorPage error={resolved.error} />}>
+      <Show when={!!current() || resolved.state !== "errored"} fallback={<ErrorPage error={resolved.error} />}>
         <Show when={directory()}>
           <Show
             when={settings.general.newLayoutDesigns()}
@@ -294,7 +308,7 @@ function ServerScopedProviders(props: ServerScopedShellProps) {
     <PermissionProvider directory={props.directory}>
       <LayoutProvider>
         <NotificationProvider directory={props.directory} sessionID={props.sessionID}>
-          <ModelsProvider>{props.children}</ModelsProvider>
+          <ModelsProvider directory={props.directory}>{props.children}</ModelsProvider>
         </NotificationProvider>
       </LayoutProvider>
     </PermissionProvider>
@@ -323,7 +337,7 @@ function TargetServerScopedProviders(props: ServerScopedShellProps) {
   return (
     <PermissionProvider directory={props.directory}>
       <NotificationProvider directory={props.directory} sessionID={props.sessionID}>
-        <ModelsProvider>{props.children}</ModelsProvider>
+        <ModelsProvider directory={props.directory}>{props.children}</ModelsProvider>
       </NotificationProvider>
     </PermissionProvider>
   )

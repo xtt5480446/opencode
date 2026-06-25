@@ -15,7 +15,6 @@ test("snaps spring progress when the session changes", async () => {
   expect(state.progress()).toBe(0)
 
   state.setSession("session-b")
-  await Bun.sleep(0)
   expect(state.progress()).toBe(1)
   state.dispose()
 })
