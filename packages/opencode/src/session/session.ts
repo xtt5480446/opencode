@@ -1,3 +1,4 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Slug } from "@opencode-ai/core/util/slug"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -10,8 +11,8 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Database } from "@opencode-ai/core/database/database"
 import { makeRuntime } from "@opencode-ai/core/effect/runtime"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { EventV2 } from "@opencode-ai/core/event"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionExecution } from "@opencode-ai/core/session/execution"
 
 import { NotFoundError } from "@/storage/storage"
 import { eq } from "drizzle-orm"
@@ -27,7 +28,6 @@ import { or } from "drizzle-orm"
 import type { SQL } from "drizzle-orm"
 import { PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { Log } from "@opencode-ai/core/util/log"
 import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
@@ -37,15 +37,14 @@ import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { SessionID, MessageID, PartID } from "./schema"
 
 import type { Provider } from "@/provider/provider"
-import { Permission } from "@/permission"
 import { Global } from "@opencode-ai/core/global"
 import { Effect, Layer, Option, Context, Schema, Types } from "effect"
 import { NonNegativeInt, optionalOmitUndefined } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { SessionMessageID } from "@opencode-ai/schema/session-message-id"
 
-const log = Log.create({ service: "session" })
 const runtime = makeRuntime(Database.Service, Database.defaultLayer)
 
 const parentTitlePrefix = "New session - "
@@ -70,7 +69,14 @@ export function fromRow(row: SessionRow): Info {
         }
       : undefined
   const share = row.share_url ? { url: row.share_url } : undefined
-  const revert = row.revert ?? undefined
+  const revert = row.revert
+    ? {
+        messageID: MessageID.make(row.revert.messageID),
+        partID: row.revert.partID ? PartID.make(row.revert.partID) : undefined,
+        snapshot: row.revert.snapshot,
+        diff: row.revert.diff,
+      }
+    : undefined
   return {
     id: row.id,
     slug: row.slug,
@@ -138,7 +144,14 @@ export function toRow(info: Info) {
     tokens_reasoning: (info.tokens ?? EmptyTokens).reasoning,
     tokens_cache_read: (info.tokens ?? EmptyTokens).cache.read,
     tokens_cache_write: (info.tokens ?? EmptyTokens).cache.write,
-    revert: info.revert ?? null,
+    revert: info.revert
+      ? {
+          messageID: SessionMessageID.ID.make(info.revert.messageID),
+          partID: info.revert.partID,
+          snapshot: info.revert.snapshot,
+          diff: info.revert.diff,
+        }
+      : null,
     permission: info.permission,
     time_created: info.time.created,
     time_updated: info.time.updated,
@@ -309,69 +322,12 @@ export type GlobalListInput = {
   archived?: boolean
 }
 
-const CreatedEventSchema = Schema.Struct({
-  sessionID: SessionID,
-  info: Info,
-})
-
-const UpdatedShare = Schema.Struct({
-  url: Schema.optional(Schema.NullOr(Schema.String)),
-})
-
-const UpdatedTime = Schema.Struct({
-  created: Schema.optional(Schema.NullOr(NonNegativeInt)),
-  updated: Schema.optional(Schema.NullOr(NonNegativeInt)),
-  compacting: Schema.optional(Schema.NullOr(NonNegativeInt)),
-  archived: Schema.optional(Schema.NullOr(ArchivedTimestamp)),
-})
-
-const UpdatedInfo = Schema.Struct({
-  id: Schema.optional(Schema.NullOr(SessionID)),
-  slug: Schema.optional(Schema.NullOr(Schema.String)),
-  projectID: Schema.optional(Schema.NullOr(ProjectV2.ID)),
-  workspaceID: Schema.optional(Schema.NullOr(WorkspaceV2.ID)),
-  directory: Schema.optional(Schema.NullOr(Schema.String)),
-  path: Schema.optional(Schema.NullOr(Schema.String)),
-  parentID: Schema.optional(Schema.NullOr(SessionID)),
-  summary: Schema.optional(Schema.NullOr(Summary)),
-  cost: Schema.optional(Schema.Finite),
-  tokens: Schema.optional(Tokens),
-  share: Schema.optional(UpdatedShare),
-  title: Schema.optional(Schema.NullOr(Schema.String)),
-  agent: Schema.optional(Schema.NullOr(Schema.String)),
-  model: Schema.optional(Schema.NullOr(Model)),
-  version: Schema.optional(Schema.NullOr(Schema.String)),
-  metadata: Schema.optional(Schema.NullOr(Metadata)),
-  time: Schema.optional(UpdatedTime),
-  permission: Schema.optional(Schema.NullOr(PermissionV1.Ruleset)),
-  revert: Schema.optional(Schema.NullOr(Revert)),
-})
-
-const UpdatedEventSchema = Schema.Struct({
-  sessionID: SessionID,
-  info: UpdatedInfo,
-})
-
 export const Event = {
   Created: SessionV1.Event.Created,
   Updated: SessionV1.Event.Updated,
   Deleted: SessionV1.Event.Deleted,
-  Diff: EventV2.define({
-    type: "session.diff",
-    schema: {
-      sessionID: SessionID,
-      diff: Schema.Array(Snapshot.FileDiff),
-    },
-  }),
-  Error: EventV2.define({
-    type: "session.error",
-    schema: {
-      sessionID: Schema.optional(SessionID),
-      // Reuses SessionV1.Assistant.fields.error (already Schema.optional) so
-      // the derived schema keeps the same discriminated-union shape on the event stream.
-      error: SessionV1.Assistant.fields.error,
-    },
-  }),
+  Diff: SessionV1.Event.Diff,
+  Error: SessionV1.Event.Error,
 }
 
 export function plan(input: { slug: string; time: { created: number } }, instance: InstanceContext) {
@@ -572,7 +528,7 @@ export const layer: Layer.Layer<
           updated: Date.now(),
         },
       }
-      log.info("created", result)
+      yield* Effect.logInfo("created", result)
 
       yield* events.publish(SessionV1.Event.Created, { sessionID: result.id, info: result })
 
@@ -663,8 +619,8 @@ export const layer: Layer.Layer<
 
         yield* events.publish(SessionV1.Event.Deleted, { sessionID, info: session })
         yield* events.remove(sessionID)
-      } catch (e) {
-        log.error(e)
+      } catch (error) {
+        yield* Effect.logError("failed to remove session", { sessionID, error })
       }
     })
 
@@ -967,6 +923,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(BackgroundJob.defaultLayer),
   Layer.provide(Database.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
+  Layer.provide(SessionExecution.noopLayer),
   Layer.provide(SessionV2.defaultLayer),
   Layer.provide(RuntimeFlags.defaultLayer),
 )
@@ -1013,7 +970,7 @@ function listByProject(
           : or(...conds)!,
       )
     }
-  } else if (input.scope !== "project" && !input.experimentalWorkspaces) {
+  } else if (input.scope !== "project") {
     if (input.directory) {
       conditions.push(eq(SessionTable.directory, input.directory))
     }
@@ -1112,5 +1069,7 @@ export function* listGlobal(input?: {
     yield { ...fromRow(row), project }
   }
 }
+
+export const node = LayerNode.make(layer, [BackgroundJob.node, RuntimeFlags.node, Database.node, EventV2Bridge.node])
 
 export * as Session from "./session"
