@@ -8,7 +8,7 @@ import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
 import * as Selection from "./util/selection"
-import { createCliRenderer, MouseButton, type CliRenderer } from "@opentui/core"
+import { createCliRenderer, MouseButton } from "@opentui/core"
 import { RouteProvider, useRoute } from "./context/route"
 import {
   Switch,
@@ -177,35 +177,33 @@ function isVersionGreater(left: string, right: string) {
   return a.prerelease.localeCompare(b.prerelease, undefined, { numeric: true }) > 0
 }
 
-export function initializeRenderer(config: TuiConfig.Resolved, factory = createCliRenderer) {
-  return Effect.tryPromise({
-    try: () =>
-      factory({
-        externalOutputMode: "passthrough",
-        targetFps: 60,
-        gatherStats: false,
-        exitOnCtrlC: false,
-        useKittyKeyboard: {},
-        autoFocus: false,
-        openConsoleOnError: false,
-        useMouse: !Flag.OPENCODE_DISABLE_MOUSE && config.mouse,
-        consoleOptions: {
-          keyBindings: [{ name: "y", ctrl: true, action: "copy-selection" }],
-        },
-      }),
-    catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-  })
-}
-
 export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   const global = yield* Global.Service
   const exit = { epilogue: undefined as string | undefined, reason: undefined as unknown }
   const result = yield* Effect.scoped(
     Effect.gen(function* () {
-      const renderer = yield* Effect.acquireRelease(initializeRenderer(input.config), (renderer) =>
-        Effect.sync(() => {
-          destroyRenderer(renderer)
+      const renderer = yield* Effect.acquireRelease(
+        Effect.tryPromise({
+          try: () =>
+            createCliRenderer({
+              externalOutputMode: "passthrough",
+              targetFps: 60,
+              gatherStats: false,
+              exitOnCtrlC: false,
+              useKittyKeyboard: {},
+              autoFocus: false,
+              openConsoleOnError: false,
+              useMouse: !Flag.OPENCODE_DISABLE_MOUSE && input.config.mouse,
+              consoleOptions: {
+                keyBindings: [{ name: "y", ctrl: true, action: "copy-selection" }],
+              },
+            }),
+          catch: (error) => (error instanceof Error ? error : new Error(String(error))),
         }),
+        (renderer) =>
+          Effect.sync(() => {
+            destroyRenderer(renderer)
+          }),
       )
       win32DisableProcessedInput()
       const keymap = createDefaultOpenTuiKeymap(renderer)
