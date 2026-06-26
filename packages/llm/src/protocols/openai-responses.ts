@@ -201,6 +201,7 @@ type OpenAIResponsesStreamItem = Schema.Schema.Type<typeof OpenAIResponsesStream
 // `response.failed` carries them under `response.error`. We capture both so
 // the parser can surface a useful provider-error message in either path.
 const OpenAIResponsesErrorPayload = Schema.Struct({
+  type: optionalNull(Schema.String),
   code: optionalNull(Schema.String),
   message: optionalNull(Schema.String),
   param: optionalNull(Schema.String),
@@ -224,6 +225,7 @@ const OpenAIResponsesEvent = Schema.Struct({
       [Schema.Record(Schema.String, Schema.Unknown)],
     ),
   ),
+  error: optionalNull(OpenAIResponsesErrorPayload),
   code: Schema.optional(Schema.String),
   message: Schema.optional(Schema.String),
   param: Schema.optional(Schema.String),
@@ -593,10 +595,10 @@ type StepResult = readonly [ParserState, ReadonlyArray<LLMEvent>]
 const NO_EVENTS: StepResult["1"] = []
 
 // `response.completed` / `response.incomplete` are clean finishes that emit a
-// `finish` event; `response.failed` is a hard failure that emits a
-// `provider-error`. All three end the stream — kept in one set so `step` and
+// `finish` event; `response.failed` and `error` are hard failures that emit a
+// `provider-error`. All four end the stream — kept in one set so `step` and
 // the protocol's `terminal` predicate stay in sync.
-const TERMINAL_TYPES = new Set(["response.completed", "response.incomplete", "response.failed"])
+const TERMINAL_TYPES = new Set(["response.completed", "response.incomplete", "response.failed", "error"])
 
 const onOutputTextDelta = (state: ParserState, event: OpenAIResponsesEvent): StepResult => {
   if (!event.delta) return [state, NO_EVENTS]
@@ -880,7 +882,7 @@ const onResponseFinish = (state: ParserState, event: OpenAIResponsesEvent): Step
 // the bare message — production rate limits and context-length failures used
 // to be indistinguishable from generic stream drops.
 const providerErrorMessage = (event: OpenAIResponsesEvent, fallback: string): string => {
-  const nested = event.response?.error ?? undefined
+  const nested = event.error ?? event.response?.error ?? undefined
   const message = event.message || nested?.message || undefined
   const code = event.code || nested?.code || undefined
   if (message && code) return `${code}: ${message}`
@@ -888,11 +890,26 @@ const providerErrorMessage = (event: OpenAIResponsesEvent, fallback: string): st
 }
 
 const providerError = (event: OpenAIResponsesEvent, fallback: string) => {
-  const code = event.code || event.response?.error?.code || undefined
+  const nested = event.error ?? event.response?.error ?? undefined
+  const code = event.code || nested?.code || undefined
+  const type = nested?.type || undefined
   const message = providerErrorMessage(event, fallback)
+  const retryable = [
+    "internal_error",
+    "rate_limit_error",
+    "rate_limit_exceeded",
+    "server_error",
+    "server_is_overloaded",
+    "service_unavailable_error",
+    "stream_read_error",
+    "upstream_error",
+  ].some((value) => value === code || value === type)
   return LLMEvent.providerError({
     message,
-    classification: code === "context_length_exceeded" || isContextOverflow(message) ? "context-overflow" : undefined,
+    ...(code === "context_length_exceeded" || isContextOverflow(message)
+      ? { classification: "context-overflow" as const }
+      : {}),
+    ...(retryable ? { retryable: true } : {}),
   })
 }
 

@@ -1327,7 +1327,9 @@ describe("OpenAI Responses route", () => {
       // sometimes-generic provider message. The bare message alone meant
       // production errors like rate limits were indistinguishable from
       // unrelated stream failures.
-      expect(response.events).toEqual([{ type: "provider-error", message: "rate_limit_exceeded: Slow down" }])
+      expect(response.events).toEqual([
+        { type: "provider-error", message: "rate_limit_exceeded: Slow down", retryable: true },
+      ])
     }),
   )
 
@@ -1337,7 +1339,7 @@ describe("OpenAI Responses route", () => {
         Effect.provide(fixedResponse(sseEvents({ type: "error", code: "internal_error" }))),
       )
 
-      expect(response.events).toEqual([{ type: "provider-error", message: "internal_error" }])
+      expect(response.events).toEqual([{ type: "provider-error", message: "internal_error", retryable: true }])
     }),
   )
 
@@ -1347,7 +1349,7 @@ describe("OpenAI Responses route", () => {
         Effect.provide(fixedResponse(sseEvents({ type: "error", code: "internal_error", message: "" }))),
       )
 
-      expect(response.events).toEqual([{ type: "provider-error", message: "internal_error" }])
+      expect(response.events).toEqual([{ type: "provider-error", message: "internal_error", retryable: true }])
     }),
   )
 
@@ -1371,7 +1373,9 @@ describe("OpenAI Responses route", () => {
         ),
       )
 
-      expect(response.events).toEqual([{ type: "provider-error", message: "server_error: Upstream model unavailable" }])
+      expect(response.events).toEqual([
+        { type: "provider-error", message: "server_error: Upstream model unavailable", retryable: true },
+      ])
     }),
   )
 
@@ -1416,6 +1420,55 @@ describe("OpenAI Responses route", () => {
           message: "context_length_exceeded: prompt too long",
           classification: "context-overflow",
         },
+      ])
+    }),
+  )
+
+  it.effect("surfaces and marks transient nested error envelopes retryable", () =>
+    Effect.gen(function* () {
+      const response = yield* LLMClient.generate(request).pipe(
+        Effect.provide(
+          fixedResponse(
+            sseEvents({
+              type: "error",
+              error: {
+                type: "upstream_error",
+                code: "stream_read_error",
+                message: "The upstream stream ended unexpectedly",
+              },
+            }),
+          ),
+        ),
+      )
+
+      expect(response.events).toEqual([
+        {
+          type: "provider-error",
+          message: "stream_read_error: The upstream stream ended unexpectedly",
+          retryable: true,
+        },
+      ])
+    }),
+  )
+
+  it.effect("stops parsing after a terminal error event", () =>
+    Effect.gen(function* () {
+      const response = yield* LLMClient.generate(request).pipe(
+        Effect.provide(
+          fixedResponse(
+            sseEvents(
+              {
+                type: "error",
+                error: { type: "server_error", code: "server_error", message: "Transient failure" },
+              },
+              { type: "response.output_text.delta", item_id: "ignored", delta: "must not publish" },
+            ),
+          ),
+        ),
+      )
+
+      expect(response.events).toEqual([
+        { type: "provider-error", message: "server_error: Transient failure", retryable: true },
       ])
     }),
   )

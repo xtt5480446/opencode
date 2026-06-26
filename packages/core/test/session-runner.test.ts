@@ -54,6 +54,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { Location } from "@opencode-ai/core/location"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import { asc, eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
@@ -2939,6 +2940,62 @@ describe("SessionRunnerLLM", () => {
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "user", text: "Fail before step" },
         { type: "assistant", finish: "error", error: { type: "unknown", message: "Provider unavailable" } },
+      ])
+    }),
+  )
+
+  it.effect("retries transient provider errors before durable assistant output", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Recover transient stream" }), resume: false })
+
+      requests.length = 0
+      responses = [
+        [LLMEvent.providerError({ message: "stream_read_error", retryable: true })],
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "text-after-retry" }),
+          LLMEvent.textDelta({ id: "text-after-retry", text: "Recovered" }),
+          LLMEvent.textEnd({ id: "text-after-retry" }),
+          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+          LLMEvent.finish({ reason: "stop" }),
+        ],
+      ]
+
+      const run = yield* session.resume(sessionID).pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("500 millis")
+      yield* Fiber.join(run)
+
+      expect(requests).toHaveLength(2)
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Recover transient stream" },
+        { type: "assistant", finish: "stop", content: [{ type: "text", text: "Recovered" }] },
+      ])
+    }),
+  )
+
+  it.effect("bounds transient provider retries", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Bound transient retries" }), resume: false })
+
+      requests.length = 0
+      responses = Array.from({ length: 3 }, () => [
+        LLMEvent.providerError({ message: "server_error", retryable: true }),
+      ])
+
+      const run = yield* session.resume(sessionID).pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("1500 millis")
+      yield* Fiber.join(run)
+
+      expect(requests).toHaveLength(3)
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Bound transient retries" },
+        { type: "assistant", finish: "error", error: { type: "unknown", message: "server_error" } },
       ])
     }),
   )

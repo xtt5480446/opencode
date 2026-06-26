@@ -37,6 +37,9 @@ import { toLLMMessages } from "./to-llm-message"
 import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 
+const MAX_PROVIDER_RETRIES = 2
+const PROVIDER_RETRY_DELAY_MS = 500
+
 /**
  * Runs one durable coding-agent Session until it settles.
  *
@@ -222,54 +225,72 @@ export const layer = Layer.effect(
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
       let overflowFailure: ProviderErrorEvent | undefined
-      const providerStream = llm.stream(request).pipe(
-        Stream.runForEach((event) =>
-          Effect.gen(function* () {
-            if (overflowFailure || publisher.hasProviderError()) return
-            if (LLMEvent.is.providerError(event)) {
-              if (isContextOverflowFailure(event) && !publisher.hasAssistantStarted()) {
-                overflowFailure = event
-                return
-              }
-            }
-            yield* publish(event)
-            if (event.type !== "tool-call" || event.providerExecuted) return
-            if (!toolMaterialization) {
-              yield* withPublication(publisher.failUnsettledTools("Tools are disabled after the maximum agent steps"))
-              return
-            }
-            needsContinuation = true
-            const assistantMessageID = yield* publisher.assistantMessageID(event.id)
-            yield* Effect.uninterruptibleMask((restore) =>
-              restore(
-                toolMaterialization.settle({
-                  sessionID: session.id,
-                  agent: agent.id,
-                  assistantMessageID,
-                  call: event,
-                }),
-              ).pipe(
-                Effect.flatMap((settlement) =>
-                  publish(
-                    LLMEvent.toolResult({
-                      id: event.id,
-                      name: event.name,
-                      result: settlement.result,
-                      output: settlement.output,
+      const runProvider: (remaining: number, attempt: number) => Effect.Effect<void, LLMError> = Effect.fnUntraced(
+        function* (remaining: number, attempt: number) {
+          let retryFailure: ProviderErrorEvent | undefined
+          yield* llm.stream(request).pipe(
+            Stream.runForEach((event) =>
+              Effect.gen(function* () {
+                if (overflowFailure || retryFailure || publisher.hasProviderError()) return
+                if (LLMEvent.is.providerError(event) && !publisher.hasAssistantStarted()) {
+                  if (isContextOverflowFailure(event)) {
+                    overflowFailure = event
+                    return
+                  }
+                  if (event.retryable) {
+                    retryFailure = event
+                    return
+                  }
+                }
+                yield* publish(event)
+                if (event.type !== "tool-call" || event.providerExecuted) return
+                if (!toolMaterialization) {
+                  yield* withPublication(
+                    publisher.failUnsettledTools("Tools are disabled after the maximum agent steps"),
+                  )
+                  return
+                }
+                needsContinuation = true
+                const assistantMessageID = yield* publisher.assistantMessageID(event.id)
+                yield* Effect.uninterruptibleMask((restore) =>
+                  restore(
+                    toolMaterialization.settle({
+                      sessionID: session.id,
+                      agent: agent.id,
+                      assistantMessageID,
+                      call: event,
                     }),
-                    settlement.outputPaths ?? [],
+                  ).pipe(
+                    Effect.flatMap((settlement) =>
+                      publish(
+                        LLMEvent.toolResult({
+                          id: event.id,
+                          name: event.name,
+                          result: settlement.result,
+                          output: settlement.output,
+                        }),
+                        settlement.outputPaths ?? [],
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            ).pipe(FiberSet.run(toolFibers))
-          }),
-        ),
-        Effect.ensuring(withPublication(publisher.flush())),
+                ).pipe(FiberSet.run(toolFibers))
+              }),
+            ),
+            Effect.ensuring(withPublication(publisher.flush())),
+          )
+          if (!retryFailure) return
+          if (remaining === 0) {
+            yield* publish(retryFailure)
+            return
+          }
+          yield* Effect.sleep(`${PROVIDER_RETRY_DELAY_MS * 2 ** attempt} millis`)
+          yield* runProvider(remaining - 1, attempt + 1)
+        },
       )
 
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const stream = yield* restore(providerStream).pipe(Effect.exit)
+          const stream = yield* restore(runProvider(MAX_PROVIDER_RETRIES, 0)).pipe(Effect.exit)
           const failure =
             stream._tag === "Failure" ? Option.getOrUndefined(Cause.findErrorOption(stream.cause)) : undefined
           if (
