@@ -1,4 +1,5 @@
 import { Config as EffectConfig, Context, Effect, Layer } from "effect"
+import { buildNode } from "@/effect/build-node"
 import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi"
 import { HttpClient, HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
@@ -52,6 +53,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNodeTree } from "@opencode-ai/core/effect/layer-node-tree"
 import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
 import { EventV2 } from "@opencode-ai/core/event"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
@@ -61,6 +63,7 @@ import { ProjectCopy } from "@opencode-ai/core/project/copy"
 import { PtyTicket } from "@opencode-ai/core/pty/ticket"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { SessionV2 } from "@opencode-ai/core/session"
 import { lazy } from "@/util/lazy"
 import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@opencode-ai/server/cors"
 import { serveUIEffect } from "@/server/shared/ui"
@@ -95,6 +98,10 @@ import { sessionHandlers } from "./handlers/session"
 import { syncHandlers } from "./handlers/sync"
 import { tuiHandlers } from "./handlers/tui"
 import { handlers } from "@opencode-ai/server/handlers"
+import { locationServiceMapLayer } from "@opencode-ai/core/location-layer"
+import { layer as locationLayer } from "@opencode-ai/server/location"
+import { sessionLocationLayer } from "@opencode-ai/server/middleware/session-location"
+import { PtyEnvironment } from "@opencode-ai/server/pty-environment"
 import { schemaErrorLayer as v2SchemaErrorLayer } from "@opencode-ai/server/middleware/schema-error"
 import { workspaceHandlers } from "./handlers/workspace"
 import { instanceContextLayer } from "./middleware/instance-context"
@@ -279,7 +286,12 @@ export function createRoutes(
       MoveSession.defaultLayer,
       HttpServer.layerServices,
     ]),
-    Layer.provide(LayerNode.buildLayer(app)),
+    Layer.provide(sessionLocationLayer),
+    Layer.provide(locationLayer),
+    Layer.provide(PtyEnvironment.defaultLayer),
+    Layer.provide(SessionV2.defaultLayer.pipe(Layer.provide(locationServiceMapLayer))),
+    Layer.provide(buildNode(app)),
+    Layer.provide(locationServiceMapLayer),
     Layer.provide(Layer.succeed(CorsConfig)(corsOptions)),
     Layer.provideMerge(Observability.layer),
   )

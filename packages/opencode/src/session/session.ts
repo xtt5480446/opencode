@@ -12,6 +12,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { makeRuntime } from "@opencode-ai/core/effect/runtime"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { locationServiceMapLayer } from "@opencode-ai/core/location-layer"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 
 import { NotFoundError } from "@/storage/storage"
@@ -924,7 +925,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Database.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(SessionExecution.noopLayer),
-  Layer.provide(SessionV2.defaultLayer),
+  Layer.provide(SessionV2.defaultLayer.pipe(Layer.provide(locationServiceMapLayer))),
   Layer.provide(RuntimeFlags.defaultLayer),
 )
 

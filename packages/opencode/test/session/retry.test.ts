@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test"
+import { buildNode } from "@/effect/build-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
 import { Effect, Schedule, Schema } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNodeTree } from "@opencode-ai/core/effect/layer-node-tree"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { SessionRetry } from "../../src/session/retry"
 import { MessageV2 } from "../../src/session/message-v2"
@@ -16,7 +18,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 
 const providerID = ProviderV2.ID.make("test")
 const retryProvider = "test"
-const it = testEffect(LayerNode.buildLayer(LayerNode.group([SessionStatus.node, CrossSpawnSpawner.node])))
+const it = testEffect(buildNode(LayerNode.group([SessionStatus.node, CrossSpawnSpawner.node])))
 
 function apiError(headers?: Record<string, string>): SessionV1.APIError {
   return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(

@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test"
 import { Context, Effect, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNodeTree } from "@opencode-ai/core/effect/layer-node-tree"
+import { ScopedNode } from "@opencode-ai/core/effect/scoped-node"
+import { ScopedNodeBuild } from "@opencode-ai/core/effect/scoped-node-build"
+import { LocationServiceMap } from "@opencode-ai/core/location-layer"
+import { Location } from "@opencode-ai/core/location"
 
 class Value extends Context.Service<Value, { readonly value: string }>()("test/TierValue") {}
 class Result extends Context.Service<Result, { readonly value: string }>()("test/TierResult") {}
@@ -8,8 +13,7 @@ class Left extends Context.Service<Left, { readonly value: string }>()("test/Tie
 class Right extends Context.Service<Right, { readonly value: string }>()("test/TierRight") {}
 class Last extends Context.Service<Last, { readonly value: string }>()("test/TierLast") {}
 
-test("builds tiers with a custom builder", async () => {
-  let locationBuilds = 0
+test("returns independently composable tier layers", async () => {
   const tiers = LayerNode.tiers(["location", "global"])
   const global = tiers.make("global")
   const location = tiers.make("location")
@@ -24,20 +28,15 @@ test("builds tiers with a custom builder", async () => {
     ),
     deps: [value],
   })
-  const layer = LayerNode.buildLayer(LayerNode.group([result]), {
-    tiers,
-    buildTier: (tier, layers) => {
-      if (tier !== "location") return LayerNode.combine(layers)
-      locationBuilds++
-      return LayerNode.combine(layers).pipe(Layer.fresh)
-    },
-  })
+  const serviceLayer = ScopedNodeBuild.build(LayerNode.group([result]))
+  const layer = LocationServiceMap.get({ directory: "/tmp" } as Location.Ref).pipe(
+    Layer.provide(serviceLayer),
+  ) as unknown as Layer.Layer<Result>
   const program = Effect.gen(function* () {
     return (yield* Result).value
   }).pipe(Effect.provide(layer))
 
   expect(await Effect.runPromise(program)).toBe("value")
-  expect(locationBuilds).toBe(1)
 })
 
 test("rejects conflicting higher-tier service implementations", () => {
@@ -57,7 +56,7 @@ test("rejects conflicting higher-tier service implementations", () => {
     deps: [second],
   })
 
-  expect(() => LayerNode.buildLayer(LayerNode.group([left, right]), { tiers })).toThrow(
+  expect(() => ScopedNodeBuild.build(LayerNode.group([left, right]))).toThrow(
     "conflicting implementations for test/TierValue",
   )
 })
@@ -76,7 +75,7 @@ test("validates tier dependencies through groups", () => {
     deps: [LayerNode.group([local])],
   })
 
-  expect(() => LayerNode.buildLayer(invalid, { tiers })).toThrow("Tier global cannot depend on lower tier location")
+  expect(() => ScopedNodeBuild.build(LayerNode.group([invalid]))).toThrow("Tier global cannot depend on lower tier location")
 })
 
 test("validates shared groups in each consumer tier", () => {
@@ -102,7 +101,7 @@ test("validates shared groups in each consumer tier", () => {
     deps: [shared],
   })
 
-  expect(() => LayerNode.buildLayer(LayerNode.group([valid, invalid]), { tiers })).toThrow(
+  expect(() => ScopedNodeBuild.build(LayerNode.group([valid, invalid]))).toThrow(
     "Tier global cannot depend on lower tier location",
   )
 })
@@ -114,7 +113,7 @@ test("rejects a service assigned to multiple tiers", () => {
   const local = location({ service: Value, layer: Layer.succeed(Value, Value.of({ value: "local" })), deps: [] })
   const shared = global({ service: Value, layer: Layer.succeed(Value, Value.of({ value: "global" })), deps: [] })
 
-  expect(() => LayerNode.buildLayer(LayerNode.group([local, shared]), { tiers })).toThrow(
+  expect(() => ScopedNodeBuild.build(LayerNode.group([local, shared]))).toThrow(
     "Service test/TierValue belongs to both tier location and tier global",
   )
 })
@@ -159,7 +158,7 @@ test("rebinds same-tier providers without reacquiring them", async () => {
     ),
     deps: [first],
   })
-  const layer = LayerNode.buildLayer(LayerNode.group([left, right, last]), { tiers })
+  const layer = ScopedNodeBuild.build(LayerNode.group([left, right, last])) as Layer.Layer<Left | Right | Last>
   const values = Effect.gen(function* () {
     return [(yield* Left).value, (yield* Right).value, (yield* Last).value]
   }).pipe(Effect.provide(layer))

@@ -1,6 +1,8 @@
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { buildNode } from "@/effect/build-node"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNodeTree } from "@opencode-ai/core/effect/layer-node-tree"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
 import { tool } from "ai"
@@ -180,9 +182,9 @@ const replacements = [
   LayerNode.replace(SessionSummary.layer, summary),
   LayerNode.replace(RuntimeFlags.defaultLayer, RuntimeFlags.layer({ experimentalEventSystem: true })),
 ]
-const env = LayerNode.buildLayer(
+const env = buildNode(
   LayerNode.group([root, LayerNode.make({ service: TestLLMServer, layer: TestLLMServer.layer, deps: [] })]),
-  { replacements },
+  replacements,
 )
 
 const it = testEffect(env)
@@ -207,9 +209,10 @@ const providerErrorLLM = Layer.succeed(
       ),
   }),
 )
-const providerErrorEnv = LayerNode.buildLayer(root, {
-  replacements: [...replacements, LayerNode.replace(LLM.layer, providerErrorLLM)],
-})
+const providerErrorEnv = buildNode(root, [
+  ...replacements,
+  LayerNode.replace(LLM.layer, providerErrorLLM),
+])
 const itProviderError = testEffect(providerErrorEnv)
 
 const fragmentFailureLLM = Layer.succeed(
@@ -226,9 +229,10 @@ const fragmentFailureLLM = Layer.succeed(
       ),
   }),
 )
-const fragmentFailureEnv = LayerNode.buildLayer(root, {
-  replacements: [...replacements, LayerNode.replace(LLM.layer, fragmentFailureLLM)],
-})
+const fragmentFailureEnv = buildNode(root, [
+  ...replacements,
+  LayerNode.replace(LLM.layer, fragmentFailureLLM),
+])
 const itFragmentFailure = testEffect(fragmentFailureEnv)
 
 const boot = Effect.fn("test.boot")(function* () {

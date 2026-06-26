@@ -1,15 +1,17 @@
 import { $ } from "bun"
+import { buildNode } from "@/effect/build-node"
 import { describe, expect } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { Effect } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNodeTree } from "@opencode-ai/core/effect/layer-node-tree"
 import { Git } from "../../src/git"
 import { tmpdir } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const weird = process.platform === "win32" ? "space file.txt" : "tab\tfile.txt"
-const it = testEffect(LayerNode.buildLayer(Git.node))
+const it = testEffect(buildNode(LayerNode.group([Git.node])))
 
 const scopedTmpdir = (options?: Parameters<typeof tmpdir>[0]) =>
   Effect.acquireRelease(

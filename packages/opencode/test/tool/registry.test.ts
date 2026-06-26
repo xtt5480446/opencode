@@ -1,9 +1,11 @@
 import { afterEach, describe, expect } from "bun:test"
+import { buildNode } from "@/effect/build-node"
 import path from "path"
 import fs from "fs/promises"
 import { fileURLToPath, pathToFileURL } from "url"
 import { Effect, Layer, Result, Schema } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNodeTree } from "@opencode-ai/core/effect/layer-node-tree"
 import { ToolRegistry } from "@/tool/registry"
 import { Tool } from "@/tool/tool"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
@@ -54,11 +56,9 @@ const replacements = [
   LayerNode.replace(RuntimeFlags.defaultLayer, RuntimeFlags.layer()),
 ]
 
-const it = testEffect(LayerNode.buildLayer(root, { replacements }))
+const it = testEffect(buildNode(root, replacements))
 const withBrokenPlugin = testEffect(
-  LayerNode.buildLayer(root, {
-    replacements: [...replacements, LayerNode.replace(Plugin.layer, brokenPluginLayer)],
-  }),
+  buildNode(root, [...replacements, LayerNode.replace(Plugin.layer, brokenPluginLayer)]),
 )
 
 afterEach(async () => {

@@ -5,6 +5,8 @@ import { Context, Effect, Layer, Schedule, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { FSUtil } from "../fs-util"
 import { Global } from "../global"
+import { makeGlobalNode } from "../effect/scoped-node"
+import { httpClient } from "../effect/layer-node-platform"
 import { AbsolutePath } from "../schema"
 
 const skillConcurrency = 4
@@ -165,3 +167,5 @@ export const defaultLayer = layer.pipe(
   Layer.provide(FSUtil.defaultLayer),
   Layer.provide(Global.defaultLayer),
 )
+
+export const node = makeGlobalNode({ service: Service, layer, deps: [httpClient, FSUtil.node, Global.node] })

@@ -11,6 +11,7 @@
  * before tools run by hooking into start-step, but the AI SDK executes
  * tools internally during multi-step processing before emitting events.
  */
+import { buildNode } from "@/effect/build-node"
 import { expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -87,13 +88,11 @@ const root = LayerNode.group([
   LayerNode.make({ service: TestLLMServer, layer: TestLLMServer.layer, deps: [] }),
 ])
 const it = testEffect(
-  LayerNode.buildLayer(root, {
-    replacements: [
+  buildNode(root, [
       LayerNode.replace(MCP.layer, mcp),
       LayerNode.replace(LSP.layer, lsp),
       LayerNode.replace(RuntimeFlags.defaultLayer, RuntimeFlags.layer({ experimentalEventSystem: true })),
-    ],
-  }),
+    ]),
 )
 
 const providerCfg = (url: string) => ({

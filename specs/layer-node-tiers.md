@@ -152,52 +152,28 @@ This differs from cross-tier uniqueness. Multiple implementations may be rebound
 
 Without a custom build function, a tier's sorted layers are combined with the default `Layer.provideMerge` behavior.
 
-## Custom Tier Build Function
+## Tier Layers
 
-The optional third argument customizes how each tier's sorted layers are constructed:
+`buildLayer` returns one independently composable layer per tier:
 
 ```ts
-const appLayer = LayerNode.buildLayer(
-  root,
-  tiers,
-  (tier, layers) => {
-    const combined = LayerNode.combine(layers)
+const built = LayerNode.buildLayer(root, { tiers })
 
-    if (tier !== "location") return combined
-
-    return Layer.effect(
-      LocationServiceMap,
-      LayerMap.make(
-        (ref: Location.Ref) =>
-          combined.pipe(
-            Layer.provide(Location.layer(ref)),
-            Layer.fresh,
-          ),
-        { idleTimeToLive: "60 minutes" },
-      ),
-    )
-  },
-)
+const locationMap = buildLocationServiceMap(built.location)
+const appLayer = locationMap.pipe(Layer.provideMerge(built.global))
 ```
 
-The callback receives:
-
-- The tier name.
-- The tier's layers in the dependency-first order preserved from the single complete-graph topological sort.
-
-It returns the final layer representing that tier. This permits a tier to introduce a lifecycle boundary, wrap its layers in a `LayerMap`, or otherwise transform how the tier is built.
+The application composition root owns lifecycle boundaries, `LayerMap` construction, and how tiers are connected. Input nodes remain requirements of their tier layer until that root supplies them.
 
 ## Replacements
 
 Tests and alternate runtimes may replace a specific layer implementation by exact object identity:
 
 ```ts
-const layer = LayerNode.buildLayer(
-  root,
+const layer = LayerNode.buildLayer(root, {
   tiers,
-  buildTier,
-  [LayerNode.replace(Config.layer, testConfigLayer)],
-)
+  replacements: [LayerNode.replace(Config.layer, testConfigLayer)],
+})
 ```
 
 The replacement applies to every placement of that exact source layer in the generated plans. Unused replacements are not acquired. A replacement must provide the same service output, must not introduce new errors, and must not have unresolved dependencies.
@@ -212,7 +188,7 @@ locationTier
   .pipe(Layer.provideMerge(globalTier))
 ```
 
-The location tier contains only location implementations. Global dependencies are connected after the location build function creates its fresh or `LayerMap` boundary, so global services remain shared.
+The location tier contains only location implementations. Global dependencies are connected after the application creates its fresh or `LayerMap` boundary, so global services remain shared.
 
 ## Responsibilities
 
