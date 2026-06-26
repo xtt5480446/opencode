@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { Effect, Option, Schema, Stream } from "effect"
+import { Effect, Fiber, Option, Schema, Stream } from "effect"
 
 test("embedded client uses the real router and handlers", async () => {
   const directory = await mkdtemp(join(tmpdir(), "opencode-embedded-"))
@@ -102,6 +102,146 @@ test("embedded client uses the real router and handlers", async () => {
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test("embedded session events live-tail location-owned durable rows through provider failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "opencode-embedded-live-tail-"))
+  const database = Flag.OPENCODE_DB
+  Flag.OPENCODE_DB = join(directory, "opencode.sqlite")
+  let requests = 0
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const body = await request.json()
+      if (JSON.stringify(body).includes("Generate a title for this conversation")) {
+        return new Response(
+          [
+            'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+            'data: {"choices":[{"delta":{"content":"Live tail"}}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            "data: [DONE]",
+            "",
+          ].join("\n\n"),
+          { headers: { "content-type": "text/event-stream" } },
+        )
+      }
+      requests++
+      if (requests > 1) {
+        return Response.json({ error: { message: "Provider failed on turn B", type: "server_error" } }, { status: 500 })
+      }
+      return new Response(
+        [
+          'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_live_tail","type":"function","function":{"name":"live_tail_tool","arguments":""}}]}}]}',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"value\\":\\"A\\"}"}}]}}]}',
+          'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
+        { headers: { "content-type": "text/event-stream" } },
+      )
+    },
+  })
+
+  try {
+    const git = Bun.spawn(["git", "init"], { cwd: directory, stdout: "ignore", stderr: "ignore" })
+    expect(await git.exited).toBe(0)
+    await Bun.write(
+      join(directory, "opencode.json"),
+      JSON.stringify({
+        formatter: false,
+        lsp: false,
+        providers: {
+          test: {
+            name: "Test",
+            api: {
+              type: "aisdk",
+              package: "@ai-sdk/openai-compatible",
+              url: `http://127.0.0.1:${server.port}/v1`,
+              settings: {},
+            },
+            request: { body: { apiKey: "test-key" } },
+            models: {
+              "test-model": {
+                name: "Test Model",
+                capabilities: { tools: true, input: ["text"], output: ["text"] },
+                limit: { context: 100_000, output: 10_000 },
+              },
+            },
+          },
+        },
+      }),
+    )
+    const { AbsolutePath, Agent, Location, Model, OpenCode, Prompt, Provider, Session, Tool } = await import("../src")
+    const sessionID = Session.ID.make(`ses_embedded_${crypto.randomUUID()}`)
+    const executions: string[] = []
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const opencode = yield* OpenCode.create()
+          yield* opencode.tools.register({
+            live_tail_tool: Tool.make({
+              description: "Record step A",
+              input: Schema.Struct({ value: Schema.String }),
+              output: Schema.Struct({ value: Schema.String }),
+              execute: ({ value }) =>
+                Effect.sync(() => {
+                  executions.push(value)
+                  return { value }
+                }),
+            }),
+          })
+          yield* opencode.sessions.create({
+            id: sessionID,
+            agent: Agent.ID.make("build"),
+            model: Model.Ref.make({ id: Model.ID.make("test-model"), providerID: Provider.ID.make("test") }),
+            location: Location.Ref.make({ directory: AbsolutePath.make(directory) }),
+          })
+
+          let observedActive = false
+          const streamed = yield* opencode.sessions.events({ sessionID }).pipe(
+            Stream.takeUntil((event) => {
+              if (event.type !== "session.activity") return false
+              if (event.data.active) {
+                observedActive = true
+                return false
+              }
+              return observedActive
+            }),
+            Stream.runCollect,
+            Effect.timeout("10 seconds"),
+            Effect.forkScoped,
+          )
+          yield* Effect.yieldNow
+          yield* opencode.sessions.prompt({ sessionID, prompt: Prompt.make({ text: "Run step A, then fail B" }) })
+          const received = Array.from(yield* Fiber.join(streamed))
+          const durable = received.filter((event) => event.durable !== undefined)
+
+          expect(executions).toEqual(["A"])
+          expect(requests).toBeGreaterThanOrEqual(2)
+          expect(durable.at(-1)?.type).toBe("session.next.step.failed")
+          expect(durable.map((event) => event.durable!.seq)).toEqual(
+            Array.from({ length: durable.length }, (_, index) => durable[0]!.durable!.seq + index),
+          )
+          expect(durable.map((event) => event.type)).toEqual(
+            expect.arrayContaining([
+              "session.next.tool.called",
+              "session.next.tool.success",
+              "session.next.step.ended",
+              "session.next.step.failed",
+            ]),
+          )
+          expect(received.at(-2)?.type).toBe("session.next.step.failed")
+          expect(received.at(-1)).toMatchObject({ type: "session.activity", data: { active: false } })
+        }),
+      ),
+    )
+  } finally {
+    server.stop(true)
+    Flag.OPENCODE_DB = database
+    await rm(directory, { recursive: true, force: true })
+  }
+}, 20_000)
 
 test("embedded client is available as a Layer service", async () => {
   const directory = await mkdtemp(join(tmpdir(), "opencode-embedded-layer-"))

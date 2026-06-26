@@ -106,7 +106,6 @@ export type MessageNotFoundError = SessionRevert.MessageNotFoundError
 export type Error = NotFoundError | MessageDecodeError | OperationUnavailableError | PromptConflictError
 
 export interface Interface {
-  readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly list: (input?: ListInput) => Effect.Effect<SessionSchema.Info[]>
   readonly create: (input: CreateInput) => Effect.Effect<SessionSchema.Info>
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<SessionSchema.Info, NotFoundError>
@@ -203,7 +202,6 @@ export const layer = Layer.unwrap(
             )
 
           const result = Service.of({
-            active: execution.active,
             create: Effect.fn("V2Session.create")(function* (input) {
               const sessionID = input.id ?? SessionSchema.ID.create()
               const recorded = yield* store.get(sessionID)
