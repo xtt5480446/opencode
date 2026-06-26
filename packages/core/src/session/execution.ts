@@ -1,20 +1,15 @@
 export * as SessionExecution from "./execution"
 
-import { Context, Effect, Layer, Scope, Stream } from "effect"
+import { Context, Effect, Layer, Scope } from "effect"
 import { SessionRunner } from "./runner/index"
+import { SessionRunCoordinator } from "./run-coordinator"
 import { SessionSchema } from "./schema"
 
 export interface Interface {
   /** Snapshots active execution owned by this process. */
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   /** Observes foreground ownership with an authoritative initial snapshot. */
-  readonly activity: (
-    sessionID: SessionSchema.ID,
-  ) => Effect.Effect<
-    { readonly snapshot: Effect.Effect<boolean>; readonly changes: Stream.Stream<boolean> },
-    never,
-    Scope.Scope
-  >
+  readonly activity: (sessionID: SessionSchema.ID) => Effect.Effect<SessionRunCoordinator.Activity, never, Scope.Scope>
   /** Starts execution while idle or joins the active execution. */
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, SessionRunner.RunError>
   /** Registers newly recorded work. Repeated wakeups may coalesce. */
@@ -31,7 +26,7 @@ export const noopLayer = Layer.succeed(
   Service,
   Service.of({
     active: Effect.succeed(new Set()),
-    activity: () => Effect.succeed({ snapshot: Effect.succeed(false), changes: Stream.never }),
+    activity: () => Effect.succeed({ attach: () => Effect.succeed(false) }),
     resume: () => Effect.void,
     wake: () => Effect.void,
     interrupt: () => Effect.void,

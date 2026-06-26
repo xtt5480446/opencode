@@ -186,8 +186,11 @@ export const layer = Layer.unwrap(
           const store = yield* SessionStore.Service
           const locations = yield* LocationServiceMap
           const decodeMessage = Schema.decodeUnknownEffect(SessionMessage.Message)
-          const isDurableSessionEvent = Schema.is(SessionEvent.Durable)
           const sessionEventTypes = new Set<string>(SessionEvent.Definitions.map((definition) => definition.type))
+          const isSessionEvent = (event: EventV2.Payload): event is SessionEvent.Event =>
+            sessionEventTypes.has(event.type)
+          const isDurableSessionEvent = (event: EventV2.Payload): event is SessionEvent.DurableEvent =>
+            event.durable !== undefined && isSessionEvent(event)
           const decode = (row: typeof SessionMessageTable.$inferSelect) =>
             decodeMessage({ ...row.data, id: row.id, type: row.type }).pipe(
               Effect.mapError(
@@ -351,36 +354,24 @@ export const layer = Layer.unwrap(
                     aggregateID: input.sessionID,
                     after: input.after,
                     live: (event) =>
-                      event.durable === undefined &&
-                      sessionEventTypes.has(event.type) &&
-                      typeof event.data === "object" &&
-                      event.data !== null &&
-                      "sessionID" in event.data &&
-                      event.data.sessionID === input.sessionID,
+                      event.durable === undefined && isSessionEvent(event) && event.data.sessionID === input.sessionID,
                   })
-                  const initialActivity: SessionEvent.Activity = {
-                    id: EventV2.ID.create(),
-                    type: SessionEvent.Activity.type,
-                    data: { sessionID: input.sessionID, active: yield* activity.snapshot },
-                  }
-                  const replay = observed.replay.filter((event): event is SessionEvent.DurableEvent =>
-                    isDurableSessionEvent(event),
-                  )
-                  const updates = observed.updates.pipe(
-                    Stream.filter((event): event is SessionEvent.Event => Schema.is(SessionEvent.All)(event)),
-                  )
-                  const activityChanges = activity.changes.pipe(
-                    Stream.map(
-                      (active): SessionEvent.Activity => ({
-                        id: EventV2.ID.create(),
-                        type: SessionEvent.Activity.type,
-                        data: { sessionID: input.sessionID, active },
-                      }),
+                  const initialActivity = SessionEvent.makeActivity(
+                    input.sessionID,
+                    yield* activity.attach((active) =>
+                      observed.offer(SessionEvent.makeActivity(input.sessionID, active), active ? "before" : "after"),
                     ),
                   )
-                  return Stream.fromIterable(replay).pipe(
+                  return Stream.fromIterable(observed.replay.filter(isDurableSessionEvent)).pipe(
                     Stream.concat(Stream.make(initialActivity)),
-                    Stream.concat(Stream.merge(updates, activityChanges)),
+                    Stream.concat(
+                      observed.updates.pipe(
+                        Stream.filter(
+                          (event): event is SessionEvent.StreamEvent =>
+                            event.type === SessionEvent.Activity.type || isSessionEvent(event),
+                        ),
+                      ),
+                    ),
                   )
                 }),
               ),

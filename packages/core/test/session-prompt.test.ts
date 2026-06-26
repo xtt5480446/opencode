@@ -257,6 +257,84 @@ describe("SessionV2.prompt", () => {
     }),
   )
 
+  it.effect("orders activity around the durable rows owned by a run", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      const assistantMessageID = SessionMessage.ID.create()
+      const streamed = yield* session.events({ sessionID }).pipe(Stream.take(5), Stream.runCollect, Effect.forkScoped)
+      yield* Effect.yieldNow
+
+      yield* setActivity(true)
+      yield* events.publish(SessionEvent.Text.Started, {
+        sessionID,
+        assistantMessageID,
+        textID: "text-activity",
+        timestamp: yield* DateTime.now,
+      })
+      yield* events.publish(SessionEvent.Text.Ended, {
+        sessionID,
+        assistantMessageID,
+        textID: "text-activity",
+        text: "done",
+        timestamp: yield* DateTime.now,
+      })
+      yield* setActivity(false)
+
+      expect(Array.from(yield* Fiber.join(streamed)).map((event) => [event.type, event.data])).toEqual([
+        ["session.activity", { sessionID, active: false }],
+        ["session.activity", { sessionID, active: true }],
+        ["session.next.text.started", expect.objectContaining({ sessionID })],
+        ["session.next.text.ended", expect.objectContaining({ sessionID })],
+        ["session.activity", { sessionID, active: false }],
+      ])
+    }),
+  )
+
+  it.effect("terminates the Session stream when live event buffering saturates", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      const initial = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      let seenInitial = false
+      const streamed = yield* session.events({ sessionID }).pipe(
+        Stream.mapEffect((event) => {
+          if (!seenInitial) {
+            seenInitial = true
+            return Deferred.succeed(initial, undefined).pipe(Effect.as(event))
+          }
+          return Deferred.await(release).pipe(Effect.as(event))
+        }),
+        Stream.runCollect,
+        Effect.forkScoped,
+      )
+      yield* Deferred.await(initial)
+
+      const timestamp = yield* DateTime.now
+      const assistantMessageID = SessionMessage.ID.create()
+      yield* Effect.forEach(
+        Array.from({ length: 1_000 }, (_, index) => index),
+        (index) =>
+          events.publish(SessionEvent.Text.Delta, {
+            sessionID,
+            assistantMessageID,
+            textID: "text-saturation",
+            delta: String(index),
+            timestamp,
+          }),
+        { concurrency: "unbounded", discard: true },
+      )
+      yield* Deferred.succeed(release, undefined)
+
+      const result = Array.from(yield* Fiber.join(streamed))
+      expect(result[0]?.type).toBe("session.activity")
+      expect(result.length).toBeLessThan(1_001)
+    }),
+  )
+
   it.effect("resumes through a recorded message without appending another prompt", () =>
     Effect.gen(function* () {
       yield* setup

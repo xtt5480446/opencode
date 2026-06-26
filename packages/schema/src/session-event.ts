@@ -60,6 +60,12 @@ export const Activity = Event.define({
 })
 export type Activity = typeof Activity.Type
 
+export const makeActivity = (sessionID: SessionID, active: boolean): Activity => ({
+  id: Event.ID.create(),
+  type: Activity.type,
+  data: { sessionID, active },
+})
+
 export const AgentSwitched = Event.define({
   type: "session.next.agent.switched",
   ...options,

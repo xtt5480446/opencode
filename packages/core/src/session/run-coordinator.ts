@@ -1,11 +1,10 @@
 export * as SessionRunCoordinator from "./run-coordinator"
 
-import { Cause, Deferred, Effect, Exit, Fiber, FiberSet, Queue, Scope, Stream } from "effect"
+import { Deferred, Effect, Exit, Fiber, FiberSet, Scope } from "effect"
 
 export interface Activity {
-  /** Discards earlier transitions and snapshots current ownership. */
-  readonly snapshot: Effect.Effect<boolean>
-  readonly changes: Stream.Stream<boolean>
+  /** Installs a synchronous observer and snapshots current ownership atomically. */
+  readonly attach: (observer: (active: boolean) => void) => Effect.Effect<boolean>
 }
 
 /** Serializes execution for each key while allowing different keys to run concurrently. */
@@ -119,9 +118,9 @@ export const make = <Key, E>(options: {
 
     const activity = (key: Key) =>
       Effect.gen(function* () {
-        const queue = yield* Queue.dropping<boolean, Cause.Done>(256)
+        let attached: ((active: boolean) => void) | undefined
         const observer = (value: boolean) => {
-          if (!Queue.offerUnsafe(queue, value)) Queue.endUnsafe(queue)
+          attached?.(value)
         }
         yield* Effect.acquireRelease(
           Effect.sync(() => {
@@ -134,11 +133,14 @@ export const make = <Key, E>(options: {
               const observers = activityObservers.get(key)
               observers?.delete(observer)
               if (observers?.size === 0) activityObservers.delete(key)
-            }).pipe(Effect.andThen(Queue.shutdown(queue))),
+            }),
         )
         return {
-          snapshot: Queue.clear(queue).pipe(Effect.andThen(Effect.sync(() => active.has(key)))),
-          changes: Stream.fromQueue(queue),
+          attach: (next: (active: boolean) => void) =>
+            Effect.sync(() => {
+              attached = next
+              return active.has(key)
+            }),
         }
       })
 

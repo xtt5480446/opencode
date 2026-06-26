@@ -72,7 +72,11 @@ export interface Interface {
     readonly after?: number
     readonly live: (event: Payload) => boolean
   }) => Effect.Effect<
-    { readonly replay: ReadonlyArray<Payload>; readonly updates: Stream.Stream<Payload> },
+    {
+      readonly replay: ReadonlyArray<Payload>
+      readonly updates: Stream.Stream<Payload>
+      readonly offer: (event: Payload, position?: "after" | "before") => boolean
+    },
     never,
     Scope.Scope
   >
@@ -103,12 +107,12 @@ export const layerWith = (options?: LayerOptions) =>
     Effect.gen(function* () {
       const pubsub = {
         all: yield* PubSub.unbounded<Payload>(),
-        durable: new Map<string, Set<PubSub.PubSub<void>>>(),
+        durable: new Map<string, Set<PubSub.PubSub<number>>>(),
         typed: new Map<string, PubSub.PubSub<Payload>>(),
       }
       const projectors = new Map<string, Subscriber[]>()
       // TODO: Bind durable projectors to exact type+version before supporting incompatible historical payloads.
-      const listeners = new Array<Subscriber>()
+      const listeners = new Set<Subscriber>()
       const { db } = yield* Database.Service
 
       const getOrCreate = (definition: Definition) =>
@@ -284,7 +288,7 @@ export const layerWith = (options?: LayerOptions) =>
                   if (committed) {
                     yield* Effect.forEach(
                       pubsub.durable.get(committed.aggregateID) ?? [],
-                      (wake) => PubSub.publish(wake, undefined),
+                      (wake) => PubSub.publish(wake, committed.seq),
                       { discard: true },
                     )
                   }
@@ -513,7 +517,7 @@ export const layerWith = (options?: LayerOptions) =>
 
       const subscribeDurable = (aggregateID: string) =>
         Effect.gen(function* () {
-          const wake = yield* PubSub.sliding<void>(1)
+          const wake = yield* PubSub.sliding<number>(1)
           const subscription = yield* PubSub.subscribe(wake)
           yield* Effect.acquireRelease(
             Effect.sync(() => {
@@ -531,70 +535,83 @@ export const layerWith = (options?: LayerOptions) =>
           return subscription
         })
 
+      const aggregateDrain = (
+        aggregateID: string,
+        after: number,
+      ): ((through?: number) => Effect.Effect<ReadonlyArray<Payload>>) => {
+        let sequence = after
+        return (through?: number) =>
+          through !== undefined && through <= sequence
+            ? Effect.succeed<ReadonlyArray<Payload>>([])
+            : Effect.suspend(() => readAfter(aggregateID, sequence, through)).pipe(
+                Effect.tap((events) =>
+                  Effect.sync(() => {
+                    sequence = events.at(-1)?.durable?.seq ?? sequence
+                  }),
+                ),
+              )
+      }
+
       const durable = (input: { readonly aggregateID: string; readonly after?: number }): Stream.Stream<Payload> =>
         Stream.unwrap(
           Effect.gen(function* () {
             const wakes = yield* subscribeDurable(input.aggregateID)
-            let sequence = input.after ?? -1
-            const read = Effect.suspend(() => readAfter(input.aggregateID, sequence)).pipe(
-              Effect.tap((events) =>
-                Effect.sync(() => {
-                  sequence = events.at(-1)?.durable?.seq ?? sequence
-                }),
-              ),
-            )
-            const historical = yield* read
-            const live = Stream.fromSubscription(wakes).pipe(
-              Stream.mapEffect(() => read),
-              Stream.flattenIterable,
-            )
+            const drain = aggregateDrain(input.aggregateID, input.after ?? -1)
+            const historical = yield* drain()
+            const live = Stream.fromSubscription(wakes).pipe(Stream.mapEffect(drain), Stream.flattenIterable)
             return Stream.concat(Stream.fromIterable(historical), live)
           }),
         )
 
       const observeAggregate: Interface["observeAggregate"] = (input) =>
         Effect.gen(function* () {
-          type Signal = { readonly _tag: "durable" } | { readonly _tag: "live"; readonly event: Payload }
+          type Signal =
+            | { readonly _tag: "durable" }
+            | { readonly _tag: "transient"; readonly event: Payload; readonly position: "after" | "before" }
           const signals = yield* Queue.dropping<Signal, Cause.Done>(256)
+          const wakes = yield* subscribeDurable(input.aggregateID)
+          let durableQueued = false
+          let durableThrough = -1
+          const offer = (event: Payload, position: "after" | "before" = "after") => {
+            const offered = Queue.offerUnsafe(signals, { _tag: "transient", event, position })
+            if (!offered) Queue.endUnsafe(signals)
+            return offered
+          }
           const unsubscribe = yield* listen((event) =>
             Effect.sync(() => {
-              if (event.durable?.aggregateID === input.aggregateID) {
-                // Durable payloads are only wakeups; a full queue already contains work that will drain the database.
-                Queue.offerUnsafe(signals, { _tag: "durable" })
-                return
-              }
-              if (!input.live(event)) return
-              if (!Queue.offerUnsafe(signals, { _tag: "live", event })) Queue.endUnsafe(signals)
+              if (input.live(event)) offer(event)
             }),
           )
           yield* Effect.addFinalizer(() => unsubscribe.pipe(Effect.andThen(Queue.shutdown(signals))))
+          yield* Stream.runForEach(Stream.fromSubscription(wakes), (sequence) =>
+            Effect.sync(() => {
+              durableThrough = Math.max(durableThrough, sequence)
+              if (durableQueued) return
+              durableQueued = Queue.offerUnsafe(signals, { _tag: "durable" })
+            }),
+          ).pipe(Effect.forkScoped)
 
           const cutoff = yield* latestSequence(db, input.aggregateID)
           const replay = yield* readAfter(input.aggregateID, input.after ?? -1, cutoff)
-          let sequence = cutoff
-          const drain = Effect.suspend(() => readAfter(input.aggregateID, sequence)).pipe(
-            Effect.tap((events) =>
-              Effect.sync(() => {
-                sequence = events.at(-1)?.durable?.seq ?? sequence
-              }),
-            ),
-          )
+          const drain = aggregateDrain(input.aggregateID, cutoff)
           const updates = Stream.fromQueue(signals).pipe(
-            Stream.mapEffect((signal) =>
-              drain.pipe(Effect.map((events) => (signal._tag === "live" ? [...events, signal.event] : events))),
-            ),
+            Stream.mapEffect((signal) => {
+              if (signal._tag === "durable") {
+                durableQueued = false
+                return drain(durableThrough)
+              }
+              if (signal.position === "before") return Effect.succeed([signal.event])
+              return drain().pipe(Effect.map((events) => [...events, signal.event]))
+            }),
             Stream.flattenIterable,
           )
-          return { replay, updates }
+          return { replay, updates, offer }
         })
 
       const listen = (listener: Subscriber): Effect.Effect<Unsubscribe> =>
         Effect.sync(() => {
-          listeners.push(listener)
-          return Effect.sync(() => {
-            const index = listeners.indexOf(listener)
-            if (index >= 0) listeners.splice(index, 1)
-          })
+          listeners.add(listener)
+          return Effect.sync(() => listeners.delete(listener)).pipe(Effect.asVoid)
         })
 
       const project = <D extends Definition>(definition: D, projector: Subscriber<D>): Effect.Effect<void> =>

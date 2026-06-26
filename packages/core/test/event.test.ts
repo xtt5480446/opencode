@@ -450,6 +450,30 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("observes replay commits that are not republished", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const aggregateID = Session.ID.create()
+      const observed = yield* events.observeAggregate({ aggregateID, live: () => false })
+      const update = yield* observed.updates.pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+
+      yield* events.replay(
+        {
+          id: EventV2.ID.create(),
+          aggregateID,
+          seq: 0,
+          type: EventV2.versionedType(DurableMessage.type, 1),
+          data: durableData(aggregateID, "replayed"),
+        },
+        { publish: false },
+      )
+
+      expect(Array.from(yield* Fiber.join(update)).map((event) => event.data)).toEqual([
+        durableData(aggregateID, "replayed"),
+      ])
+    }),
+  )
+
   it.effect("drains causally preceding durable rows before a live payload", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
@@ -485,6 +509,33 @@ describe("EventV2", () => {
       expect(Array.from(updates, (event) => event.durable?.seq)).toEqual(
         Array.from({ length: count }, (_, index) => index),
       )
+    }),
+  )
+
+  it.effect("coalesces durable notifications without repeated empty reads", () =>
+    Effect.gen(function* () {
+      let reads = 0
+      const eventLayer = EventV2.layerWith({
+        beforeAggregateRead: () =>
+          Effect.sync(() => {
+            reads++
+          }),
+      }).pipe(Layer.provide(Database.defaultLayer))
+
+      yield* Effect.gen(function* () {
+        const events = yield* EventV2.Service
+        const aggregateID = Session.ID.create()
+        const count = 20
+        const observed = yield* events.observeAggregate({ aggregateID, live: () => false })
+
+        for (let index = 0; index < count; index++) {
+          yield* events.publish(DurableMessage, durableData(aggregateID, String(index)))
+        }
+        const updates = yield* observed.updates.pipe(Stream.take(count), Stream.runCollect)
+
+        expect(updates).toHaveLength(count)
+        expect(reads).toBe(2)
+      }).pipe(Effect.provide(Layer.mergeAll(Database.defaultLayer, eventLayer)))
     }),
   )
 
