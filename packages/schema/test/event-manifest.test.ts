@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { Schema } from "effect"
 import { FileSystem, Integration, Permission, Project, Reference, Session, Workspace } from "../src"
 import { EventManifest } from "../src/event-manifest"
 import { IdeEvent } from "../src/ide-event"
@@ -52,5 +53,18 @@ describe("public event manifest", () => {
     expect(EventManifest.Latest.get("session.next.step.interrupted")).toBe(SessionEvent.Step.Interrupted)
     expect(EventManifest.Durable.has("session.next.step.ended.1")).toBe(false)
     expect(EventManifest.Durable.get("session.next.step.ended.2")).toBe(SessionEvent.Step.Ended)
+  })
+
+  test("decodes legacy Step.Ended v2 finish strings", () => {
+    const event = Schema.decodeUnknownSync(SessionEvent.Step.Ended.data)({
+      sessionID: "ses_legacy",
+      timestamp: 0,
+      assistantMessageID: "msg_legacy",
+      finish: "legacy-provider-reason",
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    })
+
+    expect(event.finish).toBe("legacy-provider-reason")
   })
 })

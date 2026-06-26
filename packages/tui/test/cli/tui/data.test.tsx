@@ -370,6 +370,72 @@ test("settles pending tools when a live failure arrives", async () => {
   }
 })
 
+test("marks an interrupted assistant inactive without a finish reason", async () => {
+  const events = createEventSource()
+  const calls = createFetch(undefined, events)
+  let sync!: ReturnType<typeof useData>
+  let ready!: () => void
+  const mounted = new Promise<void>((resolve) => {
+    ready = resolve
+  })
+
+  function Probe() {
+    sync = useData()
+    onMount(ready)
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </SDKProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await mounted
+    emitEvent(events, {
+      id: "evt_step_started_interrupted",
+      type: "session.next.step.started",
+      properties: {
+        sessionID: "session-interrupted",
+        assistantMessageID: "msg_interrupted",
+        timestamp: 1,
+        agent: "build",
+        model: { id: "model-1", providerID: "provider-1" },
+      },
+    })
+    emitEvent(events, {
+      id: "evt_step_interrupted",
+      type: "session.next.step.interrupted",
+      properties: {
+        sessionID: "session-interrupted",
+        assistantMessageID: "msg_interrupted",
+        timestamp: 2,
+      },
+    })
+
+    await wait(() => {
+      const message = sync.session.message.list("session-interrupted")?.[0]
+      return message?.type === "assistant" && message.time.completed === 2
+    })
+    const assistant = sync.session.message.list("session-interrupted")?.[0]
+    expect(assistant).toMatchObject({
+      type: "assistant",
+      settlement: "interrupted",
+      time: { completed: 2 },
+    })
+    expect(assistant).not.toHaveProperty("finish")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("renders admitted prompts only after they become model-visible", async () => {
   const events = createEventSource()
   const calls = createFetch(undefined, events)

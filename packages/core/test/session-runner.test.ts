@@ -519,6 +519,7 @@ const verifyPartialFlushOnFailure = (kind: FragmentKind) =>
       {
         type: "assistant",
         finish: "error",
+        settlement: "failed",
         error: { type: "unknown", message: "Provider unavailable" },
         content: [fixture.expectedContent],
       },
@@ -563,7 +564,7 @@ const verifyPartialFlushOnInterruption = (kind: FragmentKind) =>
       { type: "user", text: prompt },
       {
         type: "assistant",
-        finish: "interrupted",
+        settlement: "interrupted",
         content: [
           kind === "tool input"
             ? { type: "tool", id: fragmentID(kind, "interrupted"), state: { status: "error" } }
@@ -2669,7 +2670,7 @@ describe("SessionRunnerLLM", () => {
               state: { status: "error", error: { type: "unknown", message: "Tool execution interrupted" } },
             },
           ],
-          finish: "interrupted",
+          settlement: "interrupted",
         },
       ])
     }),
@@ -2814,7 +2815,7 @@ describe("SessionRunnerLLM", () => {
               state: { status: "error", error: { type: "unknown", message: "Tool execution interrupted" } },
             },
           ],
-          finish: "interrupted",
+          settlement: "interrupted",
         },
       ])
     }),

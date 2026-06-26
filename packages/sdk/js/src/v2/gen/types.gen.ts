@@ -931,7 +931,7 @@ export type GlobalEvent = {
           timestamp: number
           sessionID: string
           assistantMessageID: string
-          finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown" | "interrupted"
+          finish: string
           cost: number
           tokens: {
             input: number
@@ -3378,7 +3378,7 @@ export type SyncEventSessionNextStepEnded = {
       timestamp: number
       sessionID: string
       assistantMessageID: string
-      finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown" | "interrupted"
+      finish: string
       cost: number
       tokens: {
         input: number
@@ -4022,7 +4022,8 @@ export type SessionMessageAssistant = {
     end?: string
     files?: Array<string>
   }
-  finish?: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown" | "interrupted"
+  finish?: string
+  settlement?: "completed" | "failed" | "interrupted"
   cost?: number
   tokens?: {
     input: number
@@ -4281,7 +4282,7 @@ export type SessionNextStepEnded = {
     timestamp: number
     sessionID: string
     assistantMessageID: string
-    finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown" | "interrupted"
+    finish: string
     cost: number
     tokens: {
       input: number
@@ -5355,7 +5356,7 @@ export type V2EventSessionNextStepEnded = {
     timestamp: number
     sessionID: string
     assistantMessageID: string
-    finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown" | "interrupted"
+    finish: string
     cost: number
     tokens: {
       input: number
@@ -6970,7 +6971,7 @@ export type EventSessionNextStepEnded = {
     timestamp: number
     sessionID: string
     assistantMessageID: string
-    finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown" | "interrupted"
+    finish: string
     cost: number
     tokens: {
       input: number

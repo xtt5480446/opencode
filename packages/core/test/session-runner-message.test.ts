@@ -361,7 +361,7 @@ Recent work
               time: { created, completed: created },
             }),
           ],
-          finish: "interrupted",
+          settlement: "interrupted",
           time: { created, completed: created },
         }),
       ],

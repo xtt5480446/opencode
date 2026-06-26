@@ -28,9 +28,11 @@ export const Finish = Schema.Literals([
   "content-filter",
   "error",
   "unknown",
-  "interrupted",
 ])
 export type Finish = typeof Finish.Type
+
+export const Settlement = Schema.Literals(["completed", "failed", "interrupted"])
+export type Settlement = typeof Settlement.Type
 
 const Base = {
   id: ID,
@@ -180,7 +182,9 @@ export const Assistant = Schema.Struct({
     end: Schema.String.pipe(optional),
     files: Schema.Array(RelativePath).pipe(optional),
   }).pipe(optional),
-  finish: Finish.pipe(optional),
+  // Projected histories predate the typed provider finish model and may contain arbitrary values.
+  finish: Schema.String.pipe(optional),
+  settlement: Settlement.pipe(optional),
   cost: Schema.Finite.pipe(optional),
   tokens: Schema.Struct({
     input: Schema.Finite,

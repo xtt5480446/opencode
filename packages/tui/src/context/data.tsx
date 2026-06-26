@@ -227,6 +227,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             if (!currentAssistant) return
             currentAssistant.time.completed = event.data.timestamp
             currentAssistant.finish = event.data.finish
+            currentAssistant.settlement = "completed"
             currentAssistant.cost = event.data.cost
             currentAssistant.tokens = event.data.tokens
             if (event.data.snapshot)
@@ -239,7 +240,16 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             if (!currentAssistant) return
             currentAssistant.time.completed = event.data.timestamp
             currentAssistant.finish = "error"
+            currentAssistant.settlement = "failed"
             currentAssistant.error = event.data.error
+          })
+          break
+        case "session.next.step.interrupted":
+          message.update(event.data.sessionID, (draft) => {
+            const currentAssistant = message.assistant(draft, event.data.assistantMessageID)
+            if (!currentAssistant) return
+            currentAssistant.time.completed = event.data.timestamp
+            currentAssistant.settlement = "interrupted"
           })
           break
         case "session.next.text.started":

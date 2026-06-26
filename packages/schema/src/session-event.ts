@@ -165,7 +165,8 @@ export namespace Step {
     schema: {
       ...Base,
       assistantMessageID: SessionMessage.ID,
-      finish: SessionMessage.Finish,
+      // Step.Ended v2 was originally persisted with an open string schema.
+      finish: Schema.String,
       cost: Schema.Finite,
       tokens: Schema.Struct({
         input: Schema.Finite,

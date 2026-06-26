@@ -571,7 +571,8 @@ export type SessionsContextOutput = {
             }
         >
         readonly snapshot?: { readonly start?: string; readonly end?: string; readonly files?: ReadonlyArray<string> }
-        readonly finish?: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown" | "interrupted"
+        readonly finish?: string
+        readonly settlement?: "completed" | "failed" | "interrupted"
         readonly cost?: number
         readonly tokens?: {
           readonly input: number
@@ -770,7 +771,7 @@ export type SessionsEventsOutput =
         readonly timestamp: number
         readonly sessionID: string
         readonly assistantMessageID: string
-        readonly finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown" | "interrupted"
+        readonly finish: string
         readonly cost: number
         readonly tokens: {
           readonly input: number
@@ -1196,7 +1197,8 @@ export type SessionsMessageOutput = {
             }
         >
         readonly snapshot?: { readonly start?: string; readonly end?: string; readonly files?: ReadonlyArray<string> }
-        readonly finish?: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown" | "interrupted"
+        readonly finish?: string
+        readonly settlement?: "completed" | "failed" | "interrupted"
         readonly cost?: number
         readonly tokens?: {
           readonly input: number

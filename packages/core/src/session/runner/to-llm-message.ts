@@ -70,7 +70,7 @@ const toolResult = (tool: SessionMessage.AssistantTool, providerMetadata: Provid
 const assistant = (message: SessionMessage.Assistant, model: Model) => {
   const sameModel =
     String(message.model.providerID) === String(model.provider) && String(message.model.id) === String(model.id)
-  const reuseProviderMetadata = sameModel && message.error === undefined && message.finish !== "interrupted"
+  const reuseProviderMetadata = sameModel && message.error === undefined && message.settlement !== "interrupted"
   const content = message.content.flatMap((item): ContentPart[] => {
     if (item.type === "text") return [{ type: "text", text: item.text }]
     if (item.type === "reasoning")

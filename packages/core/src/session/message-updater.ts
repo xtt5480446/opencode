@@ -210,6 +210,7 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
         return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
           draft.time.completed = event.data.timestamp
           draft.finish = event.data.finish
+          draft.settlement = "completed"
           draft.cost = event.data.cost
           draft.tokens = event.data.tokens
           if (event.data.snapshot || event.data.files)
@@ -224,13 +225,14 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
         return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
           draft.time.completed = event.data.timestamp
           draft.finish = "error"
+          draft.settlement = "failed"
           draft.error = event.data.error
         })
       },
       "session.next.step.interrupted": (event) => {
         return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
           draft.time.completed = event.data.timestamp
-          draft.finish = "interrupted"
+          draft.settlement = "interrupted"
         })
       },
       "session.next.text.started": (event) => {
