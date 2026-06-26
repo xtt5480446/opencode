@@ -3,7 +3,7 @@ export * as SessionRunnerModel from "./model"
 import { type Model } from "@opencode-ai/llm"
 import * as AnthropicMessages from "@opencode-ai/llm/protocols/anthropic-messages"
 import * as OpenAICompatibleChat from "@opencode-ai/llm/protocols/openai-compatible-chat"
-import * as OpenAIResponses from "@opencode-ai/llm/protocols/openai-responses"
+import * as OpenAI from "@opencode-ai/llm/providers/openai"
 import { Auth, type AnyRoute } from "@opencode-ai/llm/route"
 import { Context, Effect, Layer, Schema } from "effect"
 import { produce } from "immer"
@@ -139,8 +139,12 @@ export const fromCatalogModel = (
         })
   const key = apiKey(resolved, credential)
   if (resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/openai") {
+    const store = resolved.request.body.store
+    const route = OpenAI.configure({
+      providerOptions: typeof store === "boolean" ? { openai: { store } } : undefined,
+    }).responses(resolved.api.id).route
     return Effect.succeed(
-      withDefaults(resolved, OpenAIResponses.route)
+      withDefaults(resolved, route)
         .with({ auth: key === undefined ? Auth.none : Auth.bearer(key) })
         .model({ id: resolved.api.id }),
     )

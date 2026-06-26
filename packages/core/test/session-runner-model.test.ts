@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
-import { LLM } from "@opencode-ai/llm"
+import { LLM, Message, ToolCallPart, ToolResultPart } from "@opencode-ai/llm"
+import * as OpenAIResponses from "@opencode-ai/llm/protocols/openai-responses"
 import { LLMClient } from "@opencode-ai/llm/route"
 import { DateTime, Effect } from "effect"
 import { Headers } from "effect/unstable/http"
@@ -69,6 +70,82 @@ describe("SessionRunnerModel", () => {
 
       expect(JSON.stringify(prepared.body)).not.toContain("apiKey")
       expect(JSON.stringify(prepared.body)).not.toContain("secret")
+    }),
+  )
+
+  it.effect("replays encrypted reasoning for stateless catalog OpenAI tool continuations", () =>
+    Effect.gen(function* () {
+      const catalog = ModelV2.Info.make({
+        ...model({ type: "aisdk", package: "@ai-sdk/openai", url: "https://openai.example/v1" }),
+        api: {
+          type: "aisdk",
+          package: "@ai-sdk/openai",
+          id: ModelV2.ID.make("custom-reasoning-model"),
+          url: "https://openai.example/v1",
+        },
+        request: {
+          headers: {},
+          body: { include: ["reasoning.encrypted_content"] },
+        },
+      })
+      const resolved = yield* SessionRunnerModel.fromCatalogModel(catalog)
+      const continuation = LLM.request({
+        model: resolved,
+        messages: [
+          Message.user("Inspect the fixture."),
+          Message.assistant([
+            {
+              type: "reasoning",
+              text: "I should use the fixture tool.",
+              providerMetadata: {
+                openai: {
+                  itemId: "rs_fixture_1",
+                  reasoningEncryptedContent: "encrypted-fixture-state",
+                },
+              },
+            },
+            ToolCallPart.make({ id: "call_fixture_1", name: "inspect_fixture", input: { id: "fixture" } }),
+          ]),
+          Message.tool(
+            ToolResultPart.make({
+              id: "call_fixture_1",
+              name: "inspect_fixture",
+              result: { status: "ok" },
+            }),
+          ),
+        ],
+      })
+      const prepared = yield* LLMClient.prepare<OpenAIResponses.OpenAIResponsesBody>(continuation)
+
+      expect(prepared.body.input.some((item) => "type" in item && item.type === "item_reference")).toBe(false)
+      expect(prepared.body.store).toBe(false)
+      expect(resolved.route.defaults.http?.body).toMatchObject({ include: ["reasoning.encrypted_content"] })
+      expect(prepared.body.input).toContainEqual({
+        type: "reasoning",
+        id: "rs_fixture_1",
+        summary: [{ type: "summary_text", text: "I should use the fixture tool." }],
+        encrypted_content: "encrypted-fixture-state",
+      })
+      expect(prepared.body.input).toContainEqual({
+        type: "function_call_output",
+        call_id: "call_fixture_1",
+        output: '{"status":"ok"}',
+      })
+
+      const stateful = yield* SessionRunnerModel.fromCatalogModel(
+        ModelV2.Info.make({
+          ...catalog,
+          request: { ...catalog.request, body: { ...catalog.request.body, store: true } },
+        }),
+      )
+      const statefulPrepared = yield* LLMClient.prepare<OpenAIResponses.OpenAIResponsesBody>(
+        LLM.updateRequest(continuation, {
+          model: stateful,
+        }),
+      )
+
+      expect(statefulPrepared.body.store).toBe(true)
+      expect(statefulPrepared.body.input).toContainEqual({ type: "item_reference", id: "rs_fixture_1" })
     }),
   )
 
