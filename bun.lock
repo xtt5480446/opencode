@@ -142,13 +142,10 @@
       "name": "@opencode-ai/console-app",
       "version": "1.17.11",
       "dependencies": {
-        "@cloudflare/vite-plugin": "1.15.2",
         "@ibm/plex": "6.4.1",
-        "@jsx-email/render": "1.1.1",
         "@kobalte/core": "catalog:",
         "@openauthjs/openauth": "catalog:",
         "@opencode-ai/console-core": "workspace:*",
-        "@opencode-ai/console-mail": "workspace:*",
         "@opencode-ai/console-resource": "workspace:*",
         "@opencode-ai/ui": "workspace:*",
         "@smithy/eventstream-codec": "4.2.7",
