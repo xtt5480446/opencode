@@ -60,6 +60,7 @@ type SessionTabs = {
 
 type SessionView = {
   scroll: Record<string, SessionScroll>
+  reviewPanelOpened?: boolean
   reviewOpen?: string[]
   pendingMessage?: string
   pendingMessageAt?: number
@@ -206,19 +207,32 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         }
       })()
 
+      const legacyReviewPanelOpened = (() => {
+        if (isRecord(review) && typeof review.panelOpened === "boolean") return review.panelOpened
+        if (isRecord(fileTree) && typeof fileTree.opened === "boolean") return fileTree.opened
+      })()
       const migratedReview = (() => {
-        if (!isRecord(review)) return review
-        if (typeof review.panelOpened === "boolean") return review
-
-        const opened = isRecord(fileTree) && typeof fileTree.opened === "boolean" ? fileTree.opened : true
-        return {
-          ...review,
-          panelOpened: opened,
-        }
+        if (!isRecord(review) || !("panelOpened" in review)) return review
+        return Object.fromEntries(Object.entries(review).filter(([key]) => key !== "panelOpened"))
       })()
 
       const sessionTabs = migrateLegacySessionStateKeys(value.sessionTabs)
-      const sessionView = migrateLegacySessionStateKeys(value.sessionView)
+      const rawSessionView = migrateLegacySessionStateKeys(value.sessionView)
+      const sessionView = (() => {
+        if (!isRecord(rawSessionView)) return rawSessionView
+        if (legacyReviewPanelOpened === undefined) return rawSessionView
+
+        const entries = Object.entries(rawSessionView)
+        const changed = entries.some(([, view]) => isRecord(view) && typeof view.reviewPanelOpened !== "boolean")
+        if (!changed) return rawSessionView
+
+        return Object.fromEntries(
+          entries.map(([key, view]) => {
+            if (!isRecord(view) || typeof view.reviewPanelOpened === "boolean") return [key, view]
+            return [key, { ...view, reviewPanelOpened: legacyReviewPanelOpened }]
+          }),
+        )
+      })()
       const migratedSessionTabs = (() => {
         if (!isRecord(sessionTabs)) return sessionTabs
 
@@ -279,7 +293,6 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         },
         review: {
           diffStyle: "split" as ReviewDiffStyle,
-          panelOpened: true,
         },
         fileTree: {
           opened: false,
@@ -662,7 +675,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         diffStyle: createMemo(() => store.review?.diffStyle ?? "split"),
         setDiffStyle(diffStyle: ReviewDiffStyle) {
           if (!store.review) {
-            setStore("review", { diffStyle, panelOpened: true })
+            setStore("review", { diffStyle })
             return
           }
           setStore("review", "diffStyle", diffStyle)
@@ -777,7 +790,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         const key = createSessionKeyReader(sessionKey, ensureKey)
         const s = createMemo(() => store.sessionView[key()] ?? { scroll: {} })
         const terminalOpened = createMemo(() => store.terminal?.opened ?? false)
-        const reviewPanelOpened = createMemo(() => store.review?.panelOpened ?? true)
+        const reviewPanelOpened = createMemo(() => s().reviewPanelOpened ?? true)
 
         function setTerminalOpened(next: boolean) {
           const current = store.terminal
@@ -792,15 +805,16 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         }
 
         function setReviewPanelOpened(next: boolean) {
-          const current = store.review
+          const session = key()
+          const current = store.sessionView[session]
           if (!current) {
-            setStore("review", { diffStyle: "split" as ReviewDiffStyle, panelOpened: next })
+            setStore("sessionView", session, { scroll: {}, reviewPanelOpened: next })
             return
           }
 
-          const value = current.panelOpened ?? true
+          const value = current.reviewPanelOpened ?? true
           if (value === next) return
-          setStore("review", "panelOpened", next)
+          setStore("sessionView", session, "reviewPanelOpened", next)
         }
 
         return {
