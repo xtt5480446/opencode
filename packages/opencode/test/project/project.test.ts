@@ -6,10 +6,10 @@ import path from "path"
 import { tmpdirScoped } from "../fixture/fixture"
 import { GlobalBus } from "../../src/bus/global"
 import { Database } from "@opencode-ai/core/database/database"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { SessionTable } from "@opencode-ai/core/session/sql"
+import { ProjectDirectoryTable, ProjectTable } from "@opencode-ai/core/project/sql"
+import { SessionContextEpochTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { WorkspaceTable } from "@opencode-ai/core/control-plane/workspace.sql"
-import { eq } from "drizzle-orm"
+import { eq, inArray } from "drizzle-orm"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { SessionID } from "@/session/schema"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
@@ -23,6 +23,7 @@ import { ProjectDirectories } from "@opencode-ai/core/project/directories"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { testEffect } from "../lib/effect"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { AbsolutePath } from "@opencode-ai/core/schema"
 
 const encoder = new TextEncoder()
 
@@ -366,6 +367,8 @@ describe("Project.fromDirectory with worktrees", () => {
       const next = yield* project.fromDirectory(clone)
 
       expect(next.project.id).toBe(result.project.id)
+      expect(next.project.worktree).toBe(tmp)
+      expect(next.project.sandboxes).toContain(clone)
     }),
   )
 
@@ -401,6 +404,89 @@ describe("Project.fromDirectory with worktrees", () => {
       expect(result.project.worktree).toBe(worktree1)
       expect(result.project.sandboxes).toContain(worktree2)
       expect(result.project.sandboxes).not.toContain(tmp)
+    }),
+  )
+
+  it.live("relocates a missing primary checkout and its sessions", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const project = yield* Project.Service
+      const tmp = yield* tmpdirScoped({ git: true })
+      const original = yield* project.fromDirectory(tmp)
+      const moved = `${tmp}-moved`
+      const rootSession = SessionID.make(`ses_${crypto.randomUUID()}`)
+      const nestedSession = SessionID.make(`ses_${crypto.randomUUID()}`)
+      yield* Effect.addFinalizer(() => Effect.promise(() => $`rm -rf ${moved}`.quiet().nothrow()).pipe(Effect.ignore))
+      yield* db
+        .insert(SessionTable)
+        .values([
+          {
+            id: rootSession,
+            project_id: original.project.id,
+            slug: rootSession,
+            directory: tmp,
+            title: "root",
+            version: "test",
+            time_created: 1,
+            time_updated: 1,
+          },
+          {
+            id: nestedSession,
+            project_id: original.project.id,
+            slug: nestedSession,
+            directory: path.join(tmp, "packages", "app"),
+            path: "packages/app",
+            title: "nested",
+            version: "test",
+            time_created: 2,
+            time_updated: 2,
+          },
+        ])
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionContextEpochTable)
+        .values([
+          { session_id: rootSession, baseline: "root", snapshot: {}, baseline_seq: 0 },
+          { session_id: nestedSession, baseline: "nested", snapshot: {}, baseline_seq: 0 },
+        ])
+        .run()
+        .pipe(Effect.orDie)
+      yield* Effect.promise(() => $`mv ${tmp} ${moved}`.quiet())
+
+      const [result, concurrent] = yield* Effect.all([project.fromDirectory(moved), project.fromDirectory(moved)], {
+        concurrency: "unbounded",
+      })
+      const sessions = yield* db
+        .select({ id: SessionTable.id, directory: SessionTable.directory, path: SessionTable.path })
+        .from(SessionTable)
+        .where(eq(SessionTable.project_id, original.project.id))
+        .all()
+        .pipe(Effect.orDie)
+      const directories = yield* db
+        .select({ directory: ProjectDirectoryTable.directory })
+        .from(ProjectDirectoryTable)
+        .where(eq(ProjectDirectoryTable.project_id, original.project.id))
+        .all()
+        .pipe(Effect.orDie)
+      const epochs = yield* db
+        .select({ sessionID: SessionContextEpochTable.session_id })
+        .from(SessionContextEpochTable)
+        .where(inArray(SessionContextEpochTable.session_id, [rootSession, nestedSession]))
+        .all()
+        .pipe(Effect.orDie)
+
+      expect(result.project.worktree).toBe(moved)
+      expect(concurrent.project.worktree).toBe(moved)
+      expect(result.project.sandboxes).toEqual([])
+      expect(sessions).toContainEqual({ id: rootSession, directory: moved, path: null })
+      expect(sessions).toContainEqual({
+        id: nestedSession,
+        directory: path.join(moved, "packages", "app"),
+        path: "packages/app",
+      })
+      expect(directories).toEqual([{ directory: AbsolutePath.make(moved) }])
+      expect(epochs).toEqual([])
     }),
   )
 })

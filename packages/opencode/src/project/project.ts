@@ -4,6 +4,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { ProjectDirectoryTable, ProjectTable } from "@opencode-ai/core/project/sql"
 import { ProjectDirectories } from "@opencode-ai/core/project/directories"
 import { SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionContextEpoch } from "@opencode-ai/core/session/context-epoch"
 import { WorkspaceTable } from "@opencode-ai/core/control-plane/workspace.sql"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { GlobalBus } from "@/bus/global"
@@ -22,6 +23,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Project } from "@opencode-ai/schema/project"
+import path from "path"
 
 export const Info = Project.Info
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
@@ -192,6 +194,70 @@ export const layer = Layer.effect(
         .pipe(Effect.orDie)
     })
 
+    // Repair persisted absolute paths after the checkout was moved outside OpenCode.
+    // This is not a semantic Session move: there is no source checkout or change transfer.
+    // Keep every affected projection in one transaction so a restart cannot expose mixed paths.
+    const relocateProject = Effect.fn("Project.relocateProject")(function* (input: {
+      projectID: ProjectV2.ID
+      source: string
+      destination: string
+    }) {
+      return yield* db
+        .transaction(
+          (d) =>
+            Effect.gen(function* () {
+              const row = yield* d.select().from(ProjectTable).where(eq(ProjectTable.id, input.projectID)).get()
+              if (!row) return yield* Effect.die(new Error("Project disappeared during relocation"))
+              if (row.worktree !== input.source) return fromRow(row)
+
+              const destination = AbsolutePath.make(input.destination)
+              const sessions = yield* d
+                .select({ id: SessionTable.id, directory: SessionTable.directory })
+                .from(SessionTable)
+                .where(eq(SessionTable.project_id, input.projectID))
+                .all()
+              const moved = sessions.filter((session) => FSUtil.contains(input.source, session.directory))
+
+              yield* Effect.forEach(
+                moved,
+                (session) =>
+                  Effect.gen(function* () {
+                    yield* d
+                      .update(SessionTable)
+                      .set({ directory: path.join(destination, path.relative(input.source, session.directory)) })
+                      .where(eq(SessionTable.id, session.id))
+                      .run()
+                    yield* SessionContextEpoch.reset(d, session.id)
+                  }),
+                { concurrency: 1, discard: true },
+              )
+
+              yield* projectDirectories.create({ projectID: input.projectID, directory: destination }, d)
+              yield* projectDirectories.remove(
+                { projectID: input.projectID, directory: AbsolutePath.make(input.source) },
+                d,
+              )
+
+              const updated = yield* d
+                .update(ProjectTable)
+                .set({
+                  worktree: destination,
+                  sandboxes: row.sandboxes.filter(
+                    (sandbox) => sandbox !== input.source && sandbox !== input.destination,
+                  ),
+                  time_updated: Date.now(),
+                })
+                .where(eq(ProjectTable.id, input.projectID))
+                .returning()
+                .get()
+              if (!updated) return yield* Effect.die(new Error("Project disappeared during relocation"))
+              return fromRow(updated)
+            }),
+          { behavior: "immediate" },
+        )
+        .pipe(Effect.orDie)
+    })
+
     const saveProjectDirectory = Effect.fn("Project.saveProjectDirectory")(function* (input: {
       projectID: ProjectV2.ID
       directory: string
@@ -220,7 +286,7 @@ export const layer = Layer.effect(
       const projectID = ProjectV2.ID.make(data.id)
       yield* migrateProjectId(data.previous ? ProjectV2.ID.make(data.previous) : undefined, projectID)
       const row = yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, projectID)).get().pipe(Effect.orDie)
-      const existing = row
+      const persisted = row
         ? fromRow(row)
         : {
             id: projectID,
@@ -229,6 +295,22 @@ export const layer = Layer.effect(
             sandboxes: [] as string[],
             time: { created: Date.now(), updated: Date.now() },
           }
+      const relocationCandidate = row && projectID !== ProjectV2.ID.global && persisted.worktree !== worktree
+      const primaryMissing = relocationCandidate
+        ? yield* fs.stat(persisted.worktree).pipe(
+            Effect.as(false),
+            Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(true)),
+            Effect.orDie,
+          )
+        : false
+      const existing =
+        relocationCandidate && primaryMissing
+          ? yield* relocateProject({
+              projectID,
+              source: persisted.worktree,
+              destination: worktree,
+            })
+          : persisted
 
       if (flags.experimentalIconDiscovery) yield* discover(existing).pipe(Effect.ignore, Effect.forkIn(scope))
 

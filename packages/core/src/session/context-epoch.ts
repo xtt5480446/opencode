@@ -14,6 +14,7 @@ import { SessionSchema } from "./schema"
 import { SessionContextEpochTable } from "./sql"
 
 type DatabaseService = Database.Interface["db"]
+type Transaction = Parameters<Parameters<DatabaseService["transaction"]>[0]>[0]
 
 interface Prepared {
   readonly baseline: string
@@ -109,7 +110,7 @@ const find = Effect.fn("SessionContextEpoch.find")(function* (db: DatabaseServic
 })
 
 export const reset = Effect.fn("SessionContextEpoch.reset")(function* (
-  db: DatabaseService,
+  db: DatabaseService | Transaction,
   sessionID: SessionSchema.ID,
 ) {
   yield* db
