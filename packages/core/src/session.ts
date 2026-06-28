@@ -3,7 +3,7 @@ export * from "./session/schema"
 
 import { DateTime, Effect, Layer, Schema, Context, Stream } from "effect"
 import { ListAnchor } from "@opencode-ai/schema/session"
-import { and, asc, desc, eq, gt, like, lt, or, type SQL } from "drizzle-orm"
+import { and, asc, desc, eq, gt, inArray, like, lt, or, type SQL } from "drizzle-orm"
 import { ProjectV2 } from "./project"
 import { WorkspaceV2 } from "./workspace"
 import { ModelV2 } from "./model"
@@ -12,9 +12,10 @@ import { SessionMessage } from "./session/message"
 import { Prompt } from "./session/prompt"
 import { PromptInput } from "@opencode-ai/schema/prompt-input"
 import { EventV2 } from "./event"
+import { EventSequenceTable } from "./event/sql"
 import { Database } from "./database/database"
 import { SessionProjector } from "./session/projector"
-import { SessionMessageTable, SessionTable } from "./session/sql"
+import { SessionInputTable, SessionMessageTable, SessionTable } from "./session/sql"
 import { SessionSchema } from "./session/schema"
 import { AbsolutePath, PositiveInt, RelativePath } from "./schema"
 import { AgentV2 } from "./agent"
@@ -90,6 +91,11 @@ type CompactInput = {
   prompt?: Prompt
 }
 
+type ForkInput = {
+  sessionID: SessionSchema.ID
+  messageID?: SessionMessage.ID
+}
+
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Session.NotFoundError", {
   sessionID: SessionSchema.ID,
 }) {}
@@ -113,11 +119,17 @@ export class BusyError extends Schema.TaggedErrorClass<BusyError>()("Session.Bus
 export const MessageNotFoundError = SessionRevert.MessageNotFoundError
 export type MessageNotFoundError = SessionRevert.MessageNotFoundError
 
-export type Error = NotFoundError | MessageDecodeError | OperationUnavailableError | PromptConflictError
+export type Error =
+  | NotFoundError
+  | MessageDecodeError
+  | OperationUnavailableError
+  | PromptConflictError
+  | MessageNotFoundError
 
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<SessionSchema.Info[]>
   readonly create: (input: CreateInput) => Effect.Effect<SessionSchema.Info, NotFoundError>
+  readonly fork: (input: ForkInput) => Effect.Effect<SessionSchema.Info, NotFoundError | MessageNotFoundError>
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<SessionSchema.Info, NotFoundError>
   readonly messages: (input: {
     sessionID: SessionSchema.ID
@@ -269,6 +281,33 @@ export const layer = Layer.effect(
         if (projected.type === "existing") return projected.session
         // TODO: Restore recorded sessions onto replacement synchronized workspaces in a future API slice.
         return yield* result.get(sessionID).pipe(Effect.orDie)
+      }),
+      fork: Effect.fn("V2Session.fork")(function* (input) {
+        const parent = yield* result.get(input.sessionID)
+        const boundary = input.messageID
+          ? yield* db
+              .select({ seq: SessionMessageTable.seq })
+              .from(SessionMessageTable)
+              .where(
+                and(eq(SessionMessageTable.session_id, input.sessionID), eq(SessionMessageTable.id, input.messageID)),
+              )
+              .get()
+              .pipe(Effect.orDie)
+          : undefined
+        if (input.messageID && !boundary)
+          return yield* new MessageNotFoundError({ sessionID: input.sessionID, messageID: input.messageID })
+        const child = yield* result.create({
+          parentID: parent.id,
+          title: forkTitle(parent.title),
+          agent: parent.agent,
+          model: parent.model,
+        })
+        yield* copyForkRows(db, {
+          parentID: parent.id,
+          childID: child.id,
+          beforeSeq: boundary?.seq,
+        })
+        return yield* result.get(child.id)
       }),
       get: Effect.fn("V2Session.get")(function* (sessionID) {
         const session = yield* store.get(sessionID)
@@ -491,6 +530,152 @@ export const defaultLayer = layer.pipe(
   Layer.provide(ProjectV2.defaultLayer),
   Layer.orDie,
 )
+
+const ForkBatchSize = 500
+
+const forkTitle = (value: string) => {
+  const match = value.match(/^(.+) \(fork #(\d+)\)$/)
+  if (match) return `${match[1]} (fork #${Number.parseInt(match[2], 10) + 1})`
+  return `${value} (fork #1)`
+}
+
+const emptyUsage = () => ({
+  cost: 0,
+  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+})
+
+const copyForkRows = Effect.fn("V2Session.copyForkRows")(function* (
+  db: Database.Interface["db"],
+  input: { parentID: SessionSchema.ID; childID: SessionSchema.ID; beforeSeq?: number },
+) {
+  return yield* db
+    .transaction(
+      () =>
+        Effect.gen(function* () {
+          let cursor = -1
+          let maxSeq = 0
+          const usage = emptyUsage()
+
+          while (true) {
+            const rows = yield* db
+              .select()
+              .from(SessionMessageTable)
+              .where(
+                and(
+                  eq(SessionMessageTable.session_id, input.parentID),
+                  gt(SessionMessageTable.seq, cursor),
+                  input.beforeSeq === undefined ? undefined : lt(SessionMessageTable.seq, input.beforeSeq),
+                ),
+              )
+              .orderBy(asc(SessionMessageTable.seq))
+              .limit(ForkBatchSize)
+              .all()
+              .pipe(Effect.orDie)
+            if (rows.length === 0) break
+
+            const idMap = new Map(rows.map((row) => [row.id, SessionMessage.ID.create()]))
+            yield* db
+              .insert(SessionMessageTable)
+              .values(
+                rows.map((row) => ({
+                  id: idMap.get(row.id)!,
+                  session_id: input.childID,
+                  type: row.type,
+                  seq: row.seq,
+                  time_created: row.time_created,
+                  time_updated: row.time_updated,
+                  data: row.type === "synthetic" ? { ...row.data, sessionID: input.childID } : row.data,
+                })),
+              )
+              .run()
+              .pipe(Effect.orDie)
+
+            const inputRows = yield* db
+              .select()
+              .from(SessionInputTable)
+              .where(
+                and(
+                  eq(SessionInputTable.session_id, input.parentID),
+                  inArray(
+                    SessionInputTable.id,
+                    rows.map((row) => row.id),
+                  ),
+                ),
+              )
+              .all()
+              .pipe(Effect.orDie)
+            if (inputRows.length > 0) {
+              yield* db
+                .insert(SessionInputTable)
+                .values(
+                  inputRows.flatMap((row) => {
+                    const id = idMap.get(row.id)
+                    return id
+                      ? [
+                          {
+                            id,
+                            session_id: input.childID,
+                            prompt: row.prompt,
+                            delivery: row.delivery,
+                            admitted_seq: row.admitted_seq,
+                            promoted_seq: row.promoted_seq,
+                            time_created: row.time_created,
+                          },
+                        ]
+                      : []
+                  }),
+                )
+                .run()
+                .pipe(Effect.orDie)
+            }
+
+            for (const row of rows) addUsage(usage, row)
+            cursor = rows.at(-1)!.seq
+            maxSeq = cursor
+          }
+
+          yield* db
+            .update(SessionTable)
+            .set({
+              cost: usage.cost,
+              tokens_input: usage.tokens.input,
+              tokens_output: usage.tokens.output,
+              tokens_reasoning: usage.tokens.reasoning,
+              tokens_cache_read: usage.tokens.cache.read,
+              tokens_cache_write: usage.tokens.cache.write,
+            })
+            .where(eq(SessionTable.id, input.childID))
+            .run()
+            .pipe(Effect.orDie)
+
+          if (maxSeq > 0) {
+            yield* db
+              .update(EventSequenceTable)
+              .set({ seq: maxSeq })
+              .where(eq(EventSequenceTable.aggregate_id, input.childID))
+              .run()
+              .pipe(Effect.orDie)
+          }
+        }),
+      { behavior: "immediate" },
+    )
+    .pipe(Effect.orDie)
+})
+
+function addUsage(usage: ReturnType<typeof emptyUsage>, row: typeof SessionMessageTable.$inferSelect) {
+  if (row.type !== "assistant") return
+  const data = row.data as Record<string, unknown>
+  if (typeof data.cost === "number") usage.cost += data.cost
+  if (typeof data.tokens !== "object" || data.tokens === null) return
+  const tokens = data.tokens as Record<string, unknown>
+  if (typeof tokens.input === "number") usage.tokens.input += tokens.input
+  if (typeof tokens.output === "number") usage.tokens.output += tokens.output
+  if (typeof tokens.reasoning === "number") usage.tokens.reasoning += tokens.reasoning
+  if (typeof tokens.cache !== "object" || tokens.cache === null) return
+  const cache = tokens.cache as Record<string, unknown>
+  if (typeof cache.read === "number") usage.tokens.cache.read += cache.read
+  if (typeof cache.write === "number") usage.tokens.cache.write += cache.write
+}
 
 const resolvePrompt = (input: PromptInput.Prompt) =>
   Prompt.make({
