@@ -29,9 +29,9 @@ export const Plugin = define({
 
 export function generate(model: ModelV2Info): ModelV2Info["variants"] {
   if (model.api.type !== "aisdk") return []
-  const ids = `${model.id} ${model.api.id}`.toLowerCase()
 
   if (model.api.package === "@ai-sdk/openai-compatible") {
+    const ids = `${model.id} ${model.api.id}`.toLowerCase()
     if (["glm-5.2", "glm-5-2", "glm-5p2"].some((name) => ids.includes(name)))
       return ["high", "max"].map((id) => ({
         id,
