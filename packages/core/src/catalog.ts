@@ -8,7 +8,6 @@ import { EventV2 } from "./event"
 import { Policy } from "./policy"
 import { State } from "./state"
 import { Integration } from "./integration"
-import { ProviderOverlay } from "./provider-overlay"
 
 export type ProviderRecord = {
   provider: ProviderV2.MutableInfo
@@ -79,9 +78,9 @@ export const layer = Layer.effect(
       return ModelV2.Info.make({
         ...model,
         package: model.package ?? provider.package,
-        settings: ProviderOverlay.merge(provider.settings, model.settings),
-        headers: ProviderOverlay.headers(provider.headers, model.headers),
-        body: ProviderOverlay.merge(provider.body, model.body),
+        settings: ProviderV2.mergeOverlay(provider.settings, model.settings),
+        headers: ProviderV2.mergeHeaders(provider.headers, model.headers),
+        body: ProviderV2.mergeOverlay(provider.body, model.body),
       })
     }
 

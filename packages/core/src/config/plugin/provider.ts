@@ -4,7 +4,6 @@ import { define } from "../../plugin/internal"
 import { Effect } from "effect"
 import { Config } from "../../config"
 import { ModelV2 } from "../../model"
-import { ProviderOverlay } from "../../provider-overlay"
 import { ProviderV2 } from "../../provider"
 
 export const Plugin = define({
@@ -55,9 +54,9 @@ export const Plugin = define({
               if (item.name !== undefined) provider.name = item.name
               if (item.package !== undefined) provider.package = item.package
               if (item.settings !== undefined)
-                provider.settings = ProviderOverlay.merge(provider.settings, item.settings)
-              if (item.headers !== undefined) provider.headers = ProviderOverlay.headers(provider.headers, item.headers)
-              if (item.body !== undefined) provider.body = ProviderOverlay.merge(provider.body, item.body)
+                provider.settings = ProviderV2.mergeOverlay(provider.settings, item.settings)
+              if (item.headers !== undefined) provider.headers = ProviderV2.mergeHeaders(provider.headers, item.headers)
+              if (item.body !== undefined) provider.body = ProviderV2.mergeOverlay(provider.body, item.body)
             })
             for (const [id, config] of Object.entries(item.models ?? {})) {
               catalog.model.update(providerID, id, (model) => {
@@ -66,9 +65,9 @@ export const Plugin = define({
                 if (config.modelID !== undefined) model.modelID = config.modelID
                 if (config.package !== undefined) model.package = config.package
                 if (config.settings !== undefined)
-                  model.settings = ProviderOverlay.merge(model.settings, config.settings)
-                if (config.headers !== undefined) model.headers = ProviderOverlay.headers(model.headers, config.headers)
-                if (config.body !== undefined) model.body = ProviderOverlay.merge(model.body, config.body)
+                  model.settings = ProviderV2.mergeOverlay(model.settings, config.settings)
+                if (config.headers !== undefined) model.headers = ProviderV2.mergeHeaders(model.headers, config.headers)
+                if (config.body !== undefined) model.body = ProviderV2.mergeOverlay(model.body, config.body)
                 if (config.capabilities !== undefined) {
                   model.capabilities = {
                     tools: config.capabilities.tools,
@@ -87,10 +86,10 @@ export const Plugin = define({
                       model.variants.push(existing)
                     }
                     if (variant.settings !== undefined)
-                      existing.settings = ProviderOverlay.merge(existing.settings, variant.settings)
+                      existing.settings = ProviderV2.mergeOverlay(existing.settings, variant.settings)
                     if (variant.headers !== undefined)
-                      existing.headers = ProviderOverlay.headers(existing.headers, variant.headers)
-                    if (variant.body !== undefined) existing.body = ProviderOverlay.merge(existing.body, variant.body)
+                      existing.headers = ProviderV2.mergeHeaders(existing.headers, variant.headers)
+                    if (variant.body !== undefined) existing.body = ProviderV2.mergeOverlay(existing.body, variant.body)
                   }
                 }
                 if (config.cost !== undefined) {

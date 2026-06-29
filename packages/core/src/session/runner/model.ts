@@ -11,9 +11,8 @@ import { Catalog } from "../../catalog"
 import { Credential } from "../../credential"
 import { Integration } from "../../integration"
 import { ModelV2 } from "../../model"
+import { Npm } from "../../npm"
 import { ProviderV2 } from "../../provider"
-import { ProviderPackage } from "../../provider-package"
-import { ProviderOverlay } from "../../provider-overlay"
 import { SessionSchema } from "../schema"
 
 export class ModelNotSelectedError extends Schema.TaggedErrorClass<ModelNotSelectedError>()(
@@ -119,9 +118,9 @@ const withVariant = (
   return Effect.succeed(
     variant
       ? produce(model, (draft) => {
-          draft.settings = ProviderOverlay.merge(draft.settings, variant.settings)
-          draft.headers = ProviderOverlay.headers(draft.headers, variant.headers)
-          draft.body = ProviderOverlay.merge(draft.body, variant.body)
+          draft.settings = ProviderV2.mergeOverlay(draft.settings, variant.settings)
+          draft.headers = ProviderV2.mergeHeaders(draft.headers, variant.headers)
+          draft.body = ProviderV2.mergeOverlay(draft.body, variant.body)
         })
       : model,
   )
@@ -130,12 +129,15 @@ const withVariant = (
 export const fromCatalogModel = (
   model: ModelV2.Info,
   credential?: Credential.Value,
+  loadPackage: (
+    specifier: string,
+  ) => Effect.Effect<ProviderV2.ProviderPackage, ProviderV2.LoadError> = ProviderV2.loadPackage,
 ): Effect.Effect<Model, UnsupportedPackageError> => {
   const resolved =
     credential?.metadata === undefined
       ? model
       : produce(model, (draft) => {
-          draft.settings = ProviderOverlay.merge(draft.settings, credential.metadata)
+          draft.settings = ProviderV2.mergeOverlay(draft.settings, credential.metadata)
         })
   const key = apiKey(resolved, credential)
   const packageName = ProviderV2.packageName(resolved.package)
@@ -167,7 +169,7 @@ export const fromCatalogModel = (
   if (!ProviderV2.isAISDK(resolved.package) && resolved.package) {
     const specifier = resolved.package
     return Effect.gen(function* () {
-      const module = yield* ProviderPackage.load(specifier).pipe(
+      const module = yield* loadPackage(specifier).pipe(
         Effect.mapError(
           () =>
             new UnsupportedPackageError({
@@ -187,7 +189,7 @@ export const fromCatalogModel = (
         limits: { context: resolved.limit.context, output: resolved.limit.output },
       }
       return yield* Effect.try({
-        try: () => ProviderPackage.make(module, resolved.modelID ?? resolved.id, settings),
+        try: () => ProviderV2.makeModel(module, resolved.modelID ?? resolved.id, settings),
         catch: () =>
           new UnsupportedPackageError({
             providerID: resolved.providerID,
@@ -206,8 +208,15 @@ export const fromCatalogModel = (
   )
 }
 
-export const resolve = (session: SessionSchema.Info, model: ModelV2.Info, credential?: Credential.Value) =>
-  withVariant(model, session.model?.variant).pipe(Effect.flatMap((model) => fromCatalogModel(model, credential)))
+export const resolve = (
+  session: SessionSchema.Info,
+  model: ModelV2.Info,
+  credential?: Credential.Value,
+  loadPackage?: (specifier: string) => Effect.Effect<ProviderV2.ProviderPackage, ProviderV2.LoadError>,
+) =>
+  withVariant(model, session.model?.variant).pipe(
+    Effect.flatMap((model) => fromCatalogModel(model, credential, loadPackage)),
+  )
 
 export const supported = (model: ModelV2.Info) =>
   Boolean(model.package) &&
@@ -223,6 +232,7 @@ export const locationLayer = Layer.effect(
   Effect.gen(function* () {
     const catalog = yield* Catalog.Service
     const integrations = yield* Integration.Service
+    const npm = yield* Npm.Service
     return Service.of({
       resolve: Effect.fn("SessionRunnerModel.resolve")(function* (session) {
         // Location plugins populate and filter the catalog asynchronously during layer startup.
@@ -248,6 +258,7 @@ export const locationLayer = Layer.effect(
           session,
           selected,
           connection ? yield* integrations.connection.resolve(connection) : undefined,
+          (specifier) => ProviderV2.loadPackage(specifier, npm),
         )
       }),
     })
