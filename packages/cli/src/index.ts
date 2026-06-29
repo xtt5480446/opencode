@@ -21,6 +21,7 @@ const LoggingLayer = Logger.layer(Logging.loggers(), { mergeWithExisting: false 
 const Handlers = Runtime.handlers(Commands, {
   $: () => import("./commands/handlers/default"),
   api: () => import("./commands/handlers/api"),
+  auth: () => import("./commands/handlers/auth"),
   debug: {
     agents: () => import("./commands/handlers/debug/agents"),
   },
