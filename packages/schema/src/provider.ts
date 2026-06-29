@@ -1,9 +1,8 @@
 export * as Provider from "./provider"
 
 import { Schema } from "effect"
-import { optional } from "./schema"
 import { Integration } from "./integration"
-import { statics } from "./schema"
+import { optional, statics } from "./schema"
 
 export const ID = Schema.String.pipe(
   Schema.brand("ProviderV2.ID"),
@@ -23,25 +22,14 @@ export const ID = Schema.String.pipe(
 )
 export type ID = typeof ID.Type
 
-export interface AISDK extends Schema.Schema.Type<typeof AISDK> {}
-export const AISDK = Schema.Struct({
-  type: Schema.Literal("aisdk"),
-  package: Schema.String,
-  url: Schema.String.pipe(optional),
+export const Package = Schema.String
+export type Package = typeof Package.Type
+
+export const Overlays = {
   settings: Schema.Record(Schema.String, Schema.Unknown).pipe(optional),
-}).annotate({ identifier: "Provider.AISDK" })
-
-export interface Native extends Schema.Schema.Type<typeof Native> {}
-export const Native = Schema.Struct({
-  type: Schema.Literal("native"),
-  url: Schema.String.pipe(optional),
-  settings: Schema.Record(Schema.String, Schema.Unknown),
-}).annotate({ identifier: "Provider.Native" })
-
-export const Api = Schema.Union([AISDK, Native])
-  .pipe(Schema.toTaggedUnion("type"))
-  .annotate({ identifier: "Provider.Api" })
-export type Api = typeof Api.Type
+  headers: Schema.Record(Schema.String, Schema.String).pipe(optional),
+  body: Schema.Record(Schema.String, Schema.Unknown).pipe(optional),
+}
 
 export interface Request extends Schema.Schema.Type<typeof Request> {}
 export const Request = Schema.Struct({
@@ -55,18 +43,12 @@ export const Info = Schema.Struct({
   integrationID: Integration.ID.pipe(optional),
   name: Schema.String,
   disabled: Schema.Boolean.pipe(optional),
-  api: Api,
-  request: Request,
+  package: Package,
+  ...Overlays,
 })
   .annotate({ identifier: "ProviderV2.Info" })
   .pipe(
     statics((schema) => ({
-      empty: (id: ID) =>
-        schema.make({
-          id,
-          name: id,
-          api: { type: "native", settings: {} },
-          request: { headers: {}, body: {} },
-        }),
+      empty: (id: ID) => schema.make({ id, name: id, package: "" }),
     })),
   )

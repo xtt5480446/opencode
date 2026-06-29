@@ -4766,29 +4766,23 @@ export type SessionNextRevertCommitted = {
   }
 }
 
-export type ModelApi =
-  | {
-      id: string
-      type: "aisdk"
-      package: string
-      url?: string
-      settings?: {
-        [key: string]: unknown
-      }
-    }
-  | {
-      id: string
-      type: "native"
-      url?: string
-      settings: {
-        [key: string]: unknown
-      }
-    }
-
 export type ModelCapabilities = {
   tools: boolean
   input: Array<string>
   output: Array<string>
+}
+
+export type ModelVariant = {
+  id: string
+  settings?: {
+    [key: string]: unknown
+  }
+  headers?: {
+    [key: string]: string
+  }
+  body?: {
+    [key: string]: unknown
+  }
 }
 
 export type ModelCost = {
@@ -4806,29 +4800,22 @@ export type ModelCost = {
 
 export type ModelV2Info = {
   id: string
+  modelID?: string
   providerID: string
   family?: string
   name: string
-  api: ModelApi
-  capabilities: ModelCapabilities
-  request: {
-    headers: {
-      [key: string]: string
-    }
-    body: {
-      [key: string]: unknown
-    }
-    variant?: string
+  package?: string
+  settings?: {
+    [key: string]: unknown
   }
-  variants: Array<{
-    id: string
-    headers: {
-      [key: string]: string
-    }
-    body: {
-      [key: string]: unknown
-    }
-  }>
+  headers?: {
+    [key: string]: string
+  }
+  body?: {
+    [key: string]: unknown
+  }
+  capabilities: ModelCapabilities
+  variants?: Array<ModelVariant>
   time: {
     released: number
   }
@@ -4842,32 +4829,21 @@ export type ModelV2Info = {
   }
 }
 
-export type ProviderAisdk = {
-  type: "aisdk"
-  package: string
-  url?: string
-  settings?: {
-    [key: string]: unknown
-  }
-}
-
-export type ProviderNative = {
-  type: "native"
-  url?: string
-  settings: {
-    [key: string]: unknown
-  }
-}
-
-export type ProviderApi = ProviderAisdk | ProviderNative
-
 export type ProviderV2Info = {
   id: string
   integrationID?: string
   name: string
   disabled?: boolean
-  api: ProviderApi
-  request: ProviderRequest
+  package: string
+  settings?: {
+    [key: string]: unknown
+  }
+  headers?: {
+    [key: string]: string
+  }
+  body?: {
+    [key: string]: unknown
+  }
 }
 
 export type IntegrationWhen = {

@@ -75,17 +75,8 @@ export const ModelsDevPlugin = define({
           const providerID = ProviderV2.ID.make(item.id)
           catalog.provider.update(providerID, (provider) => {
             provider.name = item.name
-            provider.api = item.npm
-              ? {
-                  type: "aisdk",
-                  package: item.npm,
-                  url: item.api,
-                }
-              : {
-                  type: "native",
-                  url: item.api,
-                  settings: {},
-                }
+            provider.package = item.npm ? ProviderV2.aisdk(item.npm) : ""
+            provider.settings = item.api ? { ...provider.settings, baseURL: item.api } : provider.settings
           })
 
           for (const model of Object.values(item.models)) {
@@ -93,19 +84,8 @@ export const ModelsDevPlugin = define({
             catalog.model.update(providerID, modelID, (draft) => {
               draft.name = model.name
               draft.family = model.family ? ModelV2.Family.make(model.family) : undefined
-              draft.api = model.provider?.npm
-                ? {
-                    id: draft.api.id,
-                    type: "aisdk",
-                    package: model.provider?.npm,
-                    url: model.provider.api,
-                  }
-                : {
-                    id: draft.api.id,
-                    type: "native",
-                    url: model.provider?.api,
-                    settings: {},
-                  }
+              draft.package = model.provider?.npm ? ProviderV2.aisdk(model.provider.npm) : undefined
+              draft.settings = model.provider?.api ? { ...draft.settings, baseURL: model.provider.api } : draft.settings
               draft.capabilities = {
                 tools: model.tool_call,
                 input: [...(model.modalities?.input ?? [])],

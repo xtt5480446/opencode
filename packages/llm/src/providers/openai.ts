@@ -1,5 +1,6 @@
 import { AuthOptions, type ProviderAuthOption } from "../route/auth-options"
 import type { Route, RouteDefaultsInput } from "../route/client"
+import type { ProviderPackage } from "../provider-package"
 import { ProviderID, type ModelID } from "../schema"
 import * as OpenAIChat from "../protocols/openai-chat"
 import * as OpenAIResponses from "../protocols/openai-responses"
@@ -20,6 +21,14 @@ export type Config = RouteDefaultsInput &
     readonly queryParams?: Record<string, string>
     readonly providerOptions?: OpenAIProviderOptionsInput
   }
+
+export interface Settings extends ProviderPackage.Settings {
+  readonly apiKey?: string
+  readonly baseURL?: string
+  readonly queryParams?: Readonly<Record<string, string>>
+  readonly transport?: "http" | "websocket"
+  readonly providerOptions?: OpenAIProviderOptionsInput
+}
 
 const auth = (options: ProviderAuthOption<"optional">) => AuthOptions.bearer(options, "OPENAI_API_KEY")
 
@@ -57,7 +66,25 @@ export const configure = (input: Config = {}) => {
 
 export const provider = configure()
 
-export const model = provider.model
+const config = (settings: Settings): Config => ({
+  apiKey: settings.apiKey,
+  baseURL: settings.baseURL,
+  headers: settings.headers === undefined ? undefined : { ...settings.headers },
+  http: settings.body === undefined ? undefined : { body: { ...settings.body } },
+  limits: settings.limits,
+  providerOptions: settings.providerOptions,
+  queryParams: settings.queryParams === undefined ? undefined : { ...settings.queryParams },
+})
+
+export const model: ProviderPackage.Definition<Settings>["model"] = (modelID, settings) => {
+  const configured = configure(config(settings))
+  if (settings.transport === undefined || settings.transport === "http") return configured.responses(modelID)
+  if (settings.transport === "websocket") return configured.responsesWebSocket(modelID)
+  throw new Error(`Unsupported OpenAI Responses transport: ${String(settings.transport)}`)
+}
+
+export const chatModel: ProviderPackage.Definition<Settings>["model"] = (modelID, settings) =>
+  configure(config(settings)).chat(modelID)
 export const responses = provider.responses
 export const responsesWebSocket = provider.responsesWebSocket
 export const chat = provider.chat

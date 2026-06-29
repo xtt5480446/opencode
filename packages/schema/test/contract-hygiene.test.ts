@@ -40,7 +40,7 @@ describe("contract hygiene", () => {
       Model.Ref,
       Model.Capabilities,
       Model.Cost,
-      Model.Api,
+      Model.Variant,
       Project.Icon,
       Project.Commands,
       Project.Time,

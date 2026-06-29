@@ -155,7 +155,7 @@ describe("LocationServiceMap", () => {
                 providers: {
                   unavailable: {
                     name: "Unavailable",
-                    api: { type: "native", settings: {} },
+                    package: "test-provider",
                     models: { chat: { disabled: true } },
                   },
                 },

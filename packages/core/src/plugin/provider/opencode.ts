@@ -112,40 +112,34 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
         catalog.provider.update(providerID, (provider) => {
           provider.integrationID = Integration.ID.make("opencode")
           if (item.name !== undefined) provider.name = item.name
-          provider.api = item.npm
-            ? { type: "aisdk", package: item.npm, url: item.api }
-            : { type: "native", url: item.api, settings: {} }
-          Object.assign(provider.request.headers, item.options?.headers)
-          Object.assign(provider.request.body, withoutCredentials(item.options))
+          provider.package = item.npm ? ProviderV2.aisdk(item.npm) : ""
+          provider.settings = {
+            ...provider.settings,
+            ...withoutCredentials(item.options),
+            ...(item.api ? { baseURL: item.api } : {}),
+          }
+          provider.headers = { ...provider.headers, ...item.options?.headers }
         })
 
         for (const [modelID, config] of Object.entries(item.models ?? {})) {
           catalog.model.update(providerID, modelID, (model) => {
             if (config.family !== undefined) model.family = config.family
             if (config.name !== undefined) model.name = config.name
-            if (config.id !== undefined) model.api.id = config.id
+            if (config.id !== undefined) model.modelID = config.id
             if (config.provider !== undefined) {
-              model.api = config.provider.npm
-                ? {
-                    id: model.api.id,
-                    type: "aisdk",
-                    package: config.provider.npm,
-                    url: config.provider.api,
-                  }
-                : { id: model.api.id, type: "native", url: config.provider.api, settings: {} }
+              model.package = config.provider.npm ? ProviderV2.aisdk(config.provider.npm) : undefined
+              if (config.provider.api) model.settings = { ...model.settings, baseURL: config.provider.api }
             }
             if (config.tool_call !== undefined) model.capabilities.tools = config.tool_call
             if (config.modalities?.input !== undefined) model.capabilities.input = [...config.modalities.input]
             if (config.modalities?.output !== undefined) model.capabilities.output = [...config.modalities.output]
-            const packageName = config.provider?.npm ?? item.npm
-            const lowerer = ConfigProviderOptionsV1.get(packageName)
-            Object.assign(model.request.headers, config.headers)
-            Object.assign(model.request.body, lowerer.request(withoutCredentials(config.options)))
+            model.headers = { ...model.headers, ...config.headers }
+            model.settings = { ...model.settings, ...ConfigProviderOptionsV1.model(withoutCredentials(config.options)) }
             if (config.variants !== undefined) {
               model.variants = Object.entries(config.variants).map(([id, options]) => ({
                 id: ModelV2.VariantID.make(id),
                 headers: { ...(options.headers ?? {}) },
-                body: lowerer.request(withoutCredentials(options)),
+                settings: ConfigProviderOptionsV1.model(withoutCredentials(options)),
               }))
             }
             if (config.release_date !== undefined) {
@@ -164,9 +158,9 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
 
       const item = catalog.provider.get(ProviderV2.ID.opencode)
       if (!item) return
-      const hasKey = Boolean(process.env.OPENCODE_API_KEY || connected || item.provider.request.body.apiKey)
+      const hasKey = Boolean(process.env.OPENCODE_API_KEY || connected || item.provider.settings?.apiKey)
       catalog.provider.update(item.provider.id, (provider) => {
-        if (!hasKey) provider.request.body.apiKey = "public"
+        if (!hasKey) provider.settings = { ...provider.settings, apiKey: "public" }
       })
       if (hasKey) return
       for (const model of item.models.values()) {

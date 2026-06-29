@@ -162,13 +162,11 @@ describe("OpencodePlugin", () => {
           expect(provider).toMatchObject({
             name: "Remote",
             integrationID: "opencode",
-            api: {
-              type: "aisdk",
-              package: "@ai-sdk/openai-compatible",
-              url: `${server.url.origin}/v1`,
-            },
+            package: "aisdk:@ai-sdk/openai-compatible",
+            settings: { baseURL: `${server.url.origin}/v1` },
           })
-          expect(provider.request).toEqual({ headers: { "x-org-id": "org" }, body: { custom: "value" } })
+          expect(provider.headers).toEqual({ "x-org-id": "org" })
+          expect(provider.settings).toMatchObject({ custom: "value" })
           expect(yield* (yield* Integration.Service).get(Integration.ID.make("remote"))).toBeUndefined()
 
           const model = required(yield* catalog.model.get(ProviderV2.ID.make("remote"), ModelV2.ID.make("model")))
@@ -179,12 +177,16 @@ describe("OpencodePlugin", () => {
             cost: [{ input: 1, output: 2, cache: { read: 0.1, write: 0 } }],
             limit: { context: 1000, output: 100 },
           })
-          expect(model.request.body).toEqual({ custom: "value", temperature: 0.5 })
+          expect(model.settings).toEqual({
+            baseURL: `${server.url.origin}/v1`,
+            custom: "value",
+            temperature: 0.5,
+          })
           expect(model.variants).toEqual([
             {
               id: ModelV2.VariantID.make("high"),
               headers: {},
-              body: { temperature: 0.2 },
+              settings: { temperature: 0.2 },
             },
           ])
           expect(
@@ -204,11 +206,12 @@ describe("OpencodePlugin", () => {
         yield* catalog.transform((catalog) => {
           const provider = ProviderV2.Info.make({
             ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
+            package: "aisdk:test-provider",
           })
           const model = ModelV2.Info.make({
             ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("paid")),
-            api: { id: ModelV2.ID.make("paid"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("paid"),
+            package: "aisdk:test-provider",
             cost: cost(1),
           })
           catalog.provider.update(provider.id, () => {})
@@ -217,7 +220,7 @@ describe("OpencodePlugin", () => {
           })
         })
         yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).request.body.apiKey).toBe("public")
+        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).settings?.apiKey).toBe("public")
         expect(required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("paid"))).enabled).toBe(false)
       }),
     ),
@@ -230,11 +233,12 @@ describe("OpencodePlugin", () => {
         yield* catalog.transform((catalog) => {
           const provider = ProviderV2.Info.make({
             ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
+            package: "aisdk:test-provider",
           })
           const model = ModelV2.Info.make({
             ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("free")),
-            api: { id: ModelV2.ID.make("free"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("free"),
+            package: "aisdk:test-provider",
             cost: cost(0),
           })
           catalog.provider.update(provider.id, () => {})
@@ -243,7 +247,7 @@ describe("OpencodePlugin", () => {
           })
         })
         yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).request.body.apiKey).toBe("public")
+        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).settings?.apiKey).toBe("public")
         expect(required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("free"))).enabled).toBe(true)
       }),
     ),
@@ -256,11 +260,12 @@ describe("OpencodePlugin", () => {
         yield* catalog.transform((catalog) => {
           const provider = ProviderV2.Info.make({
             ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
+            package: "aisdk:test-provider",
           })
           const model = ModelV2.Info.make({
             ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("output-only")),
-            api: { id: ModelV2.ID.make("output-only"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("output-only"),
+            package: "aisdk:test-provider",
             cost: cost(0, 1),
           })
           catalog.provider.update(provider.id, () => {})
@@ -269,7 +274,7 @@ describe("OpencodePlugin", () => {
           })
         })
         yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).request.body.apiKey).toBe("public")
+        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).settings?.apiKey).toBe("public")
         expect(required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("output-only"))).enabled).toBe(
           true,
         )
@@ -284,11 +289,12 @@ describe("OpencodePlugin", () => {
         yield* catalog.transform((catalog) => {
           const provider = ProviderV2.Info.make({
             ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
+            package: "aisdk:test-provider",
           })
           const model = ModelV2.Info.make({
             ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("paid")),
-            api: { id: ModelV2.ID.make("paid"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("paid"),
+            package: "aisdk:test-provider",
             cost: cost(1),
           })
           catalog.provider.update(provider.id, () => {})
@@ -297,7 +303,7 @@ describe("OpencodePlugin", () => {
           })
         })
         yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).request.body.apiKey).toBeUndefined()
+        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).settings?.apiKey).toBeUndefined()
         expect(required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("paid"))).enabled).toBe(true)
       }),
     ),
@@ -317,11 +323,12 @@ describe("OpencodePlugin", () => {
         yield* catalog.transform((catalog) => {
           const provider = ProviderV2.Info.make({
             ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
+            package: "aisdk:test-provider",
           })
           const model = ModelV2.Info.make({
             ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("paid")),
-            api: { id: ModelV2.ID.make("paid"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("paid"),
+            package: "aisdk:test-provider",
             cost: cost(1),
           })
           catalog.provider.update(provider.id, () => {})
@@ -330,7 +337,7 @@ describe("OpencodePlugin", () => {
           })
         })
         yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).request.body.apiKey).toBeUndefined()
+        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).settings?.apiKey).toBeUndefined()
         expect(required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("paid"))).enabled).toBe(true)
       }),
     ),
@@ -343,26 +350,26 @@ describe("OpencodePlugin", () => {
         yield* catalog.transform((catalog) => {
           const provider = ProviderV2.Info.make({
             ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
-            request: {
-              headers: {},
-              body: { apiKey: "configured" },
-            },
+            package: "aisdk:test-provider",
+            headers: {},
+            settings: { apiKey: "configured" },
           })
           const model = ModelV2.Info.make({
             ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("paid")),
-            api: { id: ModelV2.ID.make("paid"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("paid"),
+            package: "aisdk:test-provider",
             cost: cost(1),
           })
           catalog.provider.update(provider.id, (draft) => {
-            draft.request = provider.request
+            draft.headers = provider.headers
+            draft.settings = { apiKey: "configured" }
           })
           catalog.model.update(provider.id, model.id, (draft) => {
             draft.cost = [...model.cost]
           })
         })
         yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).request.body.apiKey).toBe("configured")
+        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).settings?.apiKey).toBe("configured")
         expect(required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("paid"))).enabled).toBe(true)
       }),
     ),
@@ -375,11 +382,12 @@ describe("OpencodePlugin", () => {
         yield* catalog.transform((catalog) => {
           const provider = ProviderV2.Info.make({
             ...ProviderV2.Info.empty(ProviderV2.ID.openai),
-            api: { type: "aisdk", package: "test-provider" },
+            package: "aisdk:test-provider",
           })
           const model = ModelV2.Info.make({
             ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("paid")),
-            api: { id: ModelV2.ID.make("paid"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("paid"),
+            package: "aisdk:test-provider",
             cost: cost(1),
           })
           catalog.provider.update(provider.id, () => {})
@@ -388,7 +396,7 @@ describe("OpencodePlugin", () => {
           })
         })
         yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.openai)).request.body.apiKey).toBeUndefined()
+        expect(required(yield* catalog.provider.get(ProviderV2.ID.openai)).settings?.apiKey).toBeUndefined()
         expect(required(yield* catalog.model.get(ProviderV2.ID.openai, ModelV2.ID.make("paid"))).enabled).toBe(true)
       }),
     ),

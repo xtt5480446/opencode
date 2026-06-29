@@ -57,7 +57,8 @@ describe("SnowflakeCortexPlugin", () => {
       const result = yield* aisdk.runSDK({
         model: ModelV2.Info.make({
           ...ModelV2.Info.empty(ProviderV2.ID.make("openai"), ModelV2.ID.make("gpt-4")),
-          api: { id: ModelV2.ID.make("gpt-4"), type: "aisdk", package: "test-provider" },
+          modelID: ModelV2.ID.make("gpt-4"),
+          package: "aisdk:test-provider",
         }),
         package: "@ai-sdk/openai",
         options: { name: "openai" },
@@ -75,7 +76,8 @@ describe("SnowflakeCortexPlugin", () => {
         const result = yield* aisdk.runSDK({
           model: ModelV2.Info.make({
             ...ModelV2.Info.empty(ProviderV2.ID.make("snowflake-cortex"), ModelV2.ID.make("claude-sonnet-4-6")),
-            api: { id: ModelV2.ID.make("claude-sonnet-4-6"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("claude-sonnet-4-6"),
+            package: "aisdk:test-provider",
           }),
           package: "@ai-sdk/openai-compatible",
           options: { name: "snowflake-cortex", baseURL: "https://test.snowflakecomputing.com/api/v2/cortex/v1" },
@@ -94,7 +96,8 @@ describe("SnowflakeCortexPlugin", () => {
         const result = yield* aisdk.runSDK({
           model: ModelV2.Info.make({
             ...ModelV2.Info.empty(ProviderV2.ID.make("snowflake-cortex"), ModelV2.ID.make("claude-sonnet-4-6")),
-            api: { id: ModelV2.ID.make("claude-sonnet-4-6"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("claude-sonnet-4-6"),
+            package: "aisdk:test-provider",
           }),
           package: "@ai-sdk/openai-compatible",
           options: {
@@ -117,7 +120,8 @@ describe("SnowflakeCortexPlugin", () => {
         const result = yield* aisdk.runSDK({
           model: ModelV2.Info.make({
             ...ModelV2.Info.empty(ProviderV2.ID.make("snowflake-cortex"), ModelV2.ID.make("claude-sonnet-4-6")),
-            api: { id: ModelV2.ID.make("claude-sonnet-4-6"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("claude-sonnet-4-6"),
+            package: "aisdk:test-provider",
           }),
           package: "@ai-sdk/openai-compatible",
           options: { name: "snowflake-cortex", baseURL: "https://test.snowflakecomputing.com/api/v2/cortex/v1" },
@@ -136,7 +140,8 @@ describe("SnowflakeCortexPlugin", () => {
         const result = yield* aisdk.runSDK({
           model: ModelV2.Info.make({
             ...ModelV2.Info.empty(ProviderV2.ID.make("snowflake-cortex"), ModelV2.ID.make("claude-sonnet-4-6")),
-            api: { id: ModelV2.ID.make("claude-sonnet-4-6"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("claude-sonnet-4-6"),
+            package: "aisdk:test-provider",
           }),
           package: "@ai-sdk/openai-compatible",
           options: {
@@ -159,7 +164,8 @@ describe("SnowflakeCortexPlugin", () => {
         const result = yield* aisdk.runSDK({
           model: ModelV2.Info.make({
             ...ModelV2.Info.empty(ProviderV2.ID.make("snowflake-cortex"), ModelV2.ID.make("claude-sonnet-4-6")),
-            api: { id: ModelV2.ID.make("claude-sonnet-4-6"), type: "aisdk", package: "test-provider" },
+            modelID: ModelV2.ID.make("claude-sonnet-4-6"),
+            package: "aisdk:test-provider",
           }),
           package: "@ai-sdk/openai-compatible",
           options: { name: "snowflake-cortex", baseURL: "https://test.snowflakecomputing.com/api/v2/cortex/v1" },

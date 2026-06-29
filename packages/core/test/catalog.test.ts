@@ -3,8 +3,6 @@ import { Effect, Fiber, Layer, Stream } from "effect"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { Integration } from "@opencode-ai/core/integration"
 import { Credential } from "@opencode-ai/core/credential"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Location } from "@opencode-ai/core/location"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -23,11 +21,13 @@ const locationLayer = Layer.succeed(
   Location.Service,
   Location.Service.of(location({ directory: AbsolutePath.make("test") })),
 )
-const catalogLayer = AppNodeBuilder.build(
-  LayerNode.group([Catalog.node, EventV2.node, Credential.node, Integration.node, Policy.node]),
-  [[Location.node, locationLayer]],
+const it = testEffect(
+  Catalog.locationLayer.pipe(
+    Layer.provideMerge(EventV2.defaultLayer),
+    Layer.provideMerge(locationLayer),
+    Layer.provideMerge(Credential.defaultLayer),
+  ),
 )
-const it = testEffect(catalogLayer)
 
 describe("CatalogV2", () => {
   it.effect("publishes an updated event after catalog changes", () =>
@@ -47,8 +47,11 @@ describe("CatalogV2", () => {
 
   it.effect("derives availability from active credentials without changing provider state", () => {
     const integrationID = Integration.ID.make("test")
-    const localCatalogLayer = Layer.fresh(
-      AppNodeBuilder.build(LayerNode.group([Catalog.node, Credential.node]), [[Location.node, locationLayer]]),
+    const layer = Catalog.locationLayer.pipe(
+      Layer.fresh,
+      Layer.provideMerge(EventV2.defaultLayer),
+      Layer.provideMerge(locationLayer),
+      Layer.provideMerge(Credential.defaultLayer.pipe(Layer.fresh)),
     )
 
     return Effect.gen(function* () {
@@ -62,24 +65,25 @@ describe("CatalogV2", () => {
       })
 
       expect((yield* catalog.provider.available()).map((provider) => provider.id)).toEqual([ProviderV2.ID.make("test")])
-      expect(required(yield* catalog.provider.get(ProviderV2.ID.make("test"))).request.body).toEqual({})
+      expect(required(yield* catalog.provider.get(ProviderV2.ID.make("test"))).body).toBeUndefined()
       yield* credentials.create({
         integrationID,
         label: "Second",
         value: Credential.Key.make({ type: "key", key: "second", metadata: { tenant: "two" } }),
       })
       expect((yield* catalog.provider.available()).map((provider) => provider.id)).toEqual([ProviderV2.ID.make("test")])
-      expect(required(yield* catalog.provider.get(ProviderV2.ID.make("test"))).request.body).toEqual({})
-    }).pipe(Effect.provide(localCatalogLayer))
+      expect(required(yield* catalog.provider.get(ProviderV2.ID.make("test"))).body).toBeUndefined()
+    }).pipe(Effect.provide(layer))
   })
 
   it.effect("derives availability from a provider's integration", () => {
     const integrationID = Integration.ID.make("gateway")
     const providerID = ProviderV2.ID.make("remote")
-    const localCatalogLayer = Layer.fresh(
-      AppNodeBuilder.build(LayerNode.group([Catalog.node, Credential.node, Integration.node]), [
-        [Location.node, locationLayer],
-      ]),
+    const layer = Catalog.locationLayer.pipe(
+      Layer.fresh,
+      Layer.provideMerge(EventV2.defaultLayer),
+      Layer.provideMerge(locationLayer),
+      Layer.provideMerge(Credential.defaultLayer.pipe(Layer.fresh)),
     )
 
     return Effect.gen(function* () {
@@ -98,7 +102,7 @@ describe("CatalogV2", () => {
       })
 
       expect((yield* catalog.provider.available()).map((provider) => provider.id)).toEqual([providerID])
-    }).pipe(Effect.provide(localCatalogLayer))
+    }).pipe(Effect.provide(layer))
   })
 
   it.effect("projects environment connections without a catalog plugin", () =>
@@ -131,111 +135,107 @@ describe("CatalogV2", () => {
     ),
   )
 
-  it.effect("normalizes provider baseURL into api url", () =>
+  it.effect("keeps provider API settings flat", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service
       const providerID = ProviderV2.ID.make("test")
       yield* catalog.transform((catalog) =>
         catalog.provider.update(providerID, (provider) => {
-          provider.api = {
-            type: "aisdk",
-            package: "@ai-sdk/openai-compatible",
-            url: "https://default.example.com",
-          }
-          provider.request.body.baseURL = "https://override.example.com"
+          provider.package = ProviderV2.aisdk("@ai-sdk/openai-compatible")
+          provider.settings = { baseURL: "https://override.example.com" }
         }),
       )
 
-      expect(required(yield* catalog.provider.get(providerID)).api).toEqual({
-        type: "aisdk",
-        package: "@ai-sdk/openai-compatible",
-        url: "https://override.example.com",
+      expect(required(yield* catalog.provider.get(providerID))).toMatchObject({
+        package: "aisdk:@ai-sdk/openai-compatible",
+        settings: { baseURL: "https://override.example.com" },
       })
     }),
   )
 
-  it.effect("normalizes model baseURL into api url", () =>
+  it.effect("resolves model settings and upstream model ID", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service
       const providerID = ProviderV2.ID.make("test")
       const modelID = ModelV2.ID.make("model")
       yield* catalog.transform((catalog) => {
         catalog.provider.update(providerID, (provider) => {
-          provider.api = {
-            type: "aisdk",
-            package: "@ai-sdk/openai-compatible",
-            url: "https://provider.example.com",
-          }
+          provider.package = ProviderV2.aisdk("@ai-sdk/openai-compatible")
+          provider.settings = { baseURL: "https://provider.example.com" }
         })
         catalog.model.update(providerID, modelID, (model) => {
-          model.api = {
-            id: modelID,
-            type: "aisdk",
-            package: "@ai-sdk/openai-compatible",
-            url: "https://model.example.com",
-          }
-          model.request.body.baseURL = "https://override.example.com"
+          model.modelID = ModelV2.ID.make("upstream-model")
+          model.settings = { baseURL: "https://override.example.com" }
         })
       })
 
-      expect(required(yield* catalog.model.get(providerID, modelID)).api).toEqual({
+      expect(required(yield* catalog.model.get(providerID, modelID))).toMatchObject({
         id: modelID,
-        type: "aisdk",
-        package: "@ai-sdk/openai-compatible",
-        url: "https://override.example.com",
-        settings: {},
+        modelID: ModelV2.ID.make("upstream-model"),
+        package: "aisdk:@ai-sdk/openai-compatible",
+        settings: { baseURL: "https://override.example.com" },
       })
     }),
   )
 
-  it.effect("resolves default model api from provider api", () =>
+  it.effect("resolves default model transport from provider transport", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service
       const providerID = ProviderV2.ID.make("test")
       const modelID = ModelV2.ID.make("model")
       yield* catalog.transform((catalog) => {
         catalog.provider.update(providerID, (provider) => {
-          provider.api = {
-            type: "aisdk",
-            package: "@ai-sdk/openai-compatible",
-            url: "https://provider.example.com",
-          }
+          provider.package = ProviderV2.aisdk("@ai-sdk/openai-compatible")
+          provider.settings = { baseURL: "https://provider.example.com" }
         })
         catalog.model.update(providerID, modelID, () => {})
       })
 
-      expect(required(yield* catalog.model.get(providerID, modelID)).api).toEqual({
+      expect(required(yield* catalog.model.get(providerID, modelID))).toMatchObject({
         id: modelID,
-        type: "aisdk",
-        package: "@ai-sdk/openai-compatible",
-        url: "https://provider.example.com",
+        package: "aisdk:@ai-sdk/openai-compatible",
+        settings: { baseURL: "https://provider.example.com" },
       })
     }),
   )
 
-  it.effect("resolves provider and model request merges", () =>
+  it.effect("resolves provider and model overlay merges", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service
       const providerID = ProviderV2.ID.make("test")
       const modelID = ModelV2.ID.make("model")
       yield* catalog.transform((catalog) => {
         catalog.provider.update(providerID, (provider) => {
-          provider.request.headers.provider = "provider"
-          provider.request.headers.shared = "provider"
-          provider.request.body.provider = true
+          provider.headers = { provider: "provider", "X-Shared": "provider" }
+          provider.body = {
+            provider: true,
+            reasoning: { type: "enabled", budget: 8_000 },
+            stop: ["END"],
+            disabled: { type: "enabled" },
+          }
         })
         catalog.model.update(providerID, modelID, (model) => {
-          model.request.headers.model = "model"
-          model.request.headers.shared = "model"
-          model.request.body.model = true
-          model.request.body.request = true
-          model.request.body.shared = "model"
+          model.headers = { model: "model", "x-shared": "model" }
+          model.body = {
+            model: true,
+            request: true,
+            reasoning: { budget: 32_000 },
+            stop: ["STOP"],
+            disabled: null,
+          }
         })
       })
 
       const model = required(yield* catalog.model.get(providerID, modelID))
-      expect(model.request.headers).toEqual({ provider: "provider", shared: "model", model: "model" })
-      expect(model.request.body).toEqual({ provider: true, model: true, request: true, shared: "model" })
+      expect(model.headers).toEqual({ provider: "provider", "x-shared": "model", model: "model" })
+      expect(model.body).toEqual({
+        provider: true,
+        model: true,
+        request: true,
+        reasoning: { type: "enabled", budget: 32_000 },
+        stop: ["STOP"],
+        disabled: null,
+      })
     }),
   )
 

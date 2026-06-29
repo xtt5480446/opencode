@@ -1,5 +1,6 @@
 import { Effect } from "effect"
 import { define } from "../internal"
+import { ProviderV2 } from "../../provider"
 
 export const CerebrasPlugin = define({
   id: "cerebras",
@@ -7,10 +8,10 @@ export const CerebrasPlugin = define({
     yield* ctx.catalog.transform(
       Effect.fn(function* (evt) {
         for (const item of evt.provider.list()) {
-          if (item.provider.api.type !== "aisdk") continue
-          if (item.provider.api.package !== "@ai-sdk/cerebras") continue
+          if (!ProviderV2.isAISDK(item.provider.package)) continue
+          if (ProviderV2.packageName(item.provider.package) !== "@ai-sdk/cerebras") continue
           evt.provider.update(item.provider.id, (provider) => {
-            provider.request.headers["X-Cerebras-3rd-Party-Integration"] = "opencode"
+            provider.headers = { ...provider.headers, "X-Cerebras-3rd-Party-Integration": "opencode" }
           })
         }
       }),

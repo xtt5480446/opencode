@@ -1,5 +1,6 @@
 import { Effect } from "effect"
 import { define } from "../internal"
+import { ProviderV2 } from "../../provider"
 
 export const AnthropicPlugin = define({
   id: "anthropic",
@@ -7,11 +8,13 @@ export const AnthropicPlugin = define({
     yield* ctx.catalog.transform(
       Effect.fn(function* (evt) {
         for (const item of evt.provider.list()) {
-          if (item.provider.api.type !== "aisdk") continue
-          if (item.provider.api.package !== "@ai-sdk/anthropic") continue
+          if (!ProviderV2.isAISDK(item.provider.package)) continue
+          if (ProviderV2.packageName(item.provider.package) !== "@ai-sdk/anthropic") continue
           evt.provider.update(item.provider.id, (provider) => {
-            provider.request.headers["anthropic-beta"] =
-              "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+            provider.headers = {
+              ...provider.headers,
+              "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+            }
           })
         }
       }),

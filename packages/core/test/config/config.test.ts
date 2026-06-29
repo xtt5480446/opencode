@@ -5,8 +5,6 @@ import { Effect, Layer, Schema } from "effect"
 import { FastCheck } from "effect/testing"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigProvider } from "@opencode-ai/core/config/provider"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigMigrateV1 } from "@opencode-ai/core/v1/config/migrate"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -27,27 +25,25 @@ function testLayer(
   projectDirectory = directory,
   vcs?: Project.Vcs,
 ) {
-  const locationLayer = Layer.succeed(
-    Location.Service,
-    Location.Service.of(
-      location(
-        { directory: AbsolutePath.make(directory) },
-        { projectDirectory: AbsolutePath.make(projectDirectory), vcs },
+  return Config.locationLayer.pipe(
+    Layer.provide(FSUtil.defaultLayer),
+    Layer.provide(Global.layerWith({ config: globalDirectory })),
+    Layer.provide(
+      Layer.succeed(
+        Location.Service,
+        Location.Service.of(
+          location(
+            { directory: AbsolutePath.make(directory) },
+            { projectDirectory: AbsolutePath.make(projectDirectory), vcs },
+          ),
+        ),
       ),
     ),
   )
-  return AppNodeBuilder.build(LayerNode.group([Config.node, Policy.node]), [
-    [Location.node, locationLayer],
-    [Global.node, Global.layerWith({ config: globalDirectory })],
-  ])
 }
 
 const provider = {
-  api: { type: "native", settings: {} },
-  request: {
-    headers: {},
-    body: {},
-  },
+  package: "test-provider",
   models: {},
 }
 
@@ -93,6 +89,7 @@ describe("Config", () => {
         provider: {
           bedrock: {
             npm: "@ai-sdk/amazon-bedrock",
+            api: "https://bedrock.example.com",
             options: {
               headers: { "x-test": "1" },
               body: { trace: true },
@@ -103,12 +100,9 @@ describe("Config", () => {
         },
       })
 
-      expect(migrated.providers?.bedrock?.api).toEqual({
-        type: "aisdk",
-        package: "@ai-sdk/amazon-bedrock",
-        settings: { region: "us-east-1", profile: "dev" },
-      })
-      expect(migrated.providers?.bedrock?.request).toEqual({
+      expect(migrated.providers?.bedrock).toMatchObject({
+        package: "aisdk:@ai-sdk/amazon-bedrock",
+        settings: { baseURL: "https://bedrock.example.com", region: "us-east-1", profile: "dev" },
         headers: { "x-test": "1" },
         body: { trace: true },
       })
@@ -298,7 +292,7 @@ describe("Config", () => {
                 },
                 tool_output: { max_lines: 1000, max_bytes: 32768 },
                 mcp: {
-                  timeout: { startup: 5000, request: 60000 },
+                  timeout: { request: 5000 },
                   servers: {
                     local: {
                       type: "local",
@@ -313,7 +307,6 @@ describe("Config", () => {
                       headers: { Authorization: "Bearer token" },
                       oauth: { client_id: "client", scope: "read write", callback_port: 19876 },
                       disabled: true,
-                      timeout: { startup: 15000 },
                     },
                   },
                 },
@@ -384,7 +377,7 @@ describe("Config", () => {
             })
             expect(documents[0]?.info.tool_output).toEqual({ max_lines: 1000, max_bytes: 32768 })
             expect(documents[0]?.info.mcp).toEqual({
-              timeout: { startup: 5000, request: 60000 },
+              timeout: { request: 5000 },
               servers: {
                 local: {
                   type: "local",
@@ -399,7 +392,6 @@ describe("Config", () => {
                   headers: { Authorization: "Bearer token" },
                   oauth: { client_id: "client", scope: "read write", callback_port: 19876 },
                   disabled: true,
-                  timeout: { startup: 15000 },
                 },
               },
             })
@@ -543,12 +535,11 @@ describe("Config", () => {
                 compaction: { auto: true, tail_turns: 3, preserve_recent_tokens: 2000, reserved: 10000 },
                 experimental: { mcp_timeout: 5000 },
                 mcp: {
-                  local: { type: "local", command: ["node", "server.js"], enabled: false, timeout: 10000 },
+                  local: { type: "local", command: ["node", "server.js"], enabled: false },
                   remote: {
                     type: "remote",
                     url: "https://mcp.example.com",
                     oauth: { clientId: "client", callbackPort: 19876 },
-                    timeout: 20000,
                   },
                 },
               }),
@@ -587,34 +578,31 @@ describe("Config", () => {
             })
             expect(documents[0]?.info.attachments).toEqual({ image: { auto_resize: false, max_width: 1200 } })
             expect(documents[0]?.info.providers?.custom).toMatchObject({
-              request: { body: { apiKey: "secret" } },
+              settings: { apiKey: "secret" },
               models: {
                 model: {
-                  request: { body: { reasoningEffort: "high" } },
-                  variants: [{ id: "fast", body: { temperature: 0.2 } }],
+                  settings: { reasoningEffort: "high" },
+                  variants: [{ id: "fast", settings: { temperature: 0.2 } }],
                 },
               },
             })
             expect(documents[0]?.info.providers?.openai).toMatchObject({
-              api: { settings: {} },
-              request: { headers: { Authorization: "Bearer secret", "OpenAI-Organization": "org" } },
+              package: "aisdk:@ai-sdk/openai",
+              settings: { apiKey: "secret", organization: "org" },
               models: {
                 model: {
-                  request: {
-                    body: { temperature: 0.3, reasoning: { effort: "high" }, service_tier: "priority" },
-                  },
-                  variants: [{ id: "high", body: { reasoning: { effort: "high", summary: "auto" } } }],
+                  settings: { temperature: 0.3, reasoningEffort: "high", serviceTier: "priority" },
+                  variants: [{ id: "high", settings: { reasoningEffort: "high", reasoningSummary: "auto" } }],
                 },
               },
             })
             expect(documents[0]?.info.providers?.anthropic).toMatchObject({
               models: {
                 model: {
-                  request: {
-                    body: {
-                      output_config: { effort: "high", task_budget: 4096 },
-                      metadata: { user_id: "user-1" },
-                    },
+                  settings: {
+                    effort: "high",
+                    taskBudget: 4096,
+                    metadata: { userId: "user-1" },
                   },
                 },
               },
@@ -628,17 +616,11 @@ describe("Config", () => {
             expect(documents[0]?.info.mcp).toMatchObject({
               timeout: { request: 5000 },
               servers: {
-                local: {
-                  type: "local",
-                  command: ["node", "server.js"],
-                  disabled: true,
-                  timeout: { request: 10000 },
-                },
+                local: { type: "local", command: ["node", "server.js"], disabled: true },
                 remote: {
                   type: "remote",
                   url: "https://mcp.example.com",
                   oauth: { client_id: "client", callback_port: 19876 },
-                  timeout: { request: 20000 },
                 },
               },
             })
