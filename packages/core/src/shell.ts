@@ -221,7 +221,7 @@ export const layer = Layer.effect(
                 }),
               ),
             )
-            runFork(pump.pipe(Effect.catch(() => Effect.void)))
+            const pumpFiber = runFork(pump.pipe(Effect.catch(() => Effect.void)))
 
             const finish = (status: Info["status"], exit?: number) =>
               Effect.gen(function* () {
@@ -231,7 +231,15 @@ export const layer = Layer.effect(
                   if (exit !== undefined) draft.exit = exit
                   draft.time.completed = Date.now()
                 })
-                stream.end()
+                // Close the capture file and wait for the OS buffer to flush so a reader observing
+                // `done` reads the complete output rather than a partially written file.
+                yield* Effect.promise(
+                  () =>
+                    new Promise<void>((resolve) => {
+                      stream.end(() => resolve())
+                      stream.once("error", () => resolve())
+                    }),
+                )
                 // Resolve waiters with the terminal Info before any retention eviction, so an evicted
                 // session still reports success rather than the removal NotFoundError. This runs before
                 // the timeout-fiber interrupt below, which on the timeout path would otherwise cancel
@@ -269,7 +277,14 @@ export const layer = Layer.effect(
 
             runFork(
               handle.exitCode.pipe(
-                Effect.flatMap((code) => finish("exited", code)),
+                // The process has exited, so `handle.all` ends; drain the pump fiber so every
+                // captured chunk is written before finishing and resolving waiters.
+                Effect.flatMap((code) =>
+                  Fiber.join(pumpFiber).pipe(
+                    Effect.catch(() => Effect.void),
+                    Effect.flatMap(() => finish("exited", code)),
+                  ),
+                ),
                 Effect.catch(() => Effect.void),
               ),
             )
