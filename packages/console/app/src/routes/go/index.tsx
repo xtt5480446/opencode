@@ -5,7 +5,6 @@ import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 //import { HttpHeader } from "@solidjs/start"
 import goLogoLight from "../../asset/go-ornate-light.svg"
 import goLogoDark from "../../asset/go-ornate-dark.svg"
-import { EmailSignup } from "~/component/email-signup"
 import { Faq } from "~/component/faq"
 import { Legal } from "~/component/legal"
 import { Footer } from "~/component/footer"
@@ -515,8 +514,6 @@ export default function Home() {
               </li>
             </ul>
           </section>
-
-          <EmailSignup />
 
           <Footer />
         </div>
