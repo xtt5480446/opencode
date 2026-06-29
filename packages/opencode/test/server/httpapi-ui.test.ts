@@ -17,7 +17,7 @@ import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { ServerAuth } from "../../src/server/auth"
 import { authorizationRouterMiddleware } from "../../src/server/routes/instance/httpapi/middleware/authorization"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
-import { serveEmbeddedUIEffect, serveUIEffect } from "../../src/server/shared/ui"
+import { injectRemoteServersMeta, serveEmbeddedUIEffect, serveUIEffect } from "../../src/server/shared/ui"
 import { testEffect } from "../lib/effect"
 
 const testStateLayer = Layer.effectDiscard(
@@ -27,6 +27,7 @@ const testStateLayer = Layer.effectDiscard(
       OPENCODE_SERVER_USERNAME: Flag.OPENCODE_SERVER_USERNAME,
       envPassword: process.env.OPENCODE_SERVER_PASSWORD,
       envUsername: process.env.OPENCODE_SERVER_USERNAME,
+      envWebRemoteServers: process.env.OPENCODE_WEB_REMOTE_SERVERS,
     }
 
     yield* Effect.addFinalizer(() =>
@@ -35,6 +36,7 @@ const testStateLayer = Layer.effectDiscard(
         Flag.OPENCODE_SERVER_USERNAME = original.OPENCODE_SERVER_USERNAME
         restoreEnv("OPENCODE_SERVER_PASSWORD", original.envPassword)
         restoreEnv("OPENCODE_SERVER_USERNAME", original.envUsername)
+        restoreEnv("OPENCODE_WEB_REMOTE_SERVERS", original.envWebRemoteServers)
       }),
     )
   }),
@@ -184,6 +186,17 @@ function responseText(response: Response) {
 }
 
 describe("HttpApi UI fallback", () => {
+  it.live("injects configured remote servers into web UI html", () =>
+    Effect.gen(function* () {
+      const config = '[{"name":"Dax","url":"http://romulus.example.test:4096"}]'
+      const html = injectRemoteServersMeta("<html><head><title>opencode</title></head></html>", config)
+
+      expect(html).toContain('<meta name="opencode-remote-servers"')
+      expect(html).toContain("Dax")
+      expect(html).toContain("http://romulus.example.test:4096")
+    }),
+  )
+
   it.live("serves the web UI through the HTTP API app", () =>
     Effect.gen(function* () {
       let proxiedUrl: string | undefined

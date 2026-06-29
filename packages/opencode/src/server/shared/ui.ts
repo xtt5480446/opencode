@@ -55,10 +55,24 @@ function notFound() {
 function embeddedUIResponse(file: string, body: Uint8Array) {
   const mime = FSUtil.mimeType(file)
   const headers = new Headers({ "content-type": mime })
-  if (mime.startsWith("text/html")) {
-    headers.set("content-security-policy", cspForHtml(new TextDecoder().decode(body)))
-  }
-  return HttpServerResponse.raw(body, { headers })
+  if (!mime.startsWith("text/html")) return HttpServerResponse.raw(body, { headers })
+
+  const html = injectRemoteServersMeta(new TextDecoder().decode(body))
+  headers.set("content-security-policy", cspForHtml(html))
+  return HttpServerResponse.raw(new TextEncoder().encode(html), { headers })
+}
+
+export function injectRemoteServersMeta(body: string, remoteServers = process.env.OPENCODE_WEB_REMOTE_SERVERS) {
+  const value = remoteServers?.trim()
+  if (!value) return body
+  if (body.includes('name="opencode-remote-servers"')) return body
+  const meta = `<meta name="opencode-remote-servers" content="${escapeHtmlAttribute(value)}">`
+  if (/<head\b[^>]*>/i.test(body)) return body.replace(/<head\b([^>]*)>/i, `<head$1>${meta}`)
+  return `${meta}${body}`
+}
+
+function escapeHtmlAttribute(value: string) {
+  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 }
 
 export function serveEmbeddedUIEffect(
@@ -94,7 +108,7 @@ export function serveUIEffect(
     const headers = proxyResponseHeaders(response.headers)
 
     if (response.headers["content-type"]?.includes("text/html")) {
-      const body = yield* response.text
+      const body = injectRemoteServersMeta(yield* response.text)
       headers.set("Content-Security-Policy", cspForHtml(body))
       return HttpServerResponse.text(body, { status: response.status, headers })
     }

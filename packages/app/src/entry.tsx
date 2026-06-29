@@ -8,6 +8,7 @@ import { dict as en } from "@/i18n/en"
 import { dict as zh } from "@/i18n/zh"
 import { handleNotificationClick } from "@/utils/notification-click"
 import { authFromToken } from "@/utils/server"
+import { parseStartupServers } from "@/utils/startup-servers"
 import pkg from "../package.json"
 import { ServerConnection } from "./context/server"
 
@@ -112,6 +113,14 @@ const getDefaultUrl = () => {
   return getCurrentUrl()
 }
 
+const remoteServersMeta = () => document.querySelector<HTMLMetaElement>('meta[name="opencode-remote-servers"]')?.content
+
+const getStartupServers = () => [
+  ...parseStartupServers(import.meta.env.VITE_OPENCODE_REMOTE_SERVERS),
+  ...parseStartupServers(remoteServersMeta()),
+  ...parseStartupServers(window.__OPENCODE__?.servers),
+]
+
 const clearAuthToken = () => {
   const params = new URLSearchParams(location.search)
   if (!params.has("auth_token")) return
@@ -171,7 +180,7 @@ if (root instanceof HTMLElement) {
           <AppInterface
             defaultServer={ServerConnection.Key.make(getDefaultUrl())}
             canonicalLocalServer={ServerConnection.key(server)}
-            servers={[server]}
+            servers={[...getStartupServers(), server]}
             disableHealthCheck
           />
         </AppBaseProviders>

@@ -255,6 +255,7 @@ declare global {
   interface Window {
     __OPENCODE__?: {
       deepLinks?: string[]
+      servers?: unknown
     }
     api?: {
       setTitlebar?: (theme: { mode: "light" | "dark" }) => Promise<void>
