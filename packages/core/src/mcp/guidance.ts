@@ -4,6 +4,7 @@ import { makeLocationNode } from "../effect/app-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import { AgentV2 } from "../agent"
 import { PermissionV2 } from "../permission"
+import { McpTool } from "../tool/mcp"
 import { MCP } from "./index"
 import { SystemContext } from "../system-context/index"
 
@@ -48,7 +49,9 @@ export const layer = Layer.effect(
             const owned = tools.filter((tool) => tool.server === item.server)
             return (
               owned.length === 0 ||
-              owned.some((tool) => PermissionV2.evaluate(tool.name, "*", agent.permissions).effect !== "deny")
+              owned.some(
+                (tool) => PermissionV2.evaluate(McpTool.name(tool.server, tool.name), "*", agent.permissions).effect !== "deny",
+              )
             )
           })
           .map((item) => ({ server: item.server, instructions: item.instructions }))

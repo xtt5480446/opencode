@@ -64,6 +64,20 @@ export class Tool extends Schema.Class<Tool>("MCP.Tool")({
   inputSchema: Schema.Unknown.pipe(Schema.optional),
 }) {}
 
+export const ToolResultContent = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("text"), text: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("media"), data: Schema.String, mimeType: Schema.String }),
+]).pipe(Schema.toTaggedUnion("type"))
+export type ToolResultContent = typeof ToolResultContent.Type
+
+export class ToolResult extends Schema.Class<ToolResult>("MCP.ToolResult")({
+  server: ServerName,
+  tool: Schema.String,
+  isError: Schema.Boolean,
+  structured: Schema.Unknown.pipe(Schema.optional),
+  content: Schema.Array(ToolResultContent),
+}) {}
+
 export class PromptArgument extends Schema.Class<PromptArgument>("MCP.PromptArgument")({
   name: Schema.String,
   description: Schema.String.pipe(Schema.optional),
@@ -135,6 +149,12 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("MCP
   server: ServerName,
 }) {}
 
+export class ToolCallError extends Schema.TaggedErrorClass<ToolCallError>()("MCP.ToolCallError", {
+  server: ServerName,
+  tool: Schema.String,
+  message: Schema.String,
+}) {}
+
 type ServerEntry = {
   readonly config: typeof ConfigMCP.Server.Type
   status: Status
@@ -149,6 +169,11 @@ type ServerEntry = {
 export interface Interface {
   readonly servers: () => Effect.Effect<ServerInfo[]>
   readonly tools: () => Effect.Effect<Tool[]>
+  readonly callTool: (input: {
+    readonly server: ServerName | string
+    readonly name: string
+    readonly args?: Record<string, unknown>
+  }) => Effect.Effect<ToolResult, NotFoundError | ToolCallError>
   readonly instructions: () => Effect.Effect<ServerInstructions[]>
   readonly prompts: () => Effect.Effect<Prompt[]>
   readonly prompt: (input: {
@@ -252,6 +277,7 @@ export const layer = Layer.effect(
           entry.tools = result.value.defs.map((def) => toTool(name, def))
           entry.status = { status: "connected" }
           watch(name, entry, result.value.connection)
+          yield* Effect.logInfo("mcp connected", { server: name, tools: entry.tools.length })
           return
         }
         yield* Scope.close(scope, Exit.void)
@@ -261,6 +287,7 @@ export const layer = Layer.effect(
           error instanceof MCPClient.NeedsAuthError
             ? { status: "needs_auth" }
             : { status: "failed", error: error instanceof Error ? error.message : String(error) }
+        yield* Effect.logWarning("mcp connect failed", { server: name, status: entry.status })
       }).pipe(Effect.ensuring(Deferred.succeed(entry.startup, undefined)))
 
     // Disabled servers settle their startup immediately so queries never block on them.
@@ -293,6 +320,26 @@ export const layer = Layer.effect(
         return Array.from(runtime.values())
           .flatMap((entry) => entry.tools ?? [])
           .toSorted((a, b) => a.server.localeCompare(b.server) || a.name.localeCompare(b.name))
+      }),
+      callTool: Effect.fn("MCP.callTool")(function* (input) {
+        const target = yield* requireServer(input.server)
+        yield* Deferred.await(target.entry.startup)
+        if (!target.entry.client)
+          return yield* new ToolCallError({
+            server: target.name,
+            tool: input.name,
+            message: "MCP server is not connected",
+          })
+        const result = yield* target.entry.client
+          .callTool({ name: input.name, args: input.args })
+          .pipe(Effect.mapError((error) => new ToolCallError({ server: target.name, tool: input.name, message: error.message })))
+        return new ToolResult({
+          server: target.name,
+          tool: input.name,
+          isError: result.isError,
+          structured: result.structured,
+          content: result.content,
+        })
       }),
       instructions: Effect.fn("MCP.instructions")(function* () {
         yield* whenAllReady

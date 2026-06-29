@@ -7,6 +7,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import {
+  CallToolResultSchema,
   ListRootsRequestSchema,
   ListToolsResultSchema,
   ToolListChangedNotificationSchema,
@@ -18,7 +19,6 @@ import { InstallationVersion } from "../installation/version"
 
 const DEFAULT_STARTUP_TIMEOUT = 30_000
 const DEFAULT_REQUEST_TIMEOUT = 30_000
-const MAX_LIST_PAGES = 1_000
 
 // Some servers advertise tool outputSchemas the SDK's strict validator can't resolve; this drops
 // only that field so a single bad schema doesn't blank out the whole tool list.
@@ -41,12 +41,27 @@ export interface ToolDefinition {
   readonly inputSchema: unknown
 }
 
+export type CallToolContent =
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "media"; readonly data: string; readonly mimeType: string }
+
+export interface CallToolResult {
+  readonly isError: boolean
+  readonly structured: unknown
+  readonly content: ReadonlyArray<CallToolContent>
+}
+
 /** Handle over a connected MCP server that keeps the SDK `Client` out of the rest of core. */
 export interface Connection {
   /** Server-supplied usage instructions from the initialize result, if any. */
   readonly instructions: string | undefined
   /** Lists the server's tools; returns [] when the server doesn't advertise tool support, fails on a transport error. */
   readonly tools: () => Effect.Effect<ToolDefinition[], Error>
+  /** Invokes a tool on the server. Interruption aborts the in-flight request. */
+  readonly callTool: (input: {
+    readonly name: string
+    readonly args?: Record<string, unknown>
+  }) => Effect.Effect<CallToolResult, Error>
   readonly onClose: (callback: () => void) => void
   /** Registers a callback fired when the server announces its tool list changed; no-op if unsupported. */
   readonly onToolsChanged: (callback: () => void) => void
@@ -129,6 +144,37 @@ export const connect = Effect.fnUntraced(function* (
             inputSchema: tool.inputSchema,
           }))
         }),
+      callTool: (input) =>
+        Effect.tryPromise({
+          try: (signal) =>
+            client.callTool(
+              { name: input.name, arguments: input.args ?? {} },
+              CallToolResultSchema,
+              // The SDK only sends a progress token when onprogress is present, which enables timeout resets.
+              { signal, timeout: requestTimeout, resetTimeoutOnProgress: true, onprogress: () => {} },
+            ),
+          catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+        }).pipe(
+          Effect.map((result) => ({
+            isError: result.isError === true,
+            structured: result.structuredContent,
+            content: result.content.flatMap((part): CallToolContent[] => {
+              if (part.type === "text") return [{ type: "text", text: part.text }]
+              if (part.type === "image" || part.type === "audio")
+                return [{ type: "media", data: part.data, mimeType: part.mimeType }]
+              if (part.type === "resource_link") return [{ type: "text", text: part.uri }]
+              if (part.type === "resource") {
+                const resource = part.resource
+                if ("text" in resource && typeof resource.text === "string")
+                  return [{ type: "text", text: resource.text }]
+                if ("blob" in resource && typeof resource.blob === "string" && typeof resource.mimeType === "string")
+                  return [{ type: "media", data: resource.blob, mimeType: resource.mimeType }]
+                return [{ type: "text", text: resource.uri }]
+              }
+              return []
+            }),
+          })),
+        ),
       onClose: (callback) => {
         client.onclose = callback
       },
@@ -153,15 +199,15 @@ async function paginate<R extends { nextCursor?: string }, T>(
   const collected: T[] = []
   const seen = new Set<string>()
   let cursor: string | undefined
-  for (let page = 0; page < MAX_LIST_PAGES; page++) {
+  while (true) {
     const result = await list(cursor)
     collected.push(...items(result))
     if (result.nextCursor === undefined) return collected
+    // A repeating cursor never terminates; bail instead of hanging the connection forever.
     if (seen.has(result.nextCursor)) throw new Error(`MCP list returned duplicate cursor: ${result.nextCursor}`)
     seen.add(result.nextCursor)
     cursor = result.nextCursor
   }
-  throw new Error(`MCP list exceeded ${MAX_LIST_PAGES} pages`)
 }
 
 const isOutputSchemaError = (error: Error) =>
