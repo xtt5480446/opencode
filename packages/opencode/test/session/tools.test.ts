@@ -119,7 +119,7 @@ const belowThresholdIt = makeIt({
   queryDescription: "Natural language analytics query",
 })
 
-function resolveTools() {
+function resolveTools(input: { remainingSteps?: number } = {}) {
   return SessionTools.resolve({
     agent,
     model,
@@ -128,6 +128,7 @@ function resolveTools() {
     bypassAgentCheck: false,
     messages: [],
     promptOps,
+    remainingSteps: input.remainingSteps,
   })
 }
 
@@ -168,6 +169,14 @@ describe("session.tools", () => {
   belowThresholdIt.instance("keeps MCP tools direct below the fixed deferral threshold", () =>
     Effect.gen(function* () {
       const tools = yield* resolveTools()
+
+      expect(Object.keys(tools).sort()).toEqual(["posthog_feature_flags", "posthog_query_trends"])
+    }),
+  )
+
+  deferredIt.instance("keeps MCP tools direct when the remaining step budget is too small", () =>
+    Effect.gen(function* () {
+      const tools = yield* resolveTools({ remainingSteps: 2 })
 
       expect(Object.keys(tools).sort()).toEqual(["posthog_feature_flags", "posthog_query_trends"])
     }),

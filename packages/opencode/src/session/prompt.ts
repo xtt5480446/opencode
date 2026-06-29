@@ -1231,6 +1231,7 @@ export const layer = Layer.effect(
               bypassAgentCheck,
               messages: msgs,
               promptOps,
+              remainingSteps: Number.isFinite(maxSteps) ? maxSteps - step + 1 : undefined,
             }).pipe(
               Effect.provideService(Plugin.Service, plugin),
               Effect.provideService(Permission.Service, permission),
@@ -1265,7 +1266,9 @@ export const layer = Layer.effect(
               ...env,
               ...instructions,
               ...(mcpInstructions ? [mcpInstructions] : []),
-              ...(tools.search_deferred_tools && tools.call_deferred_tool ? [SessionTools.DEFERRED_TOOL_SYSTEM_PROMPT] : []),
+              ...(tools.search_deferred_tools && tools.call_deferred_tool
+                ? [SessionTools.DEFERRED_TOOL_SYSTEM_PROMPT]
+                : []),
               ...(skills ? [skills] : []),
             ]
             const format = lastUser.format ?? { type: "text" as const }

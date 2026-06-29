@@ -53,6 +53,7 @@ interface Input {
   bypassAgentCheck: boolean
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
+  remainingSteps?: number
 }
 
 interface DeferredToolDescriptor {
@@ -220,6 +221,7 @@ export const resolve = Effect.fn("SessionMcpTools.resolve")(function* (input: In
       : []
   const deferMcpTools =
     deferredDescriptors.length > 0 &&
+    (input.remainingSteps ?? Infinity) >= 3 &&
     Token.estimate(JSON.stringify(deferredDescriptors.map(deferredToolEstimatePayload))) >=
       MIN_DEFERRED_MCP_SCHEMA_TOKENS
 
