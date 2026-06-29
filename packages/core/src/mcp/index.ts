@@ -237,6 +237,21 @@ export const layer = Layer.effect(
     const toTool = (server: ServerName, def: MCPClient.ToolDefinition) =>
       new Tool({ server, name: def.name, description: def.description, inputSchema: def.inputSchema })
 
+    const toPrompt = (server: ServerName, def: MCPClient.PromptDefinition) =>
+      new Prompt({
+        server,
+        name: def.name,
+        description: def.description,
+        arguments: def.arguments?.map(
+          (argument) =>
+            new PromptArgument({
+              name: argument.name,
+              description: argument.description,
+              required: argument.required,
+            }),
+        ),
+      })
+
     const refreshTools = (name: ServerName, entry: ServerEntry, connection: MCPClient.Connection) =>
       connection.tools().pipe(
         Effect.map((defs) => {
@@ -372,11 +387,46 @@ export const layer = Layer.effect(
       }),
       prompts: Effect.fn("MCP.prompts")(function* () {
         yield* whenAllReady
-        return []
+        return yield* Effect.forEach(
+          Array.from(runtime),
+          ([server, entry]) => {
+            if (!entry.client || entry.status.status !== "connected") return Effect.succeed([])
+            return entry.client.prompts().pipe(
+              Effect.map((defs) => defs.map((def) => toPrompt(server, def))),
+              Effect.orElseSucceed(() => []),
+            )
+          },
+          { concurrency: "unbounded" },
+        ).pipe(
+          Effect.map((items) =>
+            items.flat().toSorted((a, b) => a.server.localeCompare(b.server) || a.name.localeCompare(b.name)),
+          ),
+        )
       }),
       prompt: Effect.fn("MCP.prompt")(function* (input) {
-        yield* gate(input.server)
-        return undefined
+        const target = yield* requireServer(input.server)
+        yield* Deferred.await(target.entry.startup)
+        if (!target.entry.client) return undefined
+        const result = yield* target.entry.client
+          .prompt({ name: input.name, args: input.args })
+          .pipe(
+            Effect.tapError((error) =>
+              Effect.logError("failed to get MCP prompt", {
+                server: target.name,
+                prompt: input.name,
+                error: error.message,
+              }),
+            ),
+            Effect.orElseSucceed(() => undefined),
+          )
+        if (!result) return undefined
+        return new PromptResult({
+          server: target.name,
+          name: input.name,
+          messages: result.messages.map(
+            (message) => new PromptMessage({ role: message.role, content: message.content }),
+          ),
+        })
       }),
       resourceCatalog: Effect.fn("MCP.resourceCatalog")(function* () {
         yield* whenAllReady

@@ -46,6 +46,27 @@ export interface ToolDefinition {
   readonly inputSchema: unknown
 }
 
+export interface PromptArgument {
+  readonly name: string
+  readonly description: string | undefined
+  readonly required: boolean | undefined
+}
+
+export interface PromptDefinition {
+  readonly name: string
+  readonly description: string | undefined
+  readonly arguments: ReadonlyArray<PromptArgument> | undefined
+}
+
+export interface PromptMessage {
+  readonly role: string
+  readonly content: unknown
+}
+
+export interface PromptResult {
+  readonly messages: ReadonlyArray<PromptMessage>
+}
+
 export type CallToolContent =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "media"; readonly data: string; readonly mimeType: string }
@@ -66,6 +87,13 @@ export interface LogMessage {
 export interface Connection {
   /** Server-supplied usage instructions from the initialize result, if any. */
   readonly instructions: string | undefined
+  /** Lists the server's prompts; returns [] when the server doesn't advertise prompt support. */
+  readonly prompts: () => Effect.Effect<PromptDefinition[], Error>
+  /** Gets a server prompt; returns undefined when the server doesn't advertise prompt support. */
+  readonly prompt: (input: {
+    readonly name: string
+    readonly args?: Record<string, string>
+  }) => Effect.Effect<PromptResult | undefined, Error>
   /** Lists the server's tools; returns [] when the server doesn't advertise tool support, fails on a transport error. */
   readonly tools: () => Effect.Effect<ToolDefinition[], Error>
   /** Invokes a tool on the server. Interruption aborts the in-flight request. */
@@ -133,6 +161,42 @@ export const connect = Effect.fnUntraced(function* (
     const requestTimeout = config.timeout?.request ?? DEFAULT_REQUEST_TIMEOUT
     return {
       instructions: client.getInstructions()?.trim() || undefined,
+      prompts: () =>
+        Effect.gen(function* () {
+          if (!client.getServerCapabilities()?.prompts) return []
+          const prompts = yield* Effect.tryPromise({
+            try: () =>
+              paginate(
+                (cursor) =>
+                  client.listPrompts(cursor === undefined ? undefined : { cursor }, { timeout: requestTimeout }),
+                (result) => result.prompts,
+              ),
+            catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+          }).pipe(
+            Effect.tapError((error) => Effect.logWarning("failed to list MCP prompts", { server, error: error.message })),
+          )
+          return prompts.map((prompt) => ({
+            name: prompt.name,
+            description: prompt.description,
+            arguments: prompt.arguments?.map((argument) => ({
+              name: argument.name,
+              description: argument.description,
+              required: argument.required,
+            })),
+          }))
+        }),
+      prompt: (input) =>
+        Effect.gen(function* () {
+          if (!client.getServerCapabilities()?.prompts) return undefined
+          const result = yield* Effect.tryPromise({
+            try: (signal) =>
+              client.getPrompt({ name: input.name, arguments: input.args }, { timeout: requestTimeout, signal }),
+            catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+          })
+          return {
+            messages: result.messages.map((message) => ({ role: message.role, content: message.content })),
+          }
+        }),
       tools: () =>
         Effect.gen(function* () {
           if (!client.getServerCapabilities()?.tools) return []
