@@ -148,8 +148,16 @@ describe("session.tools", () => {
       const searchResult = yield* Effect.promise(() =>
         Promise.resolve(search({ query: "analytics trends" }, toolExecutionOptions)),
       )
-      const parsed = JSON.parse(searchResult.output) as { tools: Array<{ tool_id: string }> }
+      const parsed = JSON.parse(searchResult.output) as { tools: Array<{ tool_id: string; input_schema?: unknown }> }
       expect(parsed.tools.map((item) => item.tool_id)).toContain("posthog_query_trends")
+      expect(parsed.tools.find((item) => item.tool_id === "posthog_query_trends")?.input_schema).toBeDefined()
+
+      const conciseResult = yield* Effect.promise(() =>
+        Promise.resolve(search({ query: "analytics trends", include_schema: false }, toolExecutionOptions)),
+      )
+      const concise = JSON.parse(conciseResult.output) as { tools: Array<{ tool_id: string; input_schema?: unknown }> }
+      expect(concise.tools.map((item) => item.tool_id)).toContain("posthog_query_trends")
+      expect(concise.tools.find((item) => item.tool_id === "posthog_query_trends")?.input_schema).toBeUndefined()
 
       const call = tools.call_deferred_tool.execute
       if (!call) throw new Error("missing call_deferred_tool executor")

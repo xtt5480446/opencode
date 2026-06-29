@@ -6,12 +6,13 @@ import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
+import { ToolJsonSchema } from "@/tool/json-schema"
 import { Truncate } from "@/tool/truncate"
 import { isRecord } from "@/util/record"
 import { Token } from "@/util/token"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { asSchema, jsonSchema, tool, type Tool, type ToolExecutionOptions } from "ai"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { Plugin } from "@/plugin"
 import type { TaskPromptOps } from "@/tool/task"
 import type { Context } from "@/tool/tool"
@@ -38,6 +39,7 @@ const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
 export const DEFERRED_TOOL_SYSTEM_PROMPT = `Deferred tools are separate from direct tools.
 - Some MCP server tools may be hidden behind \`search_deferred_tools\` and \`call_deferred_tool\` to keep provider tool schemas small.
 - Use \`search_deferred_tools\` to find deferred tools by purpose, tool ID, description, or parameter names.
+- \`search_deferred_tools\` returns full schemas by default. For broad searches, omit schemas and search again with schemas if needed.
 - Use \`call_deferred_tool\` only with a \`tool_id\` copied from \`search_deferred_tools\` results.
 - Never use deferred tools for direct tools already listed in the current tool list, including shell, file, search, edit, web, task, LSP, question, or apply_patch tools.`
 
@@ -57,6 +59,33 @@ interface DeferredToolDescriptor {
   inputSchema: unknown
   searchText: string
 }
+
+const SearchDeferredToolsParameters = Schema.Struct({
+  query: Schema.String.annotate({
+    description:
+      "Words describing the external capability to find. Use an empty string to list the top deferred tools.",
+  }),
+  limit: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(MAX_DEFERRED_TOOL_LIMIT)),
+  ).annotate({
+    description: `Maximum number of matches to return. Defaults to ${DEFAULT_DEFERRED_TOOL_LIMIT}; maximum ${MAX_DEFERRED_TOOL_LIMIT}.`,
+  }),
+  include_schema: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Whether to include input_schema for each match. Defaults to true. Set false for broad searches to return only tool_id and description.",
+  }),
+})
+
+const CallDeferredToolParameters = Schema.Struct({
+  tool_id: Schema.String.annotate({
+    description: "Exact deferred tool_id copied from search_deferred_tools results.",
+  }),
+  arguments: Schema.Record(Schema.String, Schema.Unknown).annotate({
+    description: "JSON arguments for the deferred tool, matching its input_schema from search_deferred_tools.",
+  }),
+})
+const decodeSearchDeferredToolsParameters = Schema.decodeUnknownEffect(SearchDeferredToolsParameters)
+const decodeCallDeferredToolParameters = Schema.decodeUnknownEffect(CallDeferredToolParameters)
 
 type McpToolContent =
   | { type: "text"; text: string }
@@ -544,54 +573,30 @@ function addDeferredTools(
     description:
       "Search only deferred tools. Deferred tools are not listed as direct tools; currently they are MCP server tools hidden to keep the provider tool list small. Do not use this for direct tools such as shell, file, edit, grep, glob, web, task, LSP, question, or apply_patch tools.",
     inputSchema: jsonSchema(
-      ProviderTransform.schema(deps.input.model, {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description:
-              "Words describing the external capability to find. Use an empty string to list the top deferred tools.",
-          },
-          limit: {
-            type: "number",
-            description: `Maximum number of matches to return. Defaults to ${DEFAULT_DEFERRED_TOOL_LIMIT}; maximum ${MAX_DEFERRED_TOOL_LIMIT}.`,
-          },
-        },
-        required: ["query"],
-        additionalProperties: false,
-      }),
+      ProviderTransform.schema(deps.input.model, ToolJsonSchema.fromSchema(SearchDeferredToolsParameters)),
     ),
     execute(args, opts) {
       return deps.run.promise(
         Effect.gen(function* () {
-          const argRecord = toRecord(args)
-          const query = optionalString(argRecord, "query") ?? ""
-          const limitValue = argRecord.limit
-          if (
-            limitValue !== undefined &&
-            limitValue !== null &&
-            (typeof limitValue !== "number" || !Number.isInteger(limitValue) || limitValue <= 0)
-          ) {
-            throw new Error("limit must be a positive integer")
-          }
-          const limit =
-            limitValue === undefined || limitValue === null
-              ? DEFAULT_DEFERRED_TOOL_LIMIT
-              : Math.min(limitValue, MAX_DEFERRED_TOOL_LIMIT)
-          const ctx = deps.context(argRecord, opts)
+          const params = yield* decodeSearchDeferredToolsParameters(args)
+          const ctx = deps.context(toRecord(args), opts)
           yield* deps.plugin.trigger(
             "tool.execute.before",
             { tool: DEFERRED_TOOL_TOOLS.search, sessionID: ctx.sessionID, callID: opts.toolCallId },
             { args },
           )
-          const matches = searchDeferredTools(deps.deferredDescriptors, query, limit)
+          const matches = searchDeferredTools(
+            deps.deferredDescriptors,
+            params.query,
+            params.limit ?? DEFAULT_DEFERRED_TOOL_LIMIT,
+          )
           const truncated = yield* deps.truncate.output(
             JSON.stringify(
               {
                 tools: matches.map((descriptor) => ({
                   tool_id: descriptor.id,
                   description: descriptor.description,
-                  input_schema: descriptor.inputSchema,
+                  ...((params.include_schema ?? true) ? { input_schema: descriptor.inputSchema } : {}),
                 })),
               },
               null,
@@ -603,7 +608,8 @@ function addDeferredTools(
           const output = {
             title: "Deferred tools search",
             metadata: {
-              query,
+              query: params.query,
+              includeSchema: params.include_schema ?? true,
               count: matches.length,
               total: deps.deferredDescriptors.length,
               truncated: truncated.truncated,
@@ -627,39 +633,20 @@ function addDeferredTools(
     description:
       "Call one deferred tool by tool_id after finding it with search_deferred_tools. Do not use this for direct tools such as shell, file, edit, grep, glob, web, task, LSP, question, or apply_patch tools.",
     inputSchema: jsonSchema(
-      ProviderTransform.schema(deps.input.model, {
-        type: "object",
-        properties: {
-          tool_id: {
-            type: "string",
-            description: "Exact deferred tool_id copied from search_deferred_tools results.",
-          },
-          arguments: {
-            type: "object",
-            description: "JSON arguments for the deferred tool, matching its input_schema from search_deferred_tools.",
-            additionalProperties: true,
-          },
-        },
-        required: ["tool_id", "arguments"],
-        additionalProperties: false,
-      }),
+      ProviderTransform.schema(deps.input.model, ToolJsonSchema.fromSchema(CallDeferredToolParameters)),
     ),
     execute(args, opts) {
       return deps.run.promise(
         Effect.gen(function* () {
-          const argRecord = toRecord(args)
-          const toolID = requiredString(argRecord, "tool_id")
-          const toolArgs = argRecord.arguments
-          if (toolArgs !== undefined && toolArgs !== null && !isRecord(toolArgs))
-            throw new Error("arguments must be an object")
-          const item = deps.allowedMcpTools[toolID]
+          const params = yield* decodeCallDeferredToolParameters(args)
+          const item = deps.allowedMcpTools[params.tool_id]
           const execute = item?.execute
           if (!item || !execute) {
             throw new Error(
-              `Deferred tool "${toolID}" is not available. Use search_deferred_tools and copy a tool_id from the results.`,
+              `Deferred tool "${params.tool_id}" is not available. Use search_deferred_tools and copy a tool_id from the results.`,
             )
           }
-          return yield* deps.executeMcpTool(toolID, execute, isRecord(toolArgs) ? toolArgs : {}, opts)
+          return yield* deps.executeMcpTool(params.tool_id, execute, params.arguments, opts)
         }),
       )
     },
