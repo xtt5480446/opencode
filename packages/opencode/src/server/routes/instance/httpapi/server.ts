@@ -102,7 +102,6 @@ import { handlers } from "@opencode-ai/server/handlers"
 import { locationServiceMapLayer } from "@opencode-ai/core/location-services"
 import { layer as locationLayer } from "@opencode-ai/server/location"
 import { sessionLocationLayer } from "@opencode-ai/server/middleware/session-location"
-import { PtyEnvironment } from "@opencode-ai/server/pty-environment"
 import { schemaErrorLayer as v2SchemaErrorLayer } from "@opencode-ai/server/middleware/schema-error"
 import { workspaceHandlers } from "./handlers/workspace"
 import { instanceContextLayer } from "./middleware/instance-context"
@@ -293,7 +292,6 @@ export function createRoutes(
 
     Layer.provide(sessionLocationLayer),
     Layer.provide(locationLayer),
-    Layer.provide(PtyEnvironment.layer),
     Layer.provide(
       SessionV2.defaultLayer.pipe(
         Layer.provide(SessionExecutionLocal.defaultLayer),
