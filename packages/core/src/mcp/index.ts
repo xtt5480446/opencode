@@ -1,11 +1,15 @@
 export * as MCP from "./index"
 
-import { Context, Effect, Layer, Schema } from "effect"
+import { McpEvent } from "@opencode-ai/schema/mcp-event"
+import { Cause, Context, Deferred, Effect, Exit, FiberSet, Layer, Schema, Scope } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { Config } from "../config"
 import { ConfigMCP } from "../config/mcp"
+import { EventV2 } from "../event"
 import { Integration } from "../integration"
 import { IntegrationConnection } from "../integration/connection"
+import { Location } from "../location"
+import { MCPClient } from "./client"
 
 export const ServerName = Schema.String.pipe(Schema.brand("MCP.ServerName"))
 export type ServerName = typeof ServerName.Type
@@ -52,6 +56,13 @@ export class ServerInstructions extends Schema.Class<ServerInstructions>("MCP.Se
   server: ServerName,
   instructions: Schema.String,
   tools: Schema.Array(Schema.String),
+}) {}
+
+export class Tool extends Schema.Class<Tool>("MCP.Tool")({
+  server: ServerName,
+  name: Schema.String,
+  description: Schema.String.pipe(Schema.optional),
+  inputSchema: Schema.Unknown.pipe(Schema.optional),
 }) {}
 
 export class PromptArgument extends Schema.Class<PromptArgument>("MCP.PromptArgument")({
@@ -127,26 +138,25 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("MCP
 
 type ServerEntry = {
   readonly config: typeof ConfigMCP.Server.Type
-  readonly status: Status
+  status: Status
+  readonly startup: Deferred.Deferred<void>
+  scope?: Scope.Closeable
+  client?: MCPClient.Connection
   readonly integrationID?: Integration.ID
   readonly connection?: IntegrationConnection.Info
 }
 
 export interface Interface {
   readonly servers: () => Effect.Effect<ServerInfo[]>
-  readonly add: (server: ServerName | string, config: typeof ConfigMCP.Server.Type) => Effect.Effect<ServerInfo>
-  readonly connect: (server: ServerName | string) => Effect.Effect<ServerInfo, NotFoundError>
-  readonly disconnect: (server: ServerName | string) => Effect.Effect<ServerInfo, NotFoundError>
+  readonly tools: () => Effect.Effect<Tool[]>
   readonly instructions: () => Effect.Effect<ServerInstructions[]>
-  readonly prompts: (input?: { readonly server?: ServerName | string }) => Effect.Effect<Prompt[], NotFoundError>
+  readonly prompts: () => Effect.Effect<Prompt[]>
   readonly prompt: (input: {
     readonly server: ServerName | string
     readonly name: string
     readonly args?: Record<string, string>
   }) => Effect.Effect<PromptResult | undefined, NotFoundError>
-  readonly resourceCatalog: (input?: {
-    readonly server?: ServerName | string
-  }) => Effect.Effect<ResourceCatalog, NotFoundError>
+  readonly resourceCatalog: () => Effect.Effect<ResourceCatalog>
   readonly readResource: (input: {
     readonly server: ServerName | string
     readonly uri: string
@@ -159,6 +169,12 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
+    const location = yield* Location.Service
+    const events = yield* EventV2.Service
+    const root = yield* Scope.make()
+    const fork = yield* FiberSet.makeRuntime<never, void, never>()
+    yield* Effect.addFinalizer((exit) => Scope.close(root, exit))
+
     const documents = (yield* config.entries()).filter((entry): entry is Config.Document => entry.type === "document")
     // Global MCP timeout defaults, later config files overriding earlier ones.
     const timeout = Object.assign(
@@ -171,7 +187,8 @@ export const layer = Layer.effect(
       for (const [name, server] of Object.entries(entry.info.mcp?.servers ?? {})) {
         runtime.set(ServerName.make(name), {
           config: { ...server, timeout: { ...timeout, ...server.timeout } },
-          status: server.disabled ? { status: "disabled" } : { status: "disconnected" },
+          status: { status: "disconnected" },
+          startup: Deferred.makeUnsafe<void>(),
         })
       }
     }
@@ -183,16 +200,64 @@ export const layer = Layer.effect(
       return { name, entry }
     })
 
-    const visibleStatus = (entry: ServerEntry): Status => (entry.config.disabled ? { status: "disabled" } : entry.status)
-
     const info = (name: ServerName, entry: ServerEntry) =>
       new ServerInfo({
         name,
         config: entry.config,
-        status: visibleStatus(entry),
+        status: entry.status,
         integrationID: entry.integrationID,
         connection: entry.connection,
       })
+
+    const watch = (name: ServerName, entry: ServerEntry, connection: MCPClient.Connection) => {
+      connection.onClose(() => {
+        entry.client = undefined
+        entry.status = { status: "failed", error: "Connection closed" }
+        fork(events.publish(McpEvent.ToolsChanged, { server: name }).pipe(Effect.ignore))
+      })
+    }
+
+    const startServer = (name: ServerName, entry: ServerEntry) =>
+      Effect.gen(function* () {
+        const scope = yield* Scope.fork(root)
+        entry.scope = scope
+        const result = yield* MCPClient.connect(name, entry.config, location.directory).pipe(
+          Scope.provide(scope),
+          Effect.exit,
+        )
+        if (Exit.isSuccess(result)) {
+          entry.client = result.value
+          entry.status = { status: "connected" }
+          watch(name, entry, result.value)
+          return
+        }
+        yield* Scope.close(scope, Exit.void)
+        entry.scope = undefined
+        const error = Cause.squash(result.cause)
+        entry.status =
+          error instanceof MCPClient.NeedsAuthError
+            ? { status: "needs_auth" }
+            : { status: "failed", error: error instanceof Error ? error.message : String(error) }
+      }).pipe(Effect.ensuring(Deferred.succeed(entry.startup, undefined)))
+
+    // Disabled servers settle their startup immediately so queries never block on them.
+    for (const [name, entry] of runtime) {
+      if (entry.config.disabled) {
+        entry.status = { status: "disabled" }
+        Deferred.doneUnsafe(entry.startup, Exit.void)
+        continue
+      }
+      fork(startServer(name, entry))
+    }
+
+    const whenAllReady = Effect.forEach(runtime.values(), (entry) => Deferred.await(entry.startup), {
+      concurrency: "unbounded",
+      discard: true,
+    })
+    const gate = Effect.fnUntraced(function* (server: ServerName | string) {
+      const target = yield* requireServer(server)
+      yield* Deferred.await(target.entry.startup)
+    })
 
     return Service.of({
       servers: Effect.fn("MCP.servers")(function* () {
@@ -200,45 +265,32 @@ export const layer = Layer.effect(
           a.name.localeCompare(b.name),
         )
       }),
-      add: Effect.fn("MCP.add")(function* (server, config) {
-        const name = ServerName.make(server)
-        const status: Status = config.disabled ? { status: "disabled" } : { status: "disconnected" }
-        const entry = { config, status }
-        runtime.set(name, entry)
-        return info(name, entry)
-      }),
-      connect: Effect.fn("MCP.connect")(function* (server) {
-        const current = yield* requireServer(server)
-        return info(current.name, current.entry)
-      }),
-      disconnect: Effect.fn("MCP.disconnect")(function* (server) {
-        const current = yield* requireServer(server)
-        const status: Status = current.entry.config.disabled ? { status: "disabled" } : { status: "disconnected" }
-        const entry = { ...current.entry, status }
-        runtime.set(current.name, entry)
-        return info(current.name, entry)
-      }),
-      instructions: Effect.fn("MCP.instructions")(function* () {
+      tools: Effect.fn("MCP.tools")(function* () {
+        yield* whenAllReady
         return []
       }),
-      prompts: Effect.fn("MCP.prompts")(function* (input) {
-        if (input?.server !== undefined) yield* requireServer(input.server)
+      instructions: Effect.fn("MCP.instructions")(function* () {
+        yield* whenAllReady
+        return []
+      }),
+      prompts: Effect.fn("MCP.prompts")(function* () {
+        yield* whenAllReady
         return []
       }),
       prompt: Effect.fn("MCP.prompt")(function* (input) {
-        yield* requireServer(input.server)
+        yield* gate(input.server)
         return undefined
       }),
-      resourceCatalog: Effect.fn("MCP.resourceCatalog")(function* (input) {
-        if (input?.server !== undefined) yield* requireServer(input.server)
+      resourceCatalog: Effect.fn("MCP.resourceCatalog")(function* () {
+        yield* whenAllReady
         return new ResourceCatalog({ resources: [], templates: [] })
       }),
       readResource: Effect.fn("MCP.readResource")(function* (input) {
-        yield* requireServer(input.server)
+        yield* gate(input.server)
         return undefined
       }),
     })
   }),
 )
 
-export const node = makeLocationNode({ service: Service, layer, deps: [Config.node] })
+export const node = makeLocationNode({ service: Service, layer, deps: [Config.node, Location.node, EventV2.node] })

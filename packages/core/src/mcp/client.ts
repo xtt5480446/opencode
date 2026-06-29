@@ -22,11 +22,12 @@ export class ConnectError extends Schema.TaggedErrorClass<ConnectError>()("MCP.C
   message: Schema.String,
 }) {}
 
-/**
- * Connects an MCP client and registers a scoped finalizer that closes it. The
- * returned client is owned by the calling scope; closing that scope tears down
- * the transport (and, for local servers, the spawned process).
- */
+/** Handle over a connected MCP server that keeps the SDK `Client` out of the rest of core. */
+export interface Connection {
+  readonly onClose: (callback: () => void) => void
+}
+
+/** Connects an MCP server; closing the calling scope tears down the transport and any spawned process. */
 export const connect = Effect.fnUntraced(function* (
   server: string,
   config: typeof ConfigMCP.Server.Type,
@@ -71,7 +72,11 @@ export const connect = Effect.fnUntraced(function* (
   }).pipe(Effect.exit)
   if (Exit.isSuccess(exit)) {
     yield* Effect.addFinalizer(() => Effect.promise(() => client.close()).pipe(Effect.ignore))
-    return client
+    return {
+      onClose: (callback) => {
+        client.onclose = callback
+      },
+    } satisfies Connection
   }
 
   yield* Effect.promise(() => transport.close()).pipe(Effect.ignore)
