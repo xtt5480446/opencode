@@ -2,6 +2,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { test, expect } from "bun:test"
 import os from "os"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Database } from "@opencode-ai/core/database/database"
@@ -18,7 +19,7 @@ const env = Layer.mergeAll(
   Permission.layer.pipe(Layer.provide(Database.defaultLayer), Layer.provide(events)),
   events,
   CrossSpawnSpawner.defaultLayer,
-  InstanceStore.defaultLayer.pipe(Layer.provide(noopBootstrap)),
+  LayerNode.compile(InstanceStore.node, [[InstanceStore.bootstrapNode, noopBootstrap]]),
 )
 const it = testEffect(env)
 
