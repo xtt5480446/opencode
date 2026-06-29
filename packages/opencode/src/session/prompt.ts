@@ -1254,18 +1254,24 @@ export const layer = Layer.effect(
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
+            const [skills, env, instructions, mcpInstructions, deferredToolInstructions, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
+              tools.search_deferred_tools && tools.call_deferred_tool
+                ? SessionTools.deferredSystemPrompt({ agent, session }).pipe(
+                    Effect.provideService(MCP.Service, mcp),
+                    Effect.provideService(RuntimeFlags.Service, flags),
+                  )
+                : Effect.succeed(undefined),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
             const system = [
               ...env,
               ...instructions,
               ...(mcpInstructions ? [mcpInstructions] : []),
-              ...(tools.search_deferred_tools && tools.call_deferred_tool ? [SessionTools.DEFERRED_TOOL_SYSTEM_PROMPT] : []),
+              ...(deferredToolInstructions ? [deferredToolInstructions] : []),
               ...(skills ? [skills] : []),
             ]
             const format = lastUser.format ?? { type: "text" as const }

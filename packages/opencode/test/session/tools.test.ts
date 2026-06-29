@@ -5,6 +5,7 @@ import { ProjectV2 } from "@opencode-ai/core/project"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { Agent } from "@/agent/agent"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
@@ -21,6 +22,7 @@ import { testEffect } from "../lib/effect"
 const model = ProviderTest.model()
 const sessionID = SessionID.make("ses_deferred-tools")
 const largeSchemaDescription = "analytics trends schema ".repeat(10_000)
+const mcpClient = new Client({ name: "test", version: "0.0.0" })
 const agent = {
   name: "build",
   mode: "primary",
@@ -70,7 +72,7 @@ const makeIt = (input: { flags: Parameters<typeof RuntimeFlags.layer>[0]; queryD
   testEffect(
     Layer.mergeAll(
       Layer.mock(MCP.Service, {
-        clients: () => Effect.succeed({}),
+        clients: () => Effect.succeed({ posthog: mcpClient }),
         tools: () =>
           Effect.succeed({
             posthog_query_trends: tool({
@@ -155,6 +157,15 @@ describe("session.tools", () => {
         ),
       )
       expect(callResult.output).toBe("trend result")
+    }),
+  )
+
+  deferredIt.instance("lists deferred MCP servers in the system prompt", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionTools.deferredSystemPrompt({ agent, session })
+
+      expect(prompt).toContain("Deferred MCP servers available through `search_deferred_tools`:")
+      expect(prompt).toContain("- posthog: 2 tools")
     }),
   )
 

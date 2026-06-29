@@ -2,6 +2,7 @@ import { Agent } from "@/agent/agent"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MCP } from "@/mcp"
+import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
@@ -249,6 +250,44 @@ export const resolve = Effect.fn("SessionMcpTools.resolve")(function* (input: In
   }
 
   return tools
+})
+
+export const systemPrompt = Effect.fn("SessionMcpTools.systemPrompt")(function* (input: {
+  agent: Agent.Info
+  session: Session.Info
+}) {
+  const mcp = yield* MCP.Service
+  const flags = yield* RuntimeFlags.Service
+  if (!flags.experimentalToolSearch) return undefined
+
+  const mcpTools = yield* mcp.tools()
+  const mcpDisabled = Permission.disabled(
+    Object.keys(mcpTools),
+    Permission.merge(input.agent.permission, input.session.permission ?? []),
+  )
+  const allowedTools = Object.fromEntries(Object.entries(mcpTools).filter(([key]) => !mcpDisabled.has(key)))
+  if (Object.keys(allowedTools).length === 0) return undefined
+
+  const deferredDescriptors = yield* deferredToolDescriptors(allowedTools)
+  if (
+    Token.estimate(JSON.stringify(deferredDescriptors.map(deferredToolEstimatePayload))) <
+    MIN_DEFERRED_MCP_SCHEMA_TOKENS
+  ) {
+    return undefined
+  }
+
+  const servers = deferredServerSummaries(Object.keys(allowedTools), Object.keys(yield* mcp.clients()))
+  return [
+    DEFERRED_TOOL_SYSTEM_PROMPT,
+    servers.length === 0
+      ? undefined
+      : [
+          "Deferred MCP servers available through `search_deferred_tools`:",
+          ...servers.map((server) => `- ${server.name}: ${server.count} tool${server.count === 1 ? "" : "s"}`),
+        ].join("\n"),
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join("\n\n")
 })
 
 function addResourceTools(
@@ -708,6 +747,21 @@ function deferredToolDescriptors(tools: Record<string, Tool>) {
 
 function deferredToolEstimatePayload(descriptor: DeferredToolDescriptor) {
   return { id: descriptor.id, description: descriptor.description, input_schema: descriptor.inputSchema }
+}
+
+function deferredServerSummaries(toolIDs: string[], serverNames: string[]) {
+  const prefixes = serverNames
+    .map((name) => ({ name, prefix: McpCatalog.sanitize(name) + "_" }))
+    .toSorted((a, b) => b.prefix.length - a.prefix.length || a.name.localeCompare(b.name))
+  const counts = new Map<string, number>()
+  for (const toolID of toolIDs) {
+    const server = prefixes.find((candidate) => toolID.startsWith(candidate.prefix))
+    if (!server) continue
+    counts.set(server.name, (counts.get(server.name) ?? 0) + 1)
+  }
+  return Array.from(counts.entries())
+    .map(([name, count]) => ({ name, count }))
+    .toSorted((a, b) => a.name.localeCompare(b.name))
 }
 
 function searchDeferredTools(descriptors: DeferredToolDescriptor[], query: string, limit: number) {

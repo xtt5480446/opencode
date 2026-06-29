@@ -18,6 +18,7 @@ import { Session } from "./session"
 import { PartID } from "./schema"
 
 export const DEFERRED_TOOL_SYSTEM_PROMPT = SessionMcpTools.DEFERRED_TOOL_SYSTEM_PROMPT
+export const deferredSystemPrompt = SessionMcpTools.systemPrompt
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
