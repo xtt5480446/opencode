@@ -96,6 +96,26 @@ function Invoke-Opencode {
   }
 }
 
+function Invoke-PtyScenario {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Scenario,
+    [Parameter(Mandatory = $true)]
+    [string]$Exe,
+    [Parameter(Mandatory = $true)]
+    [string]$Project,
+    [Parameter(Mandatory = $true)]
+    [string]$Version,
+    [Parameter(Mandatory = $true)]
+    [int]$Seconds
+  )
+
+  node (Join-Path $PSScriptRoot "repro-windows-opentui-pty-session.mjs") -- --exe $Exe --project $Project --version $Version --seconds $Seconds --scenario $Scenario
+  if ($LASTEXITCODE -ne 0) {
+    throw "PTY scenario '$Scenario' failed with exit code $LASTEXITCODE"
+  }
+}
+
 Write-Section "Environment"
 node --version
 npm --version
@@ -171,14 +191,14 @@ Push-Location $ptyRoot
 try {
   npm init -y | Out-Host
   npm install "@lydell/node-pty@1.2.0-beta.12" | Out-Host
-  node (Join-Path $PSScriptRoot "repro-windows-opentui-pty-session.mjs") -- --exe $exe --project $sessionProject --version $Version --seconds $PtySeconds --scenario text
-  node (Join-Path $PSScriptRoot "repro-windows-opentui-pty-session.mjs") -- --exe $exe --project $sessionProject --version $Version --seconds $PtySeconds --scenario markdown
-  node (Join-Path $PSScriptRoot "repro-windows-opentui-pty-session.mjs") -- --exe $exe --project $sessionProject --version $Version --seconds $PtySeconds --scenario bash-auto
-  node (Join-Path $PSScriptRoot "repro-windows-opentui-pty-session.mjs") -- --exe $exe --project $sessionProject --version $Version --seconds $PtySeconds --scenario bash-permission
-  node (Join-Path $PSScriptRoot "repro-windows-opentui-pty-session.mjs") -- --exe $exe --project $sessionProject --version $Version --seconds $PtySeconds --scenario task-permission
-  node (Join-Path $PSScriptRoot "repro-windows-opentui-pty-session.mjs") -- --exe $exe --project $sessionProject --version $Version --seconds $PtySeconds --scenario mcp-npx
+  Invoke-PtyScenario -Scenario "text" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
+  Invoke-PtyScenario -Scenario "markdown" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
+  Invoke-PtyScenario -Scenario "bash-auto" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
+  Invoke-PtyScenario -Scenario "bash-permission" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
+  Invoke-PtyScenario -Scenario "task-permission" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
+  Invoke-PtyScenario -Scenario "mcp-npx" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
   if ($Version -eq "1.17.10") {
-    node (Join-Path $PSScriptRoot "repro-windows-opentui-pty-session.mjs") -- --exe $exe --project $sessionProject --version $Version --seconds $PtySeconds --scenario mcp-npx-no-native-render
+    Invoke-PtyScenario -Scenario "mcp-npx-no-native-render" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
   }
 } finally {
   Pop-Location

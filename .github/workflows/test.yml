@@ -193,3 +193,16 @@ jobs:
       - name: Run Windows standalone repro
         timeout-minutes: 15
         run: ./script/repro-windows-opentui-crash.ps1 -Version "${{ matrix.version }}"
+
+      - name: Upload Windows repro artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-opentui-repro-${{ matrix.version }}-${{ matrix.host }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/opencode-windows-opentui-${{ matrix.version }}/**/*.log
+            ${{ runner.temp }}/opencode-windows-opentui-${{ matrix.version }}/**/*.jsonl
+            ${{ runner.temp }}/*.out.log
+            ${{ runner.temp }}/*.err.log
