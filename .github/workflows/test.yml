@@ -160,12 +160,22 @@ jobs:
 
   windows-opentui-repro:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.windows_opentui_repro == true }}
-    name: windows opentui repro (${{ matrix.version }})
+    name: windows opentui repro (${{ matrix.version }}, ${{ matrix.host }})
     strategy:
       fail-fast: false
       matrix:
-        version: ["1.17.9", "1.17.10", "1.17.11"]
-    runs-on: blacksmith-4vcpu-windows-2025
+        include:
+          - version: "1.17.9"
+            host: windows-latest
+          - version: "1.17.10"
+            host: windows-latest
+          - version: "1.17.11"
+            host: windows-latest
+          - version: "1.17.10"
+            host: windows-2022
+          - version: "1.17.10"
+            host: blacksmith-4vcpu-windows-2025
+    runs-on: ${{ matrix.host }}
     defaults:
       run:
         shell: pwsh
