@@ -763,7 +763,7 @@ const resolveFileAttachment = Effect.fn("Session.resolveFileAttachment")(functio
     const entries = listed.value
     const visible = entries
       .slice(0, MAX_DIRECTORY_ENTRIES)
-      .map((entry) => `${entry.path}${entry.type === "directory" ? "/" : ""}`)
+      .map((entry) => `${entry.path.replaceAll("\\", "/").replace(/\/+$/, "")}${entry.type === "directory" ? "/" : ""}`)
       .join("\n")
     return {
       file: {
