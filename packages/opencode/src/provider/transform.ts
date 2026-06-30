@@ -577,14 +577,6 @@ function googleThinkingLevelVariants() {
   )
 }
 
-function googleThinkingBudgetVariants(budget: ReasoningBudgetOption, model: Provider.Model) {
-  return reasoningBudgetVariants(
-    budget,
-    (thinkingBudget) => ({ thinkingConfig: { includeThoughts: true, thinkingBudget } }),
-    model.limit.output,
-  )
-}
-
 function openAIReasoningEffortVariants() {
   return Object.fromEntries(
     OPENAI_EFFORTS.map((effort) => [
@@ -621,25 +613,6 @@ function reasoningBudgetVariants(
     high: make(Math.max(min, Math.min(16_000, max))),
     max: make(max),
   }
-}
-
-function gemini25BudgetVariants(model: Provider.Model, budget: ReasoningBudgetOption) {
-  // Gemini 2.5 uses numeric thinking budgets in the Google SDK; thinkingLevel is for Gemini 3.
-  if (!idIncludes(model, "gemini-2.5") && !idIncludes(model, "gemini-2-5")) return undefined
-
-  switch (model.api.npm) {
-    case "@ai-sdk/gateway":
-      if (idIncludes(model, "google")) return googleThinkingBudgetVariants(budget, model)
-      return undefined
-
-    case "@ai-sdk/google":
-    case "@ai-sdk/google-vertex":
-      return googleThinkingBudgetVariants(budget, model)
-
-    case "@jerome-benoit/sap-ai-provider-v2":
-      return wrapInSapModelParams(googleThinkingBudgetVariants(budget, model))
-  }
-  return undefined
 }
 
 function anthropicAdaptiveFromOptions(effort: ReasoningEffortOption) {
@@ -759,8 +732,6 @@ function reasoningOptionVariants(model: Provider.Model): Record<string, Record<s
   if (!model.reasoning_options) return undefined
   const effort = reasoningOption(model, "effort")
   const budget = reasoningOption(model, "budget_tokens")
-  const gemini25Budget = budget ? gemini25BudgetVariants(model, budget) : undefined
-  if (gemini25Budget) return gemini25Budget
 
   if (effort) {
     return Object.fromEntries(
@@ -792,7 +763,11 @@ function reasoningOptionVariants(model: Provider.Model): Record<string, Record<s
         )
       }
       if (idIncludes(model, "google")) {
-        return googleThinkingBudgetVariants(budget, model)
+        return reasoningBudgetVariants(
+          budget,
+          (thinkingBudget) => ({ thinkingConfig: { includeThoughts: true, thinkingBudget } }),
+          model.limit.output,
+        )
       }
       break
 
@@ -812,7 +787,11 @@ function reasoningOptionVariants(model: Provider.Model): Record<string, Record<s
 
     case "@ai-sdk/google":
     case "@ai-sdk/google-vertex":
-      return googleThinkingBudgetVariants(budget, model)
+      return reasoningBudgetVariants(
+        budget,
+        (thinkingBudget) => ({ thinkingConfig: { includeThoughts: true, thinkingBudget } }),
+        model.limit.output,
+      )
 
     case "@jerome-benoit/sap-ai-provider-v2":
       if (model.api.id.includes("anthropic")) {
