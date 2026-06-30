@@ -181,5 +181,5 @@ jobs:
           node-version: "24.11.1"
 
       - name: Run Windows standalone repro
-        timeout-minutes: 12
+        timeout-minutes: 15
         run: ./script/repro-windows-opentui-crash.ps1 -Version "${{ matrix.version }}"

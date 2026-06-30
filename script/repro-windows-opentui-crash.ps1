@@ -1,9 +1,10 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$Version,
-  [int]$McpLoops = 8,
-  [int]$McpServers = 80,
-  [int]$StartupSeconds = 130
+  [int]$McpLoops = 0,
+  [int]$McpServers = 20,
+  [int]$StartupSeconds = 20,
+  [int]$PtySeconds = 120
 )
 
 $ErrorActionPreference = "Stop"
@@ -134,7 +135,8 @@ New-Item -ItemType Directory -Force $env:XDG_CONFIG_HOME, $env:XDG_DATA_HOME, $e
 
 $emptyProject = Join-Path $root "empty-project"
 $mcpProject = Join-Path $root "mcp-project"
-New-Item -ItemType Directory -Force $emptyProject, $mcpProject | Out-Null
+$sessionProject = Join-Path $root "session-project"
+New-Item -ItemType Directory -Force $emptyProject, $mcpProject, $sessionProject | Out-Null
 
 Invoke-Opencode -Label "version" -Exe $exe -Args @("--version") -WorkingDirectory $emptyProject -TimeoutSeconds 30
 Invoke-Opencode -Label "help" -Exe $exe -Args @("--help") -WorkingDirectory $emptyProject -TimeoutSeconds 30
@@ -161,9 +163,18 @@ for ($i = 1; $i -le $McpLoops; $i++) {
 }
 
 Invoke-Opencode -Label "empty-startup-tui" -Exe $exe -Args @() -WorkingDirectory $emptyProject -TimeoutSeconds $StartupSeconds -AllowTimeout -AllowNonZero
-Invoke-Opencode -Label "mini-demo-question" -Exe $exe -Args @("--mini", "--demo", "--prompt", "/question single") -WorkingDirectory $emptyProject -TimeoutSeconds 30 -AllowTimeout -AllowNonZero
-Invoke-Opencode -Label "mini-demo-permission" -Exe $exe -Args @("--mini", "--demo", "--prompt", "/permission bash") -WorkingDirectory $emptyProject -TimeoutSeconds 30 -AllowTimeout -AllowNonZero
-Invoke-Opencode -Label "mini-demo-mix" -Exe $exe -Args @("--mini", "--demo", "--prompt", "/fmt mix") -WorkingDirectory $emptyProject -TimeoutSeconds 30 -AllowTimeout -AllowNonZero
+
+Write-Section "Install PTY dependency"
+$ptyRoot = Join-Path $root "pty-harness"
+New-Item -ItemType Directory -Force $ptyRoot | Out-Null
+Push-Location $ptyRoot
+try {
+  npm init -y | Out-Host
+  npm install "@lydell/node-pty@1.2.0-beta.12" | Out-Host
+  node (Join-Path $PSScriptRoot "repro-windows-opentui-pty-session.mjs") -- --exe $exe --project $sessionProject --version $Version --seconds $PtySeconds
+} finally {
+  Pop-Location
+}
 
 Write-Section "Result"
 Write-Host "No native crash signature detected for opencode-ai@$Version"
