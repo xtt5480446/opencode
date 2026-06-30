@@ -590,6 +590,10 @@ function openAIReasoningEffortVariants() {
   )
 }
 
+function openAICompatibleReasoningEffortVariants() {
+  return Object.fromEntries(OPENAI_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
+}
+
 type ReasoningOption = NonNullable<Provider.Model["reasoning_options"]>[number]
 type ReasoningEffortOption = Extract<ReasoningOption, { type: "effort" }>
 type ReasoningBudgetOption = Extract<ReasoningOption, { type: "budget_tokens" }>
@@ -828,6 +832,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       return Object.fromEntries(WIDELY_SUPPORTED_EFFORTS.map((effort) => [effort, { reasoning: { effort } }]))
 
     case "ai-gateway-provider":
+      if (idIncludes(model, "openai")) return openAICompatibleReasoningEffortVariants()
       return Object.fromEntries(WIDELY_SUPPORTED_EFFORTS.map((effort) => [effort, { reasoningEffort: effort }]))
 
     case "@ai-sdk/gateway":

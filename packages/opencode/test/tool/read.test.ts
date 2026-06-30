@@ -316,9 +316,7 @@ describe("tool.read truncation", () => {
   it.instance("truncates large file by bytes and sets truncated metadata", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
-      const base = yield* load(path.join(FIXTURES_DIR, "models-api.json"))
-      const target = 60 * 1024
-      const content = base.length >= target ? base : base.repeat(Math.ceil(target / base.length))
+      const content = `${"x".repeat(80)}\n`.repeat(1_000)
       yield* put(path.join(test.directory, "large.json"), content)
 
       const result = yield* run({ filePath: path.join(test.directory, "large.json") })

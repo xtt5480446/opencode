@@ -3881,12 +3881,15 @@ describe("ProviderTransform.variants", () => {
         release_date: releaseDate,
       })
 
-    test("falls back to widely-supported OAI efforts", () => {
+    test("OpenAI upstreams fall back to broad OAI efforts", () => {
       const result = ProviderTransform.variants(cfModel("openai/gpt-future", "2026-03-05"))
       expect(result).toEqual({
+        none: { reasoningEffort: "none" },
+        minimal: { reasoningEffort: "minimal" },
         low: { reasoningEffort: "low" },
         medium: { reasoningEffort: "medium" },
         high: { reasoningEffort: "high" },
+        xhigh: { reasoningEffort: "xhigh" },
       })
     })
 
