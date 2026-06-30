@@ -648,6 +648,7 @@ export type Prompt = {
   text: string
   files?: Array<PromptFileAttachment>
   agents?: Array<PromptAgentAttachment>
+  system?: string
 }
 
 export type Pty = {
@@ -2775,6 +2776,7 @@ export type PromptInput = {
   text: string
   files?: Array<PromptInputFileAttachment>
   agents?: Array<PromptAgentAttachment>
+  system?: string
 }
 
 export type ConflictError = {
@@ -2845,12 +2847,6 @@ export type SessionMessagesResponse = {
   cursor: {
     previous?: string
     next?: string
-  }
-}
-
-export type GenerateTextResponse = {
-  data: {
-    text: string
   }
 }
 
@@ -4118,6 +4114,7 @@ export type SessionMessageUser = {
   text: string
   files?: Array<PromptFileAttachment>
   agents?: Array<PromptAgentAttachment>
+  system?: string
   type: "user"
 }
 
@@ -12423,47 +12420,6 @@ export type V2ModelListResponses = {
 }
 
 export type V2ModelListResponse = V2ModelListResponses[keyof V2ModelListResponses]
-
-export type V2GenerateTextData = {
-  body: {
-    prompt: string
-    model?: ModelRef
-  }
-  path?: never
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/generate"
-}
-
-export type V2GenerateTextErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-  /**
-   * ServiceUnavailableError
-   */
-  503: ServiceUnavailableError
-}
-
-export type V2GenerateTextError = V2GenerateTextErrors[keyof V2GenerateTextErrors]
-
-export type V2GenerateTextResponses = {
-  /**
-   * GenerateTextResponse
-   */
-  200: GenerateTextResponse
-}
-
-export type V2GenerateTextResponse = V2GenerateTextResponses[keyof V2GenerateTextResponses]
 
 export type V2ProviderListData = {
   body?: never
