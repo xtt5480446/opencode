@@ -65,11 +65,12 @@ export function foregroundSubagentCount(input: {
       .map((session) => session.id),
   )
 
-  const runningSessionTitles = new Set(
-    input.sessions
-      .filter((session) => runningSessionIDs.has(session.id) && session.title)
-      .map((session) => session.title),
-  )
+  const runningSessionTitleCounts = input.sessions
+    .filter((session) => runningSessionIDs.has(session.id) && session.title)
+    .reduce((counts, session) => {
+      if (!session.title) return counts
+      return counts.set(session.title, (counts.get(session.title) ?? 0) + 1)
+    }, new Map<string, number>())
 
   const runningRows = input.messages.flatMap((message) =>
     message.type === "assistant"
@@ -91,16 +92,20 @@ export function foregroundSubagentCount(input: {
     }),
   )
 
-  const anonymousRunningRows = runningRows.filter((part) => {
-    if (subagentSessionID(part.state?.structured ?? {})) return false
+  const anonymousRunningRows = runningRows.filter((part) => !subagentSessionID(part.state?.structured ?? {}))
+  const matchedAnonymousRows = anonymousRunningRows.filter((part) => {
     const input = part.state?.input
-    if (typeof input !== "object" || input === null || Array.isArray(input) || !("description" in input)) return true
-    return typeof input.description === "string" ? !runningSessionTitles.has(input.description) : true
+    if (typeof input !== "object" || input === null || Array.isArray(input) || !("description" in input)) return false
+    if (typeof input.description !== "string") return false
+    const remaining = runningSessionTitleCounts.get(input.description) ?? 0
+    if (remaining <= 0) return false
+    runningSessionTitleCounts.set(input.description, remaining - 1)
+    return true
   }).length
 
   const runningSessions = [...runningSessionIDs].filter((session) => !runningRowSessionIDs.has(session)).length
 
-  return runningSessions + runningRowSessionIDs.size + anonymousRunningRows
+  return runningSessions + runningRowSessionIDs.size + anonymousRunningRows.length - matchedAnonymousRows
 }
 
 export function subagentDisplayState(input: SubagentDisplayStateInput) {
@@ -111,7 +116,7 @@ export function subagentDisplayState(input: SubagentDisplayStateInput) {
   return {
     background,
     running,
-    icon: running ? "│" : "✓",
+    icon: running ? "│" : input.toolStatus === "completed" ? "✓" : "│",
   }
 }
 

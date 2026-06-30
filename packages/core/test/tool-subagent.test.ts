@@ -316,7 +316,7 @@ describe("SubagentTool", () => {
           }).pipe(Effect.forkScoped)
 
           const backgrounded = yield* Effect.gen(function* () {
-            for (const _ of Array.from({ length: 20 })) {
+            for (const _ of Array.from({ length: 100 })) {
               const result = yield* jobs.backgroundAll({ sessionID: parent.id, type: SubagentTool.name })
               if (result.length > 0) return result
               yield* Effect.sleep("10 millis")

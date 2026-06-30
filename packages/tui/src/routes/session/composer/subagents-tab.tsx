@@ -7,6 +7,7 @@ import { useTheme, selectedForeground } from "../../../context/theme"
 import { Locale } from "../../../util/locale"
 import { useBindings, useCommandShortcut } from "../../../keymap"
 import { useComposerTab } from "./index"
+import { useTuiConfig } from "../../../config"
 
 interface SubagentEntry {
   sessionID: string
@@ -23,6 +24,7 @@ export function SubagentsTab(props: { sessionID: string }) {
   const { theme } = useTheme()
   const fg = selectedForeground(theme)
   const composer = useComposerTab()
+  const tuiConfig = useTuiConfig()
   const interruptHint = useCommandShortcut("composer.subagent.interrupt")
 
   const session = createMemo(() => data.session.get(props.sessionID))
@@ -175,6 +177,7 @@ export function SubagentsTab(props: { sessionID: string }) {
       { key: "down", desc: "Next subagent", group: "Subagents", cmd: "composer.subagent.down" },
       { key: "return", desc: "Navigate to subagent", group: "Subagents", cmd: "composer.subagent.select" },
       { key: "ctrl+d", desc: "Interrupt subagent", group: "Subagents", cmd: "composer.subagent.interrupt" },
+      ...tuiConfig.keybinds.gather("session.background", ["session.background"] as const),
     ],
   }))
 

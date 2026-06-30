@@ -65,6 +65,33 @@ describe("foregroundSubagentCount", () => {
     ).toBe(2)
   })
 
+  test("does not undercount duplicate descriptions when only one child session is synced", () => {
+    expect(
+      foregroundSubagentCount({
+        sessionID: "parent",
+        sessions: [{ id: "child-1", parentID: "parent", title: "Same task" }],
+        messages: [
+          {
+            type: "assistant",
+            content: [
+              {
+                type: "tool",
+                name: "subagent",
+                state: { status: "running", input: { description: "Same task" }, structured: {} },
+              },
+              {
+                type: "tool",
+                name: "subagent",
+                state: { status: "running", input: { description: "Same task" }, structured: {} },
+              },
+            ],
+          },
+        ],
+        status: () => "running",
+      }),
+    ).toBe(2)
+  })
+
   test("counts running child sessions", () => {
     expect(
       foregroundSubagentCount({
@@ -138,13 +165,23 @@ describe("subagentDisplayState", () => {
     ).toEqual({ background: true, running: false, icon: "✓" })
   })
 
-  test("does not spin forever from stale background metadata when the child session is unknown", () => {
+  test("does not spin forever from stale background metadata without a child session ID", () => {
     expect(
       subagentDisplayState({
         toolStatus: "completed",
-        metadata: { sessionID: "child", status: "running", background: true },
+        metadata: { status: "running", background: true },
         sessionStatus: () => "idle",
       }),
     ).toEqual({ background: true, running: false, icon: "✓" })
+  })
+
+  test("does not show a checkmark for errored subagent rows", () => {
+    expect(
+      subagentDisplayState({
+        toolStatus: "error",
+        metadata: { background: true },
+        sessionStatus: () => "idle",
+      }),
+    ).toEqual({ background: true, running: false, icon: "│" })
   })
 })

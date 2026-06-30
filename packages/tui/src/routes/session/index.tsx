@@ -254,6 +254,13 @@ export function Session() {
   )
 
   createEffect(
+    on(backgroundSessionID, (sessionID) => {
+      if (sessionID === route.sessionID) return
+      void data.session.message.refresh(sessionID)
+    }),
+  )
+
+  createEffect(
     on(descendantSessionIDs, (sessionIDs) => {
       void Promise.all(sessionIDs.map((sessionID) => data.session.permission.refresh(sessionID)))
     }),
@@ -904,12 +911,6 @@ export function Session() {
     enabled: () =>
       foregroundSubagents() > 0 &&
       (renderer.currentFocusedEditor === null || (prompt?.focused === true && prompt.current.input === "")),
-    bindings: tuiConfig.keybinds.gather("session.background", sessionBackgroundBindingCommands),
-  }))
-
-  useBindings(() => ({
-    mode: "composer",
-    enabled: () => foregroundSubagents() > 0 && composer.open,
     bindings: tuiConfig.keybinds.gather("session.background", sessionBackgroundBindingCommands),
   }))
 
