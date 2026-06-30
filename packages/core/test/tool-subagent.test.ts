@@ -303,6 +303,7 @@ describe("SubagentTool", () => {
           yield* withSubagent(parent.location)
           const locations = yield* LocationServiceMap.Service
           const registry = yield* ToolRegistry.Service.pipe(Effect.provide(locations.get(parent.location)))
+          yield* waitForTool(registry, SubagentTool.name)
 
           const settled = yield* settleTool(registry, {
             sessionID: parent.id,
