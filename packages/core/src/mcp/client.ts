@@ -13,7 +13,6 @@ import {
   ListToolsResultSchema,
   type LoggingMessageNotification,
   LoggingMessageNotificationSchema,
-  ResourceListChangedNotificationSchema,
   ToolListChangedNotificationSchema,
   ToolSchema,
 } from "@modelcontextprotocol/sdk/types.js"
@@ -107,8 +106,6 @@ export interface Connection {
   readonly onLog: (callback: (message: LogMessage) => void) => void
   /** Registers a callback fired when the server announces its tool list changed; no-op if unsupported. */
   readonly onToolsChanged: (callback: () => void) => void
-  /** Registers a callback fired when the server announces its resource list changed; no-op if unsupported. */
-  readonly onResourcesChanged: (callback: () => void) => void
 }
 
 /** Connects an MCP server; closing the calling scope tears down the transport and any spawned process. */
@@ -269,10 +266,6 @@ export const connect = Effect.fnUntraced(function* (
       onToolsChanged: (callback) => {
         if (!client.getServerCapabilities()?.tools?.listChanged) return
         client.setNotificationHandler(ToolListChangedNotificationSchema, async () => callback())
-      },
-      onResourcesChanged: (callback) => {
-        if (!client.getServerCapabilities()?.resources?.listChanged) return
-        client.setNotificationHandler(ResourceListChangedNotificationSchema, async () => callback())
       },
     } satisfies Connection
   }

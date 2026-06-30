@@ -80,7 +80,6 @@ export type Event =
   | EventTuiToastShow2
   | EventTuiSessionSelect2
   | EventMcpToolsChanged
-  | EventMcpResourcesChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
   | EventProjectUpdated
@@ -1510,13 +1509,6 @@ export type GlobalEvent = {
     | {
         id: string
         type: "mcp.tools.changed"
-        properties: {
-          server: string
-        }
-      }
-    | {
-        id: string
-        type: "mcp.resources.changed"
         properties: {
           server: string
         }
@@ -3007,7 +2999,6 @@ export type V2Event =
   | TuiToastShow
   | TuiSessionSelect
   | McpToolsChanged
-  | McpResourcesChanged
   | McpBrowserOpenFailed
   | CommandExecuted
   | ProjectUpdated
@@ -6045,23 +6036,6 @@ export type McpToolsChanged = {
   }
 }
 
-export type McpResourcesChanged = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "mcp.resources.changed"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    server: string
-  }
-}
-
 export type McpBrowserOpenFailed = {
   id: string
   metadata?: {
@@ -7138,14 +7112,6 @@ export type EventPermissionReplied = {
 export type EventMcpToolsChanged = {
   id: string
   type: "mcp.tools.changed"
-  properties: {
-    server: string
-  }
-}
-
-export type EventMcpResourcesChanged = {
-  id: string
-  type: "mcp.resources.changed"
   properties: {
     server: string
   }

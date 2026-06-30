@@ -10,13 +10,6 @@ export const ToolsChanged = Event.define({
   },
 })
 
-export const ResourcesChanged = Event.define({
-  type: "mcp.resources.changed",
-  schema: {
-    server: Schema.String,
-  },
-})
-
 export const BrowserOpenFailed = Event.define({
   type: "mcp.browser.open.failed",
   schema: {
@@ -25,4 +18,4 @@ export const BrowserOpenFailed = Event.define({
   },
 })
 
-export const Definitions = Event.inventory(ToolsChanged, ResourcesChanged, BrowserOpenFailed)
+export const Definitions = Event.inventory(ToolsChanged, BrowserOpenFailed)
