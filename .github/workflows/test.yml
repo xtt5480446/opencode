@@ -170,6 +170,11 @@ jobs:
             name: baseline
             markdownLoops: 1
             onlyMarkdown: false
+          - version: "1.17.9"
+            host: windows-latest
+            name: markdown-stress
+            markdownLoops: 10
+            onlyMarkdown: true
           - version: "1.17.10"
             host: windows-latest
             name: baseline
@@ -185,6 +190,11 @@ jobs:
             name: baseline
             markdownLoops: 1
             onlyMarkdown: false
+          - version: "1.17.11"
+            host: windows-latest
+            name: markdown-stress
+            markdownLoops: 10
+            onlyMarkdown: true
           - version: "1.17.10"
             host: windows-2022
             name: baseline
