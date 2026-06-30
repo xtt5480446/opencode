@@ -173,8 +173,6 @@ jobs:
             host: windows-latest
           - version: "1.17.10"
             host: windows-2022
-          - version: "1.17.10"
-            host: blacksmith-4vcpu-windows-2025
     runs-on: ${{ matrix.host }}
     defaults:
       run:

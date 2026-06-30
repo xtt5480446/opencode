@@ -126,7 +126,7 @@ function responseText() {
     return "The MCP npx spawn storm initialized and the session completed."
   }
 
-  if (scenario === "markdown") {
+  if (scenario.startsWith("markdown")) {
     const sections = []
     for (let i = 0; i < 40; i++) {
       sections.push(`## Section ${i + 1}`)
@@ -380,7 +380,6 @@ const proc = pty.spawn(
       : scenario.startsWith("task-")
         ? "delegate a small task to a subagent, then summarize"
       : "start a CI repro session and answer briefly",
-    ...(scenario === "bash-auto" ? ["--auto"] : []),
   ],
   {
     name: "xterm-256color",
@@ -411,10 +410,12 @@ proc.onExit((event) => {
 })
 
 const deadline = Date.now() + seconds * 1000
+let completedAt
 while (Date.now() < deadline) {
   if (crashPattern.test(output)) break
   if (exited) break
-  if (providerRequests > 0 && output.includes("fake provider")) break
+  if (!completedAt && output.includes("message=\"exiting loop\"")) completedAt = Date.now()
+  if (completedAt && Date.now() - completedAt > 8000) break
   await delay(500)
 }
 

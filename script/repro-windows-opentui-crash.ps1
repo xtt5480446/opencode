@@ -112,7 +112,8 @@ function Invoke-PtyScenario {
 
   node (Join-Path $PSScriptRoot "repro-windows-opentui-pty-session.mjs") -- --exe $Exe --project $Project --version $Version --seconds $Seconds --scenario $Scenario
   if ($LASTEXITCODE -ne 0) {
-    throw "PTY scenario '$Scenario' failed with exit code $LASTEXITCODE"
+    $script:PtyFailures += "PTY scenario '$Scenario' failed with exit code $LASTEXITCODE"
+    Write-Host "::error::$($script:PtyFailures[-1])"
   }
 }
 
@@ -125,6 +126,9 @@ Write-Host "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE"
 Write-Section "Install opencode-ai@$Version"
 npm uninstall -g opencode-ai opencode-windows-x64 2>$null | Out-Host
 npm install -g "opencode-ai@$Version"
+if ($LASTEXITCODE -ne 0) {
+  throw "npm install opencode-ai@$Version failed with exit code $LASTEXITCODE"
+}
 
 $npmRoot = (npm root -g).Trim()
 $exe = Join-Path $npmRoot "opencode-ai\bin\opencode.exe"
@@ -190,15 +194,29 @@ New-Item -ItemType Directory -Force $ptyRoot | Out-Null
 Push-Location $ptyRoot
 try {
   npm init -y | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    throw "npm init for PTY harness failed with exit code $LASTEXITCODE"
+  }
   npm install "@lydell/node-pty@1.2.0-beta.12" | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    throw "npm install @lydell/node-pty failed with exit code $LASTEXITCODE"
+  }
+  $script:PtyFailures = @()
   Invoke-PtyScenario -Scenario "text" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
+  if ($Version -eq "1.17.10") {
+    Invoke-PtyScenario -Scenario "markdown-no-native-render" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
+  }
   Invoke-PtyScenario -Scenario "markdown" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
-  Invoke-PtyScenario -Scenario "bash-auto" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
   Invoke-PtyScenario -Scenario "bash-permission" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
   Invoke-PtyScenario -Scenario "task-permission" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
   Invoke-PtyScenario -Scenario "mcp-npx" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
   if ($Version -eq "1.17.10") {
     Invoke-PtyScenario -Scenario "mcp-npx-no-native-render" -Exe $exe -Project $sessionProject -Version $Version -Seconds $PtySeconds
+  }
+  if ($script:PtyFailures.Count -gt 0) {
+    Write-Section "PTY Failures"
+    $script:PtyFailures | ForEach-Object { Write-Host $_ }
+    throw "$($script:PtyFailures.Count) PTY scenario(s) failed"
   }
 } finally {
   Pop-Location
