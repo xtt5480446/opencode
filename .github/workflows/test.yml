@@ -208,9 +208,12 @@ jobs:
       - name: Run Windows standalone repro
         timeout-minutes: 30
         run: |
-          $reproArgs = @("-Version", "${{ matrix.version }}", "-MarkdownLoops", "${{ matrix.markdownLoops }}")
+          $reproArgs = @{
+            Version = "${{ matrix.version }}"
+            MarkdownLoops = ${{ matrix.markdownLoops }}
+          }
           if ("${{ matrix.onlyMarkdown }}" -eq "true") {
-            $reproArgs += "-OnlyMarkdown"
+            $reproArgs.OnlyMarkdown = $true
           }
           ./script/repro-windows-opentui-crash.ps1 @reproArgs
 
