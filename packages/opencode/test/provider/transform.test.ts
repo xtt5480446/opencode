@@ -3067,6 +3067,25 @@ describe("ProviderTransform.variants", () => {
     })
   })
 
+  test("mistral reasoning_options drive supported effort variants", () => {
+    const result = ProviderTransform.variants(
+      createMockModel({
+        id: "mistral/mistral-small-2603",
+        providerID: "mistral",
+        api: {
+          id: "mistral-small-2603",
+          url: "https://api.mistral.com",
+          npm: "@ai-sdk/mistral",
+        },
+        reasoning_options: [{ type: "effort", values: ["none", "high"] }],
+      }),
+    )
+    expect(result).toEqual({
+      none: { reasoningEffort: "none" },
+      high: { reasoningEffort: "high" },
+    })
+  })
+
   test("mistral without reasoning returns empty object", () => {
     const model = createMockModel({
       id: "mistral/mistral-large",

@@ -722,6 +722,7 @@ function effortVariant(model: Provider.Model, effort: ReasoningEffortValue) {
     case "venice-ai-sdk-provider":
     case "@ai-sdk/openai-compatible":
     case "@ai-sdk/groq":
+    case "@ai-sdk/mistral":
       return { reasoningEffort: effort }
   }
   return undefined
