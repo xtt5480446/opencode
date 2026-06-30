@@ -645,7 +645,7 @@ function effortVariant(model: Provider.Model, effort: ReasoningEffortValue) {
         }
         return { effort }
       }
-      if (idIncludes(model, "google")) return { includeThoughts: true, thinkingLevel: effort }
+      if (idIncludes(model, "google")) return { thinkingConfig: { includeThoughts: true, thinkingLevel: effort } }
       return { reasoningEffort: effort }
 
     case "@ai-sdk/anthropic":

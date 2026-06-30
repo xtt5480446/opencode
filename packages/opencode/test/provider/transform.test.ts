@@ -3188,6 +3188,24 @@ describe("ProviderTransform.variants", () => {
       expect(result.high).toEqual({ thinkingConfig: { includeThoughts: true, thinkingBudget: 16_000 } })
       expect(result.max).toEqual({ thinkingConfig: { includeThoughts: true, thinkingBudget: 32_768 } })
     })
+
+    test("uses reasoning_options effort for Google thinkingConfig variants", () => {
+      const result = ProviderTransform.variants(
+        createMockModel({
+          id: "google/gemini-3.1-pro-preview",
+          providerID: "gateway",
+          api: {
+            id: "google/gemini-3.1-pro-preview",
+            url: "https://gateway.ai",
+            npm: "@ai-sdk/gateway",
+          },
+          reasoning_options: [{ type: "effort", values: ["low", "high"] }],
+        }),
+      )
+      expect(Object.keys(result)).toEqual(["low", "high"])
+      expect(result.low).toEqual({ thinkingConfig: { includeThoughts: true, thinkingLevel: "low" } })
+      expect(result.high).toEqual({ thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } })
+    })
   })
 
   describe("@ai-sdk/github-copilot", () => {
