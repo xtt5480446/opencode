@@ -11,7 +11,9 @@ import { SessionMessage } from "../message"
 import type { FileAttachment } from "../prompt"
 
 const media = (file: FileAttachment): ContentPart[] => {
-  if (file.mime === "text/plain" || file.mime === "application/x-directory") return []
+  if (file.mime === "text/plain" || file.mime === "application/x-directory") {
+    return file.description ? [{ type: "text", text: file.description }] : []
+  }
   if (!file.mime.startsWith("image/") && file.mime !== "application/pdf") return []
   return [
     {
@@ -19,7 +21,6 @@ const media = (file: FileAttachment): ContentPart[] => {
       mediaType: file.mime,
       data: file.uri,
       filename: file.name,
-      metadata: file.description === undefined ? undefined : { description: file.description },
     },
   ]
 }

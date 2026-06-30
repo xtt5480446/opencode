@@ -676,16 +676,22 @@ function resolveInlineFileAttachment(file: PromptInput.FileAttachment) {
   if (mime) {
     if (textMime(mime)) {
       return {
-        file: { ...file, mime },
-        text: formatAttachmentText({ name: file.name, uri: file.uri, text: decodeDataText(file.uri) }),
+        file: {
+          ...file,
+          mime,
+          description: formatAttachmentText({ name: file.name, uri: file.uri, text: decodeDataText(file.uri) }),
+        },
       }
     }
     return { file: { ...file, mime } }
   }
   if (!URL.canParse(file.uri)) {
     return {
-      file: { ...file, mime: "application/octet-stream" },
-      text: attachmentError({ name: file.name, uri: file.uri, message: "unsupported attachment URI" }),
+      file: {
+        ...file,
+        mime: "application/octet-stream",
+        description: attachmentError({ name: file.name, uri: file.uri, message: "unsupported attachment URI" }),
+      },
     }
   }
   const url = new URL(file.uri)
@@ -696,7 +702,7 @@ function resolveInlineFileAttachment(file: PromptInput.FileAttachment) {
 function resolveInlinePrompt(input: PromptInput.Prompt) {
   const files = (input.files ?? []).map(resolveInlineFileAttachment)
   return Prompt.make({
-    text: [input.text, ...files.flatMap((file) => (file.text ? [file.text] : []))].filter(Boolean).join("\n\n"),
+    text: input.text,
     agents: input.agents,
     files: files.map((file) => file.file),
   })
@@ -707,8 +713,11 @@ const resolveFileAttachment = Effect.fn("Session.resolveFileAttachment")(functio
   if (mime) {
     if (textMime(mime)) {
       return {
-        file: { ...file, mime },
-        text: formatAttachmentText({ name: file.name, uri: file.uri, text: decodeDataText(file.uri) }),
+        file: {
+          ...file,
+          mime,
+          description: formatAttachmentText({ name: file.name, uri: file.uri, text: decodeDataText(file.uri) }),
+        },
       }
     }
     return { file: { ...file, mime } }
@@ -716,8 +725,11 @@ const resolveFileAttachment = Effect.fn("Session.resolveFileAttachment")(functio
 
   if (!URL.canParse(file.uri)) {
     return {
-      file: { ...file, mime: "application/octet-stream" },
-      text: attachmentError({ name: file.name, uri: file.uri, message: "unsupported attachment URI" }),
+      file: {
+        ...file,
+        mime: "application/octet-stream",
+        description: attachmentError({ name: file.name, uri: file.uri, message: "unsupported attachment URI" }),
+      },
     }
   }
 
@@ -733,12 +745,15 @@ const resolveFileAttachment = Effect.fn("Session.resolveFileAttachment")(functio
   const relative = path.relative(location.directory, filepath)
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return {
-      file: { ...file, mime: FSUtil.mimeType(filepath) },
-      text: attachmentError({
-        name: file.name ?? filepath,
-        uri: file.uri,
-        message: "file is outside the session location",
-      }),
+      file: {
+        ...file,
+        mime: FSUtil.mimeType(filepath),
+        description: attachmentError({
+          name: file.name ?? filepath,
+          uri: file.uri,
+          message: "file is outside the session location",
+        }),
+      },
     }
   }
 
@@ -751,21 +766,27 @@ const resolveFileAttachment = Effect.fn("Session.resolveFileAttachment")(functio
       .map((entry) => `${entry.path}${entry.type === "directory" ? "/" : ""}`)
       .join("\n")
     return {
-      file: { ...file, mime: "application/x-directory" },
-      text: formatAttachmentText({
-        name: file.name ?? filepath,
-        uri: file.uri,
-        text: visible || "[Directory is empty]",
-        truncated: entries.length > MAX_DIRECTORY_ENTRIES,
-      }),
+      file: {
+        ...file,
+        mime: "application/x-directory",
+        description: formatAttachmentText({
+          name: file.name ?? filepath,
+          uri: file.uri,
+          text: visible || "[Directory is empty]",
+          truncated: entries.length > MAX_DIRECTORY_ENTRIES,
+        }),
+      },
     }
   }
 
   const read = yield* filesystem.read({ path: target }).pipe(Effect.exit)
   if (Exit.isFailure(read)) {
     return {
-      file: { ...file, mime: FSUtil.mimeType(filepath) },
-      text: attachmentError({ name: file.name ?? filepath, uri: file.uri, message: "file not found" }),
+      file: {
+        ...file,
+        mime: FSUtil.mimeType(filepath),
+        description: attachmentError({ name: file.name ?? filepath, uri: file.uri, message: "file not found" }),
+      },
     }
   }
   const content = read.value
@@ -774,8 +795,11 @@ const resolveFileAttachment = Effect.fn("Session.resolveFileAttachment")(functio
     const selected = selectedLines(Buffer.from(content.content).toString("utf8"), url)
     const truncated = truncateAttachmentText(selected.text, selected.truncated)
     return {
-      file: { ...file, mime: "text/plain" },
-      text: formatAttachmentText({ name: file.name ?? filepath, uri: file.uri, ...truncated }),
+      file: {
+        ...file,
+        mime: "text/plain",
+        description: formatAttachmentText({ name: file.name ?? filepath, uri: file.uri, ...truncated }),
+      },
     }
   }
 
@@ -790,19 +814,22 @@ const resolveFileAttachment = Effect.fn("Session.resolveFileAttachment")(functio
   }
 
   return {
-    file: { ...file, mime: content.mime },
-    text: attachmentError({
-      name: file.name ?? filepath,
-      uri: file.uri,
-      message: `unsupported file type ${content.mime}`,
-    }),
+    file: {
+      ...file,
+      mime: content.mime,
+      description: attachmentError({
+        name: file.name ?? filepath,
+        uri: file.uri,
+        message: `unsupported file type ${content.mime}`,
+      }),
+    },
   }
 })
 
 const resolvePrompt = Effect.fn("Session.resolvePrompt")(function* (input: PromptInput.Prompt) {
   const files = yield* Effect.forEach(input.files ?? [], resolveFileAttachment, { concurrency: "unbounded" })
   return Prompt.make({
-    text: [input.text, ...files.flatMap((file) => (file.text ? [file.text] : []))].filter(Boolean).join("\n\n"),
+    text: input.text,
     agents: input.agents,
     files: files.map((file) => file.file),
   })

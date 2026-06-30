@@ -248,9 +248,9 @@ describe("SessionV2.prompt", () => {
         resume: false,
       })
 
-      expect(message.prompt.text).toContain("explain this")
-      expect(message.prompt.text).toContain('<attachment name="src/example.ts#2-3">')
-      expect(message.prompt.text).toContain("two\nthree")
+      expect(message.prompt.text).toBe("explain this")
+      expect(message.prompt.files?.[0]?.description).toContain('<attachment name="src/example.ts#2-3">')
+      expect(message.prompt.files?.[0]?.description).toContain("two\nthree")
       expect(message.prompt.files?.[0]?.mime).toBe("text/plain")
       expect(message.prompt.files?.[0]?.source?.text).toBe("@src/example.ts#2-3")
     }),
@@ -274,9 +274,10 @@ describe("SessionV2.prompt", () => {
         resume: false,
       })
 
-      expect(message.prompt.text).toContain('<attachment name="src/">')
-      expect(message.prompt.text).toContain("index.ts")
-      expect(message.prompt.text).toContain("nested/")
+      expect(message.prompt.text).toBe("inspect directory")
+      expect(message.prompt.files?.[0]?.description).toContain('<attachment name="src/">')
+      expect(message.prompt.files?.[0]?.description).toContain("index.ts")
+      expect(message.prompt.files?.[0]?.description).toContain("nested/")
       expect(message.prompt.files?.[0]?.mime).toBe("application/x-directory")
     }),
   )
