@@ -37,11 +37,24 @@ export interface State<Output> {
 }
 
 export interface Result<Output> extends State<Output> {
-  readonly [ResultTypeId]: Output
+  readonly [ResultTypeId]: true
 }
 
-export const result = <Output>(state: State<Output>): Result<Output> =>
-  Object.freeze({ ...state, [ResultTypeId]: state.output })
+class ResultValue<Output> implements Result<Output> {
+  readonly output: Output
+  readonly content?: ReadonlyArray<Content>
+
+  get [ResultTypeId]() {
+    return true as const
+  }
+
+  constructor(state: State<Output>) {
+    this.output = state.output
+    this.content = state.content
+  }
+}
+
+export const result = <Output>(state: State<Output>): Result<Output> => Object.freeze(new ResultValue(state))
 
 export class RegistrationError extends Schema.TaggedErrorClass<RegistrationError>()("Tool.RegistrationError", {
   name: Schema.String,
@@ -61,8 +74,6 @@ type Config<Input extends SchemaType<any>, Output extends SchemaType<any>> = {
     context: Context<Schema.Schema.Type<Output>>,
   ) => Effect.Effect<Schema.Schema.Type<Output> | Result<Schema.Schema.Type<Output>>, ToolFailure>
 }
-
-export type DynamicOutput = Result<unknown>
 
 /**
  * Config for a tool whose input shape is a raw JSON Schema not known at compile
@@ -103,11 +114,8 @@ function makeTyped<Input extends SchemaType<any>, Output extends SchemaType<any>
   const tool = Object.freeze({}) as Definition<Input, Output>
   const definitions = new Map<string, ToolDefinition>()
 
-  const project = (
-    value: Schema.Schema.Type<Output> | Result<Schema.Schema.Type<Output>>,
-  ): Effect.Effect<ToolOutput, ToolFailure> => {
-    const state = stateOf(value)
-    return Schema.encodeEffect(config.output)(state.output).pipe(
+  const projectState = (state: State<Schema.Schema.Type<Output>>): Effect.Effect<ToolOutput, ToolFailure> =>
+    Schema.encodeEffect(config.output)(state.output).pipe(
       Effect.map((output) => ToolOutput.make(output, contentOf(output, state.content))),
       Effect.mapError(
         (error) =>
@@ -116,7 +124,9 @@ function makeTyped<Input extends SchemaType<any>, Output extends SchemaType<any>
           }),
       ),
     )
-  }
+
+  const project = (value: Schema.Schema.Type<Output> | Result<Schema.Schema.Type<Output>>) =>
+    projectState(stateOf(value))
 
   runtimes.set(tool, {
     definition: (name) => {
@@ -139,7 +149,9 @@ function makeTyped<Input extends SchemaType<any>, Output extends SchemaType<any>
             .execute(input, {
               ...context,
               progress: (state) =>
-                project(result(state)).pipe(Effect.flatMap(context.progress ?? (() => Effect.void)), Effect.ignore),
+                context.progress
+                  ? projectState(state).pipe(Effect.flatMap(context.progress), Effect.ignore)
+                  : Effect.void,
             })
             .pipe(Effect.flatMap(project)),
         ),
@@ -151,10 +163,8 @@ function makeTyped<Input extends SchemaType<any>, Output extends SchemaType<any>
 function makeDynamic(config: DynamicConfig): AnyTool {
   const tool = Object.freeze({}) as AnyTool
   const definitions = new Map<string, ToolDefinition>()
-  const project = (value: unknown) => {
-    const state = stateOf(value)
-    return ToolOutput.make(state.output, contentOf(state.output, state.content))
-  }
+  const projectState = (state: State<unknown>) => ToolOutput.make(state.output, contentOf(state.output, state.content))
+  const project = (value: unknown) => projectState(stateOf(value))
   runtimes.set(tool, {
     definition: (name) => {
       const cached = definitions.get(name)
@@ -172,7 +182,7 @@ function makeDynamic(config: DynamicConfig): AnyTool {
       config
         .execute(call.input, {
           ...context,
-          progress: (state) => context.progress?.(project(result(state))).pipe(Effect.ignore) ?? Effect.void,
+          progress: (state) => context.progress?.(projectState(state)).pipe(Effect.ignore) ?? Effect.void,
         })
         .pipe(Effect.map(project)),
   })

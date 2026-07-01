@@ -62,20 +62,21 @@ const registryLayer = Layer.effect(
         }
       if (advertised && registration.identity !== advertised)
         return { result: { type: "error" as const, value: `Stale tool call: ${input.call.name}` } }
-      const progress = (output: ToolOutput) => {
-        const emit = input.progress
-        if (!emit) return Effect.void
-        return resources.bound({ sessionID: input.sessionID, toolCallID: input.call.id, output }).pipe(
-          Effect.flatMap((bounded) => emit(bounded.output)),
-          Effect.ignore,
-        )
-      }
+      const emitProgress = input.progress
       const pending = yield* settle(registration.tool, input.call, {
         sessionID: input.sessionID,
         agent: input.agent,
         assistantMessageID: input.assistantMessageID,
         toolCallID: input.call.id,
-        progress,
+        ...(emitProgress
+          ? {
+              progress: (output: ToolOutput) =>
+                resources.bound({ sessionID: input.sessionID, toolCallID: input.call.id, output }).pipe(
+                  Effect.flatMap((bounded) => emitProgress(bounded.output)),
+                  Effect.ignore,
+                ),
+            }
+          : {}),
       }).pipe(
         Effect.map((output) => ({ output })),
         Effect.catchTag("LLM.ToolFailure", (failure) =>
