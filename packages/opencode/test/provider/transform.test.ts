@@ -3135,11 +3135,26 @@ describe("ProviderTransform.variants", () => {
         url: "https://api.deepseek.com",
         npm: "@ai-sdk/openai-compatible",
       },
-      reasoning_options: [],
     })
     const result = ProviderTransform.variants(model)
     expect(result).toEqual({})
   })
+
+  test.each(["deepseek-r1", "qwen3", "kimi-k2", "glm-4.6", "big-pickle"])(
+    "%s without reasoning_options keeps legacy empty fallback",
+    (apiID) => {
+      const model = createMockModel({
+        id: `custom/${apiID}`,
+        providerID: "custom",
+        api: {
+          id: apiID,
+          url: "https://api.custom.com",
+          npm: "@ai-sdk/openai-compatible",
+        },
+      })
+      expect(ProviderTransform.variants(model)).toEqual({})
+    },
+  )
 
   test("minimax returns empty object", () => {
     const model = createMockModel({
@@ -3150,7 +3165,6 @@ describe("ProviderTransform.variants", () => {
         url: "https://api.minimax.com",
         npm: "@ai-sdk/openai-compatible",
       },
-      reasoning_options: [],
     })
     const result = ProviderTransform.variants(model)
     expect(result).toEqual({})
@@ -3479,7 +3493,7 @@ describe("ProviderTransform.variants", () => {
   })
 
   describe("@ai-sdk/xai", () => {
-    test("returns WIDELY_SUPPORTED_EFFORTS with reasoningEffort", () => {
+    test("grok-3 returns empty object", () => {
       const model = createMockModel({
         id: "xai/grok-3",
         providerID: "xai",
@@ -3490,8 +3504,23 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(result).toEqual({})
+    })
+
+    test("grok-3-mini returns low and high with reasoningEffort", () => {
+      const model = createMockModel({
+        id: "xai/grok-3-mini",
+        providerID: "xai",
+        api: {
+          id: "grok-3-mini",
+          url: "https://api.x.ai",
+          npm: "@ai-sdk/xai",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(Object.keys(result)).toEqual(["low", "high"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
+      expect(result.high).toEqual({ reasoningEffort: "high" })
     })
   })
 

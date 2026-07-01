@@ -1678,6 +1678,35 @@ it.instance(
 )
 
 it.instance(
+  "custom config deepseek reasoning model without variants keeps legacy empty variants",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("custom-deepseek")].models["deepseek-r1"]
+    expect(model.reasoning_options).toBeUndefined()
+    expect(model.variants).toEqual({})
+  }),
+  {
+    config: {
+      provider: {
+        "custom-deepseek": {
+          name: "Custom DeepSeek",
+          npm: "@ai-sdk/openai-compatible",
+          env: [],
+          models: {
+            "deepseek-r1": {
+              name: "DeepSeek R1",
+              reasoning: true,
+              limit: { context: 128000, output: 16000 },
+            },
+          },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
   "custom model with variants enabled and disabled",
   Effect.gen(function* () {
     const providers = yield* list

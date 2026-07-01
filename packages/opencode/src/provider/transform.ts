@@ -812,6 +812,63 @@ function reasoningOptionVariants(model: Provider.Model): Record<string, Record<s
   return {}
 }
 
+function legacyHeuristicVariants(model: Provider.Model): Record<string, Record<string, any>> | undefined {
+  const id = model.id.toLowerCase()
+  const apiID = model.api.id.toLowerCase()
+  const includes = (value: string) => id.includes(value) || apiID.includes(value)
+  const glm52 = ["glm-5.2", "glm-5-2", "glm-5p2"].some(includes)
+
+  if (glm52 && model.api.npm === "@openrouter/ai-sdk-provider") {
+    return {
+      high: { reasoning: { effort: "high" } },
+      xhigh: { reasoning: { effort: "xhigh" } },
+    }
+  }
+  if (glm52 && model.api.npm === "@ai-sdk/openai-compatible") {
+    return {
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    }
+  }
+  if (glm52 && model.api.npm === "@ai-sdk/anthropic") {
+    return {
+      high: { effort: "high" },
+      max: { effort: "max" },
+    }
+  }
+
+  if (
+    includes("deepseek-chat") ||
+    includes("deepseek-reasoner") ||
+    includes("deepseek-r1") ||
+    includes("deepseek-v3") ||
+    includes("minimax") ||
+    (includes("glm") && !glm52) ||
+    includes("kimi") ||
+    includes("k2p") ||
+    includes("qwen") ||
+    includes("big-pickle")
+  ) {
+    return {}
+  }
+
+  if (includes("grok") && includes("grok-3-mini")) {
+    if (model.api.npm === "@openrouter/ai-sdk-provider") {
+      return {
+        low: { reasoning: { effort: "low" } },
+        high: { reasoning: { effort: "high" } },
+      }
+    }
+    return {
+      low: { reasoningEffort: "low" },
+      high: { reasoningEffort: "high" },
+    }
+  }
+  if (includes("grok")) return {}
+
+  return undefined
+}
+
 export function variants(model: Provider.Model): Record<string, Record<string, any>> {
   if (!model.capabilities.reasoning) return {}
 
@@ -829,6 +886,9 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
 
   const fromReasoningOptions = reasoningOptionVariants(model)
   if (fromReasoningOptions) return fromReasoningOptions
+
+  const fromLegacyHeuristics = legacyHeuristicVariants(model)
+  if (fromLegacyHeuristics) return fromLegacyHeuristics
 
   switch (model.api.npm) {
     case "@openrouter/ai-sdk-provider":
