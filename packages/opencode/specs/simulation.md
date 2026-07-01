@@ -132,6 +132,14 @@ First milestone replacements:
 - LLM boundary.
 - Process spawner.
 
+First milestone generated state surfaces:
+
+- Filesystem/project state.
+- Network responses.
+- LLM scripts.
+- Process registry behavior.
+- Plugin-generated config state.
+
 Likely later replacements:
 
 - Clock/random.
@@ -157,6 +165,55 @@ The temp filesystem is still controlled and isolated:
 - Project files, config, data, state, cache, and temp paths should resolve inside that root.
 - Host filesystem escapes should fail loudly.
 - Trace should record seeded files and file diffs/observations needed for replay.
+
+## Configuration Via Generated Plugins
+
+Generated configuration is a core first-milestone feature.
+
+Much of opencode behavior is driven by config. The simulation runner needs to put the app into many different config-shaped states: different agents, tools, providers, MCP servers, permissions, modes, instructions, formatting settings, feature flags, and other config-dependent behavior.
+
+The runner should not primarily generate arbitrary config files. Instead, the simulation should express config-shaped state as generated plugins.
+
+Rationale:
+
+- Plugins are already a normal extension surface for opencode behavior.
+- Generated plugins can produce app states without making the simulation depend on config-file syntax and file layout details.
+- Plugin-generated state keeps setup closer to runtime behavior: the app reads config, loads plugins, and observes plugin-provided behavior through normal app paths.
+- Plugins are a better unit for model-based generation because they can be named, versioned, traced, reused, and minimized independently.
+
+The first implementation should support generated simulation plugins that can contribute or affect config-equivalent domains such as:
+
+- Agents and agent defaults.
+- Provider/model availability.
+- Tool definitions and tool behavior.
+- MCP-like capabilities or endpoints.
+- Permission defaults and policies.
+- Instructions/system-context-like inputs where supported.
+- Formatting/project behavior where supported.
+- Workspace/project adapters where supported.
+
+The simulation can still write the minimal bootstrap state needed for opencode to discover generated plugins, but the interesting generated state should live in plugin definitions rather than large generated `opencode.json` files.
+
+Trace should record:
+
+- Generated plugin IDs.
+- Plugin-provided config/state fragments.
+- Plugin hooks registered.
+- Any plugin load/config errors.
+- Which generated plugin state was active for each run.
+
+The model-based runner should include commands for generating and enabling plugin state. These commands should have normal preconditions and postconditions just like UI actions or backend setup commands.
+
+Example command families:
+
+- Generate a provider/model plugin.
+- Generate an agent configuration plugin.
+- Generate a tool plugin with scripted behavior.
+- Generate permission policy state.
+- Generate MCP-like tool/resource state.
+- Enable or disable a generated plugin for the next app run.
+
+This is the main mechanism for exploring app states driven by configuration.
 
 ## Network
 
@@ -230,6 +287,7 @@ Trace should include:
 - Tool calls and results.
 - Permission decisions.
 - Filesystem seed/write/diff summaries.
+- Generated plugin/config state and load results.
 - Stabilization boundaries.
 - Errors and crashes.
 - Model command execution and postcondition results.
@@ -276,6 +334,7 @@ The model must not track implementation internals like fibers, exact runner loop
 Initial command families:
 
 - Seed filesystem.
+- Generate and enable plugin config state.
 - Register network response.
 - Enqueue LLM script.
 - Observe UI state.
@@ -295,6 +354,7 @@ Generation should be model-based and state-aware:
 
 - Generate from currently valid `ui.state.actions`.
 - Generate backend setup commands from scenario/model state.
+- Generate plugin-provided config state.
 - Generate LLM scripts that match likely user prompts and tool flows.
 - Generate short command sequences using preconditions.
 - Use a seed so runs can be replayed.
@@ -307,6 +367,7 @@ Important stats to record:
 - Seed.
 - Command counts.
 - Action type distribution.
+- Generated plugin/config domain distribution.
 - Rejected command/precondition counts.
 - UI element/action coverage.
 - Backend event type coverage where available.
@@ -335,14 +396,15 @@ The first major demo should show this system as a real environment for exploring
 2. TUI starts and exposes the simulation WebSocket on `127.0.0.1:40900+`.
 3. External runner connects.
 4. Runner seeds a temp-backed project filesystem.
-5. Runner queues a scripted LLM response.
-6. Runner observes `ui.state` and generated actions.
-7. Runner drives real TUI input to type and submit a prompt.
-8. App processes the prompt through the real backend/session/tool path.
-9. Scripted LLM response appears or executes a file-affecting tool flow.
-10. Runner stabilizes the app.
-11. Runner inspects trace, backend snapshot, UI state, and filesystem state.
-12. Runner exports a deterministic replay trace.
+5. Runner generates and enables plugin-provided config state.
+6. Runner queues a scripted LLM response.
+7. Runner observes `ui.state` and generated actions.
+8. Runner drives real TUI input to type and submit a prompt.
+9. App processes the prompt through the real backend/session/tool path.
+10. Scripted LLM response appears or executes a file-affecting tool flow.
+11. Runner stabilizes the app.
+12. Runner inspects trace, backend snapshot, UI state, generated plugin state, and filesystem state.
+13. Runner exports a deterministic replay trace.
 
 ## Done-When Checklist
 
@@ -354,6 +416,7 @@ The first major demo should show this system as a real environment for exploring
 - Driver can execute generated UI actions.
 - Fake and visible renderer paths use the same action protocol.
 - Driver can seed filesystem state.
+- Driver can generate and enable plugin-provided config state.
 - Driver can register network responses and observe denied unknown network.
 - Driver can enqueue LLM scripts.
 - External process spawning is denied by default, with shell via `just-bash` and minimal fake process registry support.
