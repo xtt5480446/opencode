@@ -12,14 +12,14 @@ This phase proves the core shape without swapping every foundational layer yet.
 
 Implementation checklist:
 
-- [ ] Add `OPENCODE_SIMULATION=1` activation in TUI startup.
-- [ ] Add simulation trace service with in-memory append-only records.
-- [ ] Add OpenTUI UI state extraction for screen, focus, elements, and generated actions.
-- [ ] Add OpenTUI UI action execution for typing, keys, enter, arrows, focus, and click.
-- [ ] Add TUI-owned JSON-RPC WebSocket server on `127.0.0.1:40900+`.
-- [ ] Expose `ui.state`, `ui.action`, `ui.render`.
-- [ ] Expose `trace.list`, `trace.clear`, `trace.export`.
-- [ ] Ensure fake and visible renderer paths share the same action protocol.
+- [x] Add `OPENCODE_SIMULATION=1` activation in TUI startup.
+- [x] Add simulation trace service with in-memory append-only records.
+- [x] Add OpenTUI UI state extraction for screen, focus, elements, and generated actions.
+- [x] Add OpenTUI UI action execution for typing, keys, enter, arrows, focus, and click.
+- [x] Add TUI-owned JSON-RPC WebSocket server on `127.0.0.1:40900+`.
+- [x] Expose `ui.state`, `ui.action`, `ui.render`.
+- [x] Expose `trace.list`, `trace.clear`, `trace.export`.
+- [x] Ensure fake and visible renderer paths share the same action protocol.
 - [ ] Verify a local driver can inspect state and execute a real TUI input.
 
 Scope:
