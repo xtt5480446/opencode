@@ -1,37 +1,27 @@
-import { ErrorBoundary, Show, createComponent, createEffect, on } from "solid-js"
+import { ErrorBoundary, createComponent, createEffect, on } from "solid-js"
 import type { JSX } from "solid-js"
 
-// Structural boundary for the target session route: decides when the route
-// subtree remounts and how route-level errors are scoped. Kept free of app
-// contexts (and JSX) so the remount semantics can be tested directly.
-//
-// Keyed by server only. Workspace-scoped state (notably TerminalProvider and
-// its PTY WebSockets) lives inside the route subtree, so switching session
-// tabs within the same workspace must not remount it; session changes are
-// handled reactively below (TargetSessionPage re-keys per workspace).
-export function SessionRouteBoundary(props: {
-  serverKey: string | undefined
+// Error scope for the target session route. All session tabs on a server share
+// one route instance, so this must NOT key or remount per session: the subtree
+// holds workspace-scoped state (notably TerminalProvider and its PTY
+// WebSockets) that has to survive switching tabs within the same workspace.
+// Remount boundaries live elsewhere: app.tsx keys the route per server around
+// the server-scoped providers, and TargetSessionPage re-keys per workspace.
+// Kept free of app contexts (and JSX) so these semantics are directly testable.
+export function SessionRouteErrorBoundary(props: {
   sessionID: string | undefined
   fallback: (error: unknown) => JSX.Element
   children: JSX.Element
 }) {
-  return createComponent(Show, {
-    get when() {
-      return props.serverKey
+  return createComponent(ErrorBoundary, {
+    fallback: (error: unknown, reset: () => void) => {
+      // A stale error (e.g. session not found) must clear when navigating to a
+      // different session tab; mirrors the panel boundary reset inside Page.
+      createEffect(on(() => props.sessionID, reset, { defer: true }))
+      return props.fallback(error)
     },
-    keyed: true,
     get children() {
-      return createComponent(ErrorBoundary, {
-        fallback: (error: unknown, reset: () => void) => {
-          // Without a per-session remount, a stale error (e.g. session not
-          // found) must clear when navigating to a different session.
-          createEffect(on(() => props.sessionID, reset, { defer: true }))
-          return props.fallback(error)
-        },
-        get children() {
-          return props.children
-        },
-      })
+      return props.children
     },
   })
 }

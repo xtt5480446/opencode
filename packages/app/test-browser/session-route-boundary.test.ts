@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test"
 import { createComponent, createSignal, onCleanup } from "solid-js"
 import { render } from "solid-js/web"
-import { SessionRouteBoundary } from "@/pages/session/route-boundary"
+import { SessionRouteErrorBoundary } from "@/pages/session/route-boundary"
 
-// Terminals (and other workspace-scoped state) live inside the route subtree,
-// so switching session tabs within the same server must not remount it.
-test("switching sessions on the same server does not remount the route subtree", () => {
-  const [server, setServer] = createSignal("srv_1")
+// All session tabs on a server share one route instance, and the subtree holds
+// workspace-scoped state (notably the terminal and its PTY WebSockets), so
+// switching session tabs must not remount it. Remounting is owned elsewhere:
+// per server in app.tsx and per workspace in TargetSessionPage.
+test("switching sessions does not remount the route subtree", () => {
   const [session, setSession] = createSignal("ses_a")
   let mounts = 0
   let disposals = 0
@@ -20,10 +21,7 @@ test("switching sessions on the same server does not remount the route subtree",
 
   const dispose = render(
     () =>
-      createComponent(SessionRouteBoundary, {
-        get serverKey() {
-          return server()
-        },
+      createComponent(SessionRouteErrorBoundary, {
         get sessionID() {
           return session()
         },
@@ -42,10 +40,6 @@ test("switching sessions on the same server does not remount the route subtree",
   expect(mounts).toBe(initialMounts)
   expect(disposals).toBe(0)
 
-  setServer("srv_2")
-  expect(mounts).toBeGreaterThan(initialMounts)
-  expect(disposals).toBeGreaterThan(0)
-
   dispose()
 })
 
@@ -62,8 +56,7 @@ test("route error clears when navigating to a different session", () => {
   const container = document.createElement("div")
   const dispose = render(
     () =>
-      createComponent(SessionRouteBoundary, {
-        serverKey: "srv_1",
+      createComponent(SessionRouteErrorBoundary, {
         get sessionID() {
           return session()
         },

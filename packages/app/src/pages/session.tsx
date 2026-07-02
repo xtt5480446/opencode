@@ -89,7 +89,7 @@ import { formatServerError, isSessionNotFoundError } from "@/utils/server-errors
 import { legacySessionHref, requireServerKey, sessionHref } from "@/utils/session-route"
 import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
 import { createSessionOwnership } from "./session/session-ownership"
-import { SessionRouteBoundary } from "./session/route-boundary"
+import { SessionRouteErrorBoundary } from "./session/route-boundary"
 
 type FollowupItem = FollowupDraft & { id: string }
 type FollowupEdit = Pick<FollowupItem, "id" | "prompt" | "context">
@@ -147,8 +147,7 @@ export function SessionPage() {
 export function TargetSessionRoute() {
   const params = useParams<{ serverKey: string; id: string }>()
   return (
-    <SessionRouteBoundary
-      serverKey={params.serverKey}
+    <SessionRouteErrorBoundary
       sessionID={params.id}
       fallback={(error) => (
         <SessionRouteFallback
@@ -160,7 +159,7 @@ export function TargetSessionRoute() {
       )}
     >
       <ResolvedTargetSessionRoute />
-    </SessionRouteBoundary>
+    </SessionRouteErrorBoundary>
   )
 }
 
