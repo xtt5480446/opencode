@@ -54,9 +54,12 @@ Goal: make the app safe and controlled by swapping the lowest layers, not app lo
 Scope:
 
 - Wire simulation replacements through `AppNodeBuilder.build(...)` and `AppNodeBuilderV1.build(...)`.
-- Add temp-directory-backed filesystem isolation.
-- Route config/data/state/cache/temp paths into the simulation temp root.
-- Deny host filesystem escapes loudly.
+- Create a real, empty anchor directory (`mkdtemp`) and `process.chdir` into it before any command resolves its working directory; skip creation when the runner already spawned the app inside an anchor.
+- Root the in-memory filesystem at `process.cwd()` (the anchor). No cwd monkey-patching: cwd, `$PWD`, and `path.resolve()` stay truthful.
+- Add snapshot loading from `OPENCODE_SIMULATION_STATE`: read the snapshot directory once at startup and seed the in-memory filesystem (snapshot `project/` paths joined onto the anchor root), config, env, and optional LLM/network state from it.
+- Route config/data/state/cache/temp paths into the simulated space using existing env seams (`OPENCODE_CONFIG_DIR`, `OPENCODE_TEST_HOME`, `OPENCODE_DB=:memory:`), set before `packages/core/src/global.ts` import-time path setup runs.
+- Deny host filesystem escapes loudly (paths outside the anchor root fail with typed simulation errors).
+- Assert the anchor directory on the host is still empty at the end of the run; anything written there means a code path bypassed the simulated filesystem.
 - Add simulated network registry and deny unknown external network by default.
 - Add scriptable LLM boundary.
 - Add simulated process registry:
@@ -71,6 +74,8 @@ Done when:
 
 - Unknown network fails with a simulation error.
 - Host filesystem escape fails with a simulation error.
+- The anchor directory on the host is empty after a run.
+- The app boots from a snapshot directory via `OPENCODE_SIMULATION_STATE` and observes the seeded project files, config, and env through normal app paths.
 - A driver can seed a project filesystem.
 - A driver can enqueue an LLM script and submit a prompt through the TUI.
 - The real session/tool path consumes the scripted LLM behavior.

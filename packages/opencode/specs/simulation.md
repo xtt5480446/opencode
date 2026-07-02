@@ -39,14 +39,26 @@ OPENCODE_SIMULATION=1 bun run dev
 
 `OPENCODE_SIMULATION=1` is the only required flag.
 
+Initial state is provided through an optional snapshot directory:
+
+```sh
+OPENCODE_SIMULATION=1 OPENCODE_SIMULATION_STATE=/path/to/snapshot bun run dev
+```
+
 Optional flags can be added later, but should stay minimal. Reasonable optional parameters later include renderer mode, trace output path, seed, or port override.
+
+All simulation parameters are environment variables, not CLI flags. This is a hard requirement: `packages/core/src/global.ts` computes and creates XDG paths at module import time, so anything that redirects paths must be in place before the first import. Environment variables set by the parent process (or read at the very top of startup) satisfy this; CLI flags parsed after imports do not.
 
 When enabled:
 
+- The app creates and changes into a real, empty anchor directory (see Filesystem).
+- The app reads the snapshot directory, if provided, and seeds all simulated state from it.
 - The app builds with simulation layer replacements.
 - The TUI process starts a loopback WebSocket control server.
 - Simulation-gated backend control routes become available only to the frontend/control path.
 - In-memory trace recording starts automatically.
+
+Path seams reuse existing environment variables where they already exist: `OPENCODE_CONFIG_DIR` for global config, `OPENCODE_TEST_HOME` for home, and `OPENCODE_DB=:memory:` for the database. Simulation mode should set these before foundational modules load rather than inventing parallel mechanisms.
 
 ## Control Server
 
@@ -150,21 +162,60 @@ The goal is to swap things at the bottom of the app. Everything above these foun
 
 ## Filesystem
 
-The first filesystem simulation should be temp-directory backed.
+The filesystem simulation is in-memory, anchored at a real empty directory.
 
-Rationale:
+On startup in simulation mode:
 
-- It is easier to inspect while debugging.
-- It avoids reimplementing all filesystem semantics immediately.
-- It makes generated scenarios concrete and replayable.
-- It keeps the path open to tool behavior that expects real files.
+1. Create a real, empty anchor directory with `mkdtemp` (for example `$TMPDIR/opencode-sim-XXXXXX`).
+2. `process.chdir(anchor)` before any command resolves its working directory.
+3. Use `process.cwd()` — now the anchor — as the root of the in-memory filesystem.
+4. Seed the in-memory filesystem from the snapshot directory, joining snapshot-relative paths onto the anchor root.
 
-The temp filesystem is still controlled and isolated:
+The anchor directory on the host stays empty for the entire run. All file content lives only in the in-memory filesystem.
 
-- Each run gets its own temp root.
-- Project files, config, data, state, cache, and temp paths should resolve inside that root.
-- Host filesystem escapes should fail loudly.
+Rationale for the real anchor:
+
+- `process.cwd()`, `$PWD`, and `path.resolve()` are all genuinely correct with zero patching. The previous simulation branch used a virtual root (`/opencode`) that existed nowhere on the host, which forced monkey-patching `process.cwd` and `$PWD` and left raw `fs` relative-path resolution silently disagreeing with the faked cwd.
+- The codebase reads `process.cwd()` at process edges (CLI entry points, TUI frontend, request-fallback in workspace routing) and converts it into an explicit `directory` value early; core never reads it directly. A truthful cwd at startup means every downstream consumer inherits the virtual root without touching those call sites.
+- Leak detection is free: the anchor must be empty at the end of the run. Any file that appears there means some code path bypassed the simulated filesystem. This is an assertable invariant.
+- Host filesystem bypasses read an empty directory instead of the developer's real project. Bypassed reads fail loudly instead of returning wrong-but-plausible data.
+
+Rationale for in-memory content:
+
+- The run is hermetic: no host writes, no cleanup dependencies, no cross-run contamination.
+- Snapshots load and reset quickly, which matters for model-based runs that reset state often.
+- The containment check (path must be inside the anchor root) doubles as the host-escape guard with a truthful boundary.
+
+The in-memory filesystem is still controlled and isolated:
+
+- Each run gets its own anchor root.
+- Project files, config, data, state, cache, and temp paths should resolve inside that root (via `OPENCODE_CONFIG_DIR`, `OPENCODE_TEST_HOME`, and `OPENCODE_DB=:memory:`).
+- Paths outside the anchor root fail loudly with a typed simulation error.
 - Trace should record seeded files and file diffs/observations needed for replay.
+
+The anchor may be created by the app itself at activation, or by an external runner that spawns the app with the anchor as its working directory. Both should work: the app creates and enters an anchor only when its current directory is not already a designated anchor.
+
+## Initial State Snapshot
+
+`OPENCODE_SIMULATION_STATE` points at a directory containing one complete initial state. On startup the app slurps this directory once and constructs all simulated state from it. The snapshot is never written back to; it is a pure input.
+
+Proposed layout:
+
+```text
+snapshot/
+  project/...          # workspace files, seeded into the in-memory FS under the anchor root
+  config/opencode.json # global config; the directory backs OPENCODE_CONFIG_DIR
+  env.json             # extra environment values to apply
+  llm/...              # scripted LLM behavior to pre-enqueue (optional)
+  network/...          # network response registrations (optional)
+```
+
+Rules:
+
+- Paths inside `project/` are snapshot-relative. The loader joins them onto the anchor root, so absolute virtual paths look like real host paths under the anchor.
+- Anything the config references (skills, instructions, reference paths) must exist inside `project/`. A snapshot that references missing files is invalid.
+- The snapshot directory format is the contract between external state generators and the app. Generators (such as the opencode-probe project) produce snapshot directories plus a derived expected model; the app consumes only the snapshot.
+- Seeding through the control server (`backend.filesystem.seed` and friends) remains available for incremental changes during a run; the snapshot covers initial state.
 
 ## Configuration Via Generated Plugins
 
@@ -395,7 +446,7 @@ The first major demo should show this system as a real environment for exploring
 1. Start opencode normally with `OPENCODE_SIMULATION=1`.
 2. TUI starts and exposes the simulation WebSocket on `127.0.0.1:40900+`.
 3. External runner connects.
-4. Runner seeds a temp-backed project filesystem.
+4. Runner provides a snapshot directory (or seeds the in-memory project filesystem through the control server).
 5. Runner generates and enables plugin-provided config state.
 6. Runner queues a scripted LLM response.
 7. Runner observes `ui.state` and generated actions.
