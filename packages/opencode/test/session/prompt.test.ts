@@ -514,6 +514,86 @@ it.instance("loop calls LLM and returns assistant message", () =>
   }),
 )
 
+it.instance("child session completion notifies the parent with a synthetic result", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const parent = yield* sessions.create({ title: "Parent", agent: "build" })
+    const child = yield* sessions.create({ parentID: parent.id, title: "Inspect bug", agent: "general" })
+    yield* llm.text("child done")
+    yield* prompt.prompt({
+      sessionID: child.id,
+      agent: "general",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "look into the cache key path" }],
+    })
+
+    const result = yield* prompt.loop({ sessionID: child.id })
+    const notification = yield* pollWithTimeout(
+      Effect.gen(function* () {
+        const msgs = yield* MessageV2.filterCompactedEffect(parent.id)
+        return msgs
+          .filter((msg) => msg.info.role === "user")
+          .flatMap((msg) => msg.parts)
+          .find(
+            (part): part is SessionV1.TextPart =>
+              part.type === "text" &&
+              part.synthetic === true &&
+              part.text.includes(`<task id="${child.id}" state="completed">`) &&
+              part.text.includes("child done"),
+          )
+      }),
+      "parent never received child completion notification",
+      "5 seconds",
+    )
+
+    expect(notification.text).toContain("Subagent completed: Inspect bug")
+    expect((yield* sessions.get(child.id)).metadata?.subagent_last_notified_message_id).toBe(result.info.id)
+  }),
+)
+
+it.instance("foreground task subagents return through the tool result without a parent synthetic prompt", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Parent", agent: "build" })
+    yield* llm.tool("task", {
+      description: "inspect bug",
+      prompt: "look into the cache key path",
+      subagent_type: "general",
+    })
+    yield* llm.text("child done")
+    yield* llm.text("parent final")
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "delegate" }],
+    })
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    expect(result.parts.some((part) => part.type === "text" && part.text === "parent final")).toBe(true)
+
+    const child = (yield* sessions.children(chat.id))[0]
+    expect(child).toBeDefined()
+    if (!child) return
+    expect((yield* sessions.get(child.id)).metadata?.subagent_last_notified_message_id).toBeDefined()
+
+    const parentSynthetic = (yield* MessageV2.filterCompactedEffect(chat.id))
+      .filter((msg) => msg.info.role === "user")
+      .flatMap((msg) => msg.parts)
+      .filter(
+        (part): part is SessionV1.TextPart =>
+          part.type === "text" && part.synthetic === true && part.text.includes(`<task id="${child.id}"`),
+      )
+    expect(parentSynthetic).toHaveLength(0)
+  }),
+)
+
 withMcpInstructions.instance(
   "loop includes MCP instructions in model system context",
   () =>

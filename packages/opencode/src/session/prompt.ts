@@ -49,6 +49,7 @@ import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
+import { BackgroundJob } from "@/background/job"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { eq } from "drizzle-orm"
@@ -99,6 +100,48 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
   return part.state.status === "error" && part.state.metadata?.interrupted === true
 }
 
+function renderSubagentOutput(input: {
+  sessionID: SessionID
+  state: "completed" | "error"
+  summary: string
+  text: string
+}) {
+  const tag = input.state === "error" ? "task_error" : "task_result"
+  return [
+    `<task id="${input.sessionID}" state="${input.state}">`,
+    `<summary>${input.summary}</summary>`,
+    `<${tag}>`,
+    input.text,
+    `</${tag}>`,
+    "</task>",
+  ].join("\n")
+}
+
+function subagentResultText(result: SessionV1.WithParts) {
+  const text = result.parts
+    .filter((part): part is SessionV1.TextPart => part.type === "text")
+    .map((part) => part.text)
+    .join("\n")
+    .trim()
+  if (text) return text
+  if (result.info.role === "assistant" && result.info.error) return assistantErrorMessage(result.info.error)
+  return "Subagent finished without a text response."
+}
+
+function assistantErrorMessage(error: NonNullable<SessionV1.Assistant["error"]>) {
+  if (typeof error.data === "object" && error.data && "message" in error.data && typeof error.data.message === "string") {
+    return error.data.message
+  }
+  return error.name
+}
+
+function subagentNotifiedMetadata(session: Session.Info, messageID: string) {
+  return {
+    ...session.metadata,
+    subagent_last_notified_message_id: messageID,
+  }
+}
+
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
@@ -140,6 +183,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const background = yield* BackgroundJob.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -1070,6 +1114,64 @@ const layer = Layer.effect(
       return yield* loop({ sessionID: input.sessionID })
     })
 
+    const notifyParent = Effect.fn("SessionPrompt.notifyParent")(function* (input: {
+      session: Session.Info
+      result: SessionV1.WithParts
+    }) {
+      if (!input.session.parentID) return
+      const current = yield* sessions.get(input.session.id).pipe(Effect.catchCause(() => Effect.succeed(input.session)))
+      if (current.metadata?.subagent_last_notified_message_id === input.result.info.id) return
+      const job = yield* background.get(input.session.id)
+      if (
+        job?.status === "running" &&
+        job.metadata?.parentSessionId === current.parentID &&
+        job.metadata?.background !== true
+      ) {
+        yield* sessions.setMetadata({
+          sessionID: current.id,
+          metadata: subagentNotifiedMetadata(current, input.result.info.id),
+        })
+        return
+      }
+
+      if (!current.parentID) return
+      const parent = yield* sessions.get(current.parentID).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("failed to load parent session for subagent notification", {
+            sessionID: current.id,
+            parentID: current.parentID,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(undefined)),
+        ),
+      )
+      if (!parent) return
+      yield* sessions.setMetadata({
+        sessionID: current.id,
+        metadata: subagentNotifiedMetadata(current, input.result.info.id),
+      })
+
+      const state = input.result.info.role === "assistant" && input.result.info.error ? "error" : "completed"
+      yield* prompt({
+        sessionID: current.parentID,
+        agent: parent.agent,
+        parts: [
+          {
+            type: "text",
+            synthetic: true,
+            text: renderSubagentOutput({
+              sessionID: current.id,
+              state,
+              summary:
+                state === "completed"
+                  ? `Subagent completed: ${current.title}`
+                  : `Subagent failed: ${current.title}`,
+              text: subagentResultText(input.result),
+            }),
+          },
+        ],
+      }).pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }))
+    })
+
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
       if (Option.isSome(match)) return match.value
@@ -1335,7 +1437,9 @@ const layer = Layer.effect(
         }
 
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
-        return yield* lastAssistant(sessionID)
+        const result = yield* lastAssistant(sessionID)
+        yield* notifyParent({ session, result }).pipe(Effect.ignore)
+        return result
       },
     )
 
@@ -1624,6 +1728,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     RuntimeFlags.node,
     Database.node,
+    BackgroundJob.node,
   ],
 })
 

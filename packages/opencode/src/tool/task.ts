@@ -10,7 +10,7 @@ import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Effect, Exit, Schema, Scope } from "effect"
+import { Effect, Exit, Schema } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
@@ -85,7 +85,6 @@ export const TaskTool = Tool.define(
     const background = yield* BackgroundJob.Service
     const config = yield* Config.Service
     const sessions = yield* Session.Service
-    const scope = yield* Scope.Scope
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
 
@@ -199,46 +198,6 @@ export const TaskTool = Tool.define(
         return result.parts.findLast((item) => item.type === "text")?.text ?? ""
       })
 
-      const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
-        state: "completed" | "error",
-        text: string,
-      ) {
-        const currentParent = yield* sessions.get(ctx.sessionID)
-        yield* ops
-          .prompt({
-            sessionID: ctx.sessionID,
-            agent: currentParent.agent ?? ctx.agent,
-            variant,
-            parts: [
-              {
-                type: "text",
-                synthetic: true,
-                text: renderOutput({
-                  sessionID: nextSession.id,
-                  state,
-                  summary:
-                    state === "completed"
-                      ? `Background task completed: ${params.description}`
-                      : `Background task failed: ${params.description}`,
-                  text,
-                }),
-              },
-            ],
-          })
-          .pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }))
-      })
-
-      const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
-        yield* background.wait({ id: jobID }).pipe(
-          Effect.flatMap((result) => {
-            if (result.info?.status === "completed") return inject("completed", result.info.output ?? "")
-            if (result.info?.status === "error") return inject("error", result.info.error ?? "")
-            return Effect.void
-          }),
-          Effect.forkIn(scope, { startImmediately: true }),
-        )
-      })
-
       if (yield* background.extend({ id: nextSession.id, run: runTask() })) {
         return {
           title: params.description,
@@ -261,13 +220,10 @@ export const TaskTool = Tool.define(
         type: id,
         title: params.description,
         metadata,
-        onPromote: Effect.all([
-          ctx.metadata({
-            title: params.description,
-            metadata: { ...metadata, background: true, jobId: nextSession.id },
-          }),
-          notify(nextSession.id),
-        ]),
+        onPromote: ctx.metadata({
+          title: params.description,
+          metadata: { ...metadata, background: true, jobId: nextSession.id },
+        }),
         run: runTask().pipe(Effect.onInterrupt(() => ops.cancel(nextSession.id))),
       })
 
@@ -289,7 +245,6 @@ export const TaskTool = Tool.define(
       }
 
       if (runInBackground) {
-        yield* notify(info.id)
         return backgroundResult()
       }
 

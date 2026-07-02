@@ -495,14 +495,15 @@ describe("tool.task", () => {
       const def = yield* tool.init()
       const ready = yield* Deferred.make<void>()
       const done = yield* Deferred.make<void>()
-      const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
       let runs = 0
+      let parentPrompts = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
         resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
         prompt: (input) => {
           if (input.sessionID === chat.id) {
-            return Deferred.succeed(injected, input).pipe(Effect.as(reply(input, "injected")))
+            parentPrompts += 1
+            return Effect.succeed(reply(input, "unexpected parent prompt"))
           }
           return Effect.gen(function* () {
             runs += 1
@@ -548,7 +549,7 @@ describe("tool.task", () => {
 
       yield* Deferred.succeed(done, undefined)
       expect((yield* jobs.wait({ id: result.metadata.sessionId })).info?.output).toBe("background done")
-      expect((yield* Deferred.await(injected)).parts[0]?.type).toBe("text")
+      expect(parentPrompts).toBe(0)
       expect(runs).toBe(1)
     }),
   )
@@ -600,13 +601,13 @@ describe("tool.task", () => {
       const first = defer<void>()
       const second = defer<void>()
       const updated = defer<SessionPrompt.PromptInput>()
-      const injected = defer<SessionPrompt.PromptInput>()
       let prompts = 0
+      let parentPrompts = 0
       const promptOps: TaskPromptOps = {
         ...stubOps(),
         prompt: (input) => {
           if (input.sessionID === chat.id) {
-            injected.resolve(input)
+            parentPrompts += 1
             return Effect.succeed(reply(input, "done"))
           }
           prompts++
@@ -658,10 +659,7 @@ describe("tool.task", () => {
       const waited = yield* jobs.wait({ id: started.metadata.sessionId, timeout: 1_000 })
       expect(waited.info?.status).toBe("completed")
       expect(waited.info?.output).toBe("second done")
-      const notification = yield* Effect.promise(() => injected.promise)
-      expect(notification.variant).toBe("xhigh")
-      expect(notification.parts[0]?.type).toBe("text")
-      if (notification.parts[0]?.type === "text") expect(notification.parts[0].text).toContain("second done")
+      expect(parentPrompts).toBe(0)
     }),
   )
 
@@ -698,12 +696,13 @@ describe("tool.task", () => {
     }),
   )
 
-  background.instance("background task completion does not wait for the parent async prompt", () =>
+  background.instance("background task completion does not prompt the parent directly", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
       const def = yield* tool.init()
+      let parentPrompts = 0
 
       const result = yield* def.execute(
         {
@@ -721,7 +720,12 @@ describe("tool.task", () => {
             promptOps: {
               ...stubOps({ text: "background done" }),
               prompt: (input) =>
-                input.sessionID === chat.id ? Effect.never : Effect.succeed(reply(input, "background done")),
+                input.sessionID === chat.id
+                  ? Effect.sync(() => {
+                      parentPrompts += 1
+                      return reply(input, "unexpected parent prompt")
+                    })
+                  : Effect.succeed(reply(input, "background done")),
             } satisfies TaskPromptOps,
           },
           messages: [],
@@ -733,6 +737,7 @@ describe("tool.task", () => {
       const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
       expect(waited.timedOut).toBe(false)
       expect(waited.info?.status).toBe("completed")
+      expect(parentPrompts).toBe(0)
     }),
   )
 
