@@ -229,6 +229,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
     const { RunFooter } = await footerTask
     let closed = false
     let sigintRegistered = false
+
     const footer = new RunFooter(renderer, {
       directory: input.directory,
       findFiles: input.findFiles,
