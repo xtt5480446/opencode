@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { ConfigProvider, Effect, Exit, Layer, Schema } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -44,6 +44,52 @@ describe("WebSearchTool provider selection", () => {
 
   test("prefers Exa when only its explicit flag is enabled", () => {
     expect(WebSearchTool.selectProvider(sessionID, { enableExa: true, enableParallel: false })).toBe("exa")
+  })
+})
+
+const readDefaultConfig = (env: Record<string, string>) =>
+  Effect.gen(function* () {
+    return yield* WebSearchTool.ConfigService
+  }).pipe(
+    Effect.provide(
+      WebSearchTool.defaultConfigLayer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env)))),
+    ),
+  )
+
+describe("WebSearchTool default config", () => {
+  test("decodes an empty environment to defaults", async () => {
+    expect(await Effect.runPromise(readDefaultConfig({}))).toEqual({
+      provider: undefined,
+      enableExa: false,
+      enableParallel: false,
+      exaApiKey: undefined,
+      parallelApiKey: undefined,
+    })
+  })
+
+  test("decodes provider, truthy flags, and credentials from the active ConfigProvider", async () => {
+    expect(
+      await Effect.runPromise(
+        readDefaultConfig({
+          OPENCODE_WEBSEARCH_PROVIDER: "parallel",
+          OPENCODE_ENABLE_EXA: "1",
+          OPENCODE_EXPERIMENTAL_PARALLEL: "true",
+          EXA_API_KEY: "exa-key",
+          PARALLEL_API_KEY: "parallel-key",
+        }),
+      ),
+    ).toEqual({
+      provider: "parallel",
+      enableExa: true,
+      enableParallel: true,
+      exaApiKey: "exa-key",
+      parallelApiKey: "parallel-key",
+    })
+  })
+
+  test("fails on an invalid provider instead of silently ignoring it", async () => {
+    const exit = await Effect.runPromiseExit(readDefaultConfig({ OPENCODE_WEBSEARCH_PROVIDER: "bing" }))
+    expect(Exit.isFailure(exit)).toBe(true)
   })
 })
 

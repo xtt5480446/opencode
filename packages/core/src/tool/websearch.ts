@@ -1,11 +1,10 @@
 export * as WebSearchTool from "./websearch"
 
 import { ToolFailure } from "@opencode-ai/llm"
-import { Context, Duration, Effect, Layer, Schema } from "effect"
+import { Config, Context, Duration, Effect, Layer, Option, Redacted, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { makeLocationNode } from "../effect/app-node"
 import { LayerNodePlatform } from "../effect/app-node-platform"
-import { truthy } from "../flag/flag"
 import { InstallationVersion } from "../installation/version"
 import { PositiveInt } from "../schema"
 import { PermissionV2 } from "../permission"
@@ -69,19 +68,33 @@ export interface Config {
 
 export class ConfigService extends Context.Service<ConfigService, Config>()("@opencode/v2/WebSearchConfig") {}
 
-/** Isolates the retained product environment contract from the generic tool implementation. */
-export const defaultConfigLayer = Layer.sync(ConfigService, () =>
-  ConfigService.of({
-    provider:
-      process.env.OPENCODE_WEBSEARCH_PROVIDER === "exa" || process.env.OPENCODE_WEBSEARCH_PROVIDER === "parallel"
-        ? process.env.OPENCODE_WEBSEARCH_PROVIDER
-        : undefined,
-    enableExa: truthy("OPENCODE_EXPERIMENTAL") || truthy("OPENCODE_ENABLE_EXA") || truthy("OPENCODE_EXPERIMENTAL_EXA"),
-    enableParallel: truthy("OPENCODE_ENABLE_PARALLEL") || truthy("OPENCODE_EXPERIMENTAL_PARALLEL"),
-    exaApiKey: process.env.EXA_API_KEY,
-    parallelApiKey: process.env.PARALLEL_API_KEY,
+const flag = (name: string) => Config.boolean(name).pipe(Config.withDefault(false))
+
+/**
+ * Isolates the retained product environment contract from the generic tool
+ * implementation. Reads through Effect `Config` when the layer is built, so
+ * tests can override values with a `ConfigProvider` instead of mutating
+ * `process.env`. Malformed values fail the layer instead of silently
+ * disabling a provider the user asked for.
+ */
+export const defaultConfigLayer = Layer.effect(
+  ConfigService,
+  Effect.gen(function* () {
+    const provider = yield* Config.option(Config.literals(["exa", "parallel"], "OPENCODE_WEBSEARCH_PROVIDER"))
+    const exaApiKey = yield* Config.option(Config.redacted("EXA_API_KEY"))
+    const parallelApiKey = yield* Config.option(Config.redacted("PARALLEL_API_KEY"))
+    return ConfigService.of({
+      provider: Option.getOrUndefined(provider),
+      enableExa:
+        (yield* flag("OPENCODE_EXPERIMENTAL")) ||
+        (yield* flag("OPENCODE_ENABLE_EXA")) ||
+        (yield* flag("OPENCODE_EXPERIMENTAL_EXA")),
+      enableParallel: (yield* flag("OPENCODE_ENABLE_PARALLEL")) || (yield* flag("OPENCODE_EXPERIMENTAL_PARALLEL")),
+      exaApiKey: Option.getOrUndefined(Option.map(exaApiKey, Redacted.value)),
+      parallelApiKey: Option.getOrUndefined(Option.map(parallelApiKey, Redacted.value)),
+    })
   }),
-)
+).pipe(Layer.orDie)
 
 export const configNode = makeLocationNode({ service: ConfigService, layer: defaultConfigLayer, deps: [] })
 
