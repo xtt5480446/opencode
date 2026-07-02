@@ -14,10 +14,26 @@ const NO_TEXT = "Subagent completed without a text response."
 const BACKGROUND_STARTED =
   "The subagent is working in the background. You will be notified automatically when it finishes. DO NOT sleep, poll, or proactively check on its progress."
 
+const renderOutput = (input: {
+  sessionID: SessionSchema.ID | string
+  state: "completed" | "running" | "error" | "cancelled"
+  description?: string
+  text: string
+}) =>
+  [
+    `<subagent id="${input.sessionID}" state="${input.state}"${input.description ? ` description="${input.description}"` : ""}>`,
+    input.text,
+    "</subagent>",
+  ].join("\n")
+
 export const Input = Schema.Struct({
   agent: Schema.String.annotate({ description: "The configured agent to run as the subagent" }),
   description: Schema.String.annotate({ description: "A short description of the subagent's task" }),
   prompt: Schema.String.annotate({ description: "The task for the subagent to perform" }),
+  subagent_id: SessionSchema.ID.pipe(Schema.optional).annotate({
+    description:
+      "Set this only to continue a previous subagent session. Pass the id from an earlier subagent result and the prompt will continue that same subagent session instead of creating a new one.",
+  }),
   background: Schema.Boolean.pipe(Schema.optional).annotate({
     description:
       "Run the subagent in the background and return immediately. You will be notified when it completes. DO NOT poll its progress.",
@@ -32,6 +48,8 @@ export const Output = Schema.Struct({
 
 export const description = [
   "Spawn a subagent: a child session running a configured agent with fresh context.",
+  "Each new subagent invocation starts with fresh context unless subagent_id is provided to continue the same subagent session.",
+  "The result includes a subagent id. Reuse it as subagent_id only when you need to send more prompts to that same subagent.",
   "Foreground (default) runs the subagent to completion and returns its final response.",
   "Background mode (background=true) launches it asynchronously and returns immediately; you are notified when it finishes.",
   "Use background only for independent work that can run while you continue elsewhere.",
@@ -69,7 +87,7 @@ export const Plugin = {
     ) {
       yield* runtime.session.synthetic({
         sessionID: parentID,
-        text: `<subagent id="${childID}" state="${state}" description="${description}">\n${text}\n</subagent>`,
+        text: renderOutput({ sessionID: childID, state, description, text }),
       })
     })
 
@@ -98,7 +116,17 @@ export const Plugin = {
           description,
           input: Input,
           output: Output,
-          toModelOutput: ({ output }) => [{ type: "text", text: output.output }],
+          toModelOutput: ({ input, output }) => [
+            {
+              type: "text",
+              text: renderOutput({
+                sessionID: output.sessionID,
+                state: output.status,
+                description: input.description,
+                text: output.output,
+              }),
+            },
+          ],
           execute: (input, context) =>
             Effect.gen(function* () {
               const parent = yield* runtime.session
@@ -113,18 +141,35 @@ export const Plugin = {
 
               // Model selection is policy/config/session state, not an LLM-facing tool argument.
               const model = agent.model ?? parent.model
-              const child = yield* runtime.session
-                .create({
-                  parentID: context.sessionID,
-                  title: input.description,
-                  agent: AgentV2.ID.make(input.agent),
-                  model,
-                  // TODO(opencode kkdvxn): derive restricted subagent permissions from the parent
-                  // session (V1 deriveSubagentSessionPermission). MVP uses the agent's own permissions.
+              const agentID = AgentV2.ID.make(input.agent)
+              const child = input.subagent_id
+                ? yield* runtime.session
+                    .get(input.subagent_id)
+                    .pipe(
+                      Effect.mapError(() => new ToolFailure({ message: `Subagent not found: ${input.subagent_id}` })),
+                    )
+                : yield* runtime.session
+                    .create({
+                      parentID: context.sessionID,
+                      title: input.description,
+                      agent: agentID,
+                      model,
+                      // TODO(opencode kkdvxn): derive restricted subagent permissions from the parent
+                      // session (V1 deriveSubagentSessionPermission). MVP uses the agent's own permissions.
+                    })
+                    .pipe(
+                      Effect.mapError(
+                        () => new ToolFailure({ message: `Parent session not found: ${context.sessionID}` }),
+                      ),
+                    )
+              if (input.subagent_id && child.parentID !== context.sessionID)
+                return yield* new ToolFailure({
+                  message: `Subagent ${input.subagent_id} does not belong to this session`,
                 })
-                .pipe(
-                  Effect.mapError(() => new ToolFailure({ message: `Parent session not found: ${context.sessionID}` })),
-                )
+              if (input.subagent_id && child.agent !== agentID)
+                return yield* new ToolFailure({
+                  message: `Subagent ${input.subagent_id} is not using agent ${input.agent}`,
+                })
 
               const background = input.background === true
 

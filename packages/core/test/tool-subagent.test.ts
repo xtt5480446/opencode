@@ -189,7 +189,12 @@ describe("SubagentTool", () => {
           })
 
           expect(settled.output?.structured).toMatchObject({ status: "completed", output: childText })
-          const child = yield* sessions.get(outputSessionID(settled.output?.structured))
+          const childID = outputSessionID(settled.output?.structured)
+          expect(settled.output?.content[0]).toEqual({
+            type: "text",
+            text: `<subagent id="${childID}" state="completed" description="review">\n${childText}\n</subagent>`,
+          })
+          const child = yield* sessions.get(childID)
           expect(child).toMatchObject({
             parentID: parent.id,
             location: parent.location,
@@ -209,6 +214,56 @@ describe("SubagentTool", () => {
           })
           const fallbackChild = yield* sessions.get(outputSessionID(fallback.output?.structured))
           expect(fallbackChild).toMatchObject({ parentID: parent.id, model: parentModel })
+        }),
+      ),
+    ),
+  )
+
+  it.live("continues an existing child session when subagent_id is provided", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
+          const sessions = yield* SessionV2.Service
+          const parent = yield* sessions.create({ location, model: parentModel })
+          yield* withSubagent(parent.location)
+          const locations = yield* LocationServiceMap.Service
+          const registry = yield* ToolRegistry.Service.pipe(Effect.provide(locations.get(parent.location)))
+          yield* waitForTool(registry, SubagentTool.name)
+
+          const first = yield* settleTool(registry, {
+            sessionID: parent.id,
+            ...toolIdentity,
+            call: {
+              type: "tool-call",
+              id: "call-subagent-first",
+              name: SubagentTool.name,
+              input: { agent: "reviewer", description: "review", prompt: "review this" },
+            },
+          })
+          const childID = outputSessionID(first.output?.structured)
+          const second = yield* settleTool(registry, {
+            sessionID: parent.id,
+            ...toolIdentity,
+            call: {
+              type: "tool-call",
+              id: "call-subagent-second",
+              name: SubagentTool.name,
+              input: {
+                agent: "reviewer",
+                description: "follow up",
+                prompt: "continue this",
+                subagent_id: childID,
+              },
+            },
+          })
+
+          expect(outputSessionID(second.output?.structured)).toBe(childID)
+          expect(yield* sessions.list({ directory: location.directory })).toHaveLength(2)
+          expect((yield* sessions.get(childID)).title).toBe("review")
         }),
       ),
     ),
