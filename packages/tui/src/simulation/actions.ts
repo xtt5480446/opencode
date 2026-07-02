@@ -1,11 +1,6 @@
 import type { CliRenderer, Renderable } from "@opentui/core"
-import {
-  createMockKeys,
-  createMockMouse,
-  type MockInput,
-  type MockMouse,
-  type TestRendererSetup,
-} from "@opentui/core/testing"
+import { createMockKeys, createMockMouse, type MockInput, type MockMouse } from "@opentui/core/testing"
+import { SimulationRenderer } from "./renderer"
 import { SimulationTrace } from "./trace"
 
 export interface KeyModifiers {
@@ -77,12 +72,13 @@ function hit(renderer: CliRenderer, renderable: Renderable) {
 /**
  * Builds the harness the simulation server drives.
  *
- * When the renderer came from `createTestRenderer` (fake renderer), pass its
- * `TestRendererSetup` so the harness uses the supported testing APIs. Without
- * it (visible terminal renderer) the harness falls back to `requestRender` +
- * `idle` and reading the private `currentRenderBuffer`.
+ * When the renderer is the fake simulation renderer, its TestRendererSetup
+ * provides the supported testing APIs. For the visible terminal renderer the
+ * harness falls back to `requestRender` + `idle` and reading the private
+ * `currentRenderBuffer`.
  */
-export function createHarness(renderer: CliRenderer, setup?: TestRendererSetup): Harness {
+export function createHarness(renderer: CliRenderer): Harness {
+  const setup = SimulationRenderer.setupFor(renderer)
   return {
     renderer,
     mockInput: setup?.mockInput ?? createMockKeys(renderer),

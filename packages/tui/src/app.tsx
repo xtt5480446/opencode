@@ -8,8 +8,7 @@ import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
 import * as Selection from "./util/selection"
-import { createCliRenderer, MouseButton, type CliRenderer } from "@opentui/core"
-import type { TestRendererSetup } from "@opentui/core/testing"
+import { createCliRenderer, MouseButton } from "@opentui/core"
 import { RouteProvider, useRoute } from "./context/route"
 import {
   Switch,
@@ -184,43 +183,31 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   const simulationEnabled = process.env.OPENCODE_SIMULATION === "1" || process.env.OPENCODE_SIMULATION === "true"
   const result = yield* Effect.scoped(
     Effect.gen(function* () {
-      const acquired = yield* Effect.acquireRelease(
+      const renderer = yield* Effect.acquireRelease(
         Effect.tryPromise({
-          try: async (): Promise<{ renderer: CliRenderer; setup?: TestRendererSetup }> => {
-            // The fake renderer is a real CliRenderer backed by an in-memory
-            // screen buffer; everything downstream (keymap, harness, render)
-            // treats both renderer kinds identically.
-            if (simulationEnabled && process.env.OPENCODE_SIMULATION_RENDERER === "fake") {
-              const { createTestRenderer } = await import("@opentui/core/testing")
-              const setup = await createTestRenderer({
-                width: Number(process.env.OPENCODE_SIMULATION_TUI_WIDTH) || 100,
-                height: Number(process.env.OPENCODE_SIMULATION_TUI_HEIGHT) || 40,
-              })
-              return { renderer: setup.renderer, setup }
-            }
-            const renderer = await createCliRenderer({
-              externalOutputMode: "passthrough",
-              targetFps: 60,
-              gatherStats: false,
-              exitOnCtrlC: false,
-              useKittyKeyboard: {},
-              autoFocus: false,
-              openConsoleOnError: false,
-              useMouse: !Flag.OPENCODE_DISABLE_MOUSE && input.config.mouse,
-              consoleOptions: {
-                keyBindings: [{ name: "y", ctrl: true, action: "copy-selection" }],
-              },
-            })
-            return { renderer }
-          },
+          try: () =>
+            simulationEnabled && process.env.OPENCODE_SIMULATION_RENDERER === "fake"
+              ? import("./simulation/renderer").then(({ SimulationRenderer }) => SimulationRenderer.create())
+              : createCliRenderer({
+                  externalOutputMode: "passthrough",
+                  targetFps: 60,
+                  gatherStats: false,
+                  exitOnCtrlC: false,
+                  useKittyKeyboard: {},
+                  autoFocus: false,
+                  openConsoleOnError: false,
+                  useMouse: !Flag.OPENCODE_DISABLE_MOUSE && input.config.mouse,
+                  consoleOptions: {
+                    keyBindings: [{ name: "y", ctrl: true, action: "copy-selection" }],
+                  },
+                }),
           catch: (error) => (error instanceof Error ? error : new Error(String(error))),
         }),
-        (acquired) =>
+        (renderer) =>
           Effect.sync(() => {
-            destroyRenderer(acquired.renderer)
+            destroyRenderer(renderer)
           }),
       )
-      const renderer = acquired.renderer
       win32DisableProcessedInput()
       const keymap = createDefaultOpenTuiKeymap(renderer)
       yield* Effect.acquireRelease(
@@ -250,7 +237,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         const simulation = yield* Effect.promise(async () => {
           const { SimulationActions } = await import("./simulation/actions")
           const { SimulationServer } = await import("./simulation/server")
-          return SimulationServer.start(SimulationActions.createHarness(renderer, acquired.setup))
+          return SimulationServer.start(SimulationActions.createHarness(renderer))
         })
         if (simulation) {
           process.stderr.write(`opencode simulation websocket: ${simulation.url}\n`)
