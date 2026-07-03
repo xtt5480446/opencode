@@ -20,7 +20,12 @@ type Api =
       readonly url?: string
       readonly settings?: Record<string, unknown>
     }
-  | { readonly type: "native"; readonly url?: string; readonly settings: Record<string, unknown> }
+  | {
+      readonly type: "native"
+      readonly package?: string
+      readonly url?: string
+      readonly settings: Record<string, unknown>
+    }
 
 const model = (api: Api, variants: ModelV2.Info["variants"] = []) =>
   ModelV2.Info.make({
@@ -269,6 +274,71 @@ describe("SessionRunnerModel", () => {
     }),
   )
 
+  it.effect("maps native provider package models into bearer-authenticated routes", () =>
+    Effect.gen(function* () {
+      const resolved = yield* SessionRunnerModel.fromCatalogModel(
+        ModelV2.Info.make({
+          ...model({
+            type: "native",
+            package: "@opencode-ai/llm/providers/openai",
+            url: "https://openai.example/v1",
+            settings: {},
+          }),
+          request: { headers: {}, body: {} },
+        }),
+        Credential.Key.make({ type: "key", key: "secret" }),
+      )
+      const headers = yield* resolved.route.auth.apply({
+        request: LLM.request({ model: resolved, prompt: "Hello" }),
+        method: "POST",
+        url: "https://openai.example/v1/responses",
+        body: "{}",
+        headers: Headers.empty,
+      })
+
+      expect(resolved.route).toMatchObject({
+        id: "openai-responses",
+        endpoint: { baseURL: "https://openai.example/v1" },
+      })
+      expect(headers.authorization).toBe("Bearer secret")
+    }),
+  )
+
+  it.effect("routes native ChatGPT OAuth credentials to the codex backend", () =>
+    Effect.gen(function* () {
+      const resolved = yield* SessionRunnerModel.fromCatalogModel(
+        ModelV2.Info.make({
+          ...model({
+            type: "native",
+            package: "@opencode-ai/llm/providers/openai/codex",
+            settings: {},
+          }),
+          request: { headers: {}, body: {} },
+        }),
+        Credential.OAuth.make({
+          type: "oauth",
+          methodID: Integration.MethodID.make("chatgpt-browser"),
+          access: "oauth-token",
+          refresh: "refresh",
+          expires: Date.now() + 60_000,
+          metadata: { accountID: "account-123" },
+        }),
+      )
+      const request = LLM.request({ model: resolved, prompt: "Hello" })
+      const headers = yield* resolved.route.auth.apply({
+        request,
+        method: "POST",
+        url: "https://chatgpt.com/backend-api/codex/responses",
+        body: "{}",
+        headers: Headers.empty,
+      })
+
+      expect(resolved.route.endpoint.baseURL).toBe("https://chatgpt.com/backend-api/codex")
+      expect(headers.authorization).toBe("Bearer oauth-token")
+      expect(headers["chatgpt-account-id"]).toBe("account-123")
+    }),
+  )
+
   it.effect("prefers stored credentials over configured auth", () =>
     Effect.gen(function* () {
       const credential = Credential.Key.make({ type: "key", key: "stored-secret", metadata: { tenant: "work" } })
@@ -342,6 +412,11 @@ describe("SessionRunnerModel", () => {
         ),
       ).toBe(false)
       expect(SessionRunnerModel.supported(model({ type: "native", settings: {} }))).toBe(false)
+      expect(
+        SessionRunnerModel.supported(
+          model({ type: "native", package: "@opencode-ai/llm/providers/openai", settings: {} }),
+        ),
+      ).toBe(true)
     }),
   )
 })

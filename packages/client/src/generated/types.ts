@@ -1955,6 +1955,7 @@ export type ModelsListOutput = {
       | {
           readonly id: string
           readonly type: "native"
+          readonly package?: string
           readonly url?: string
           readonly settings: { readonly [x: string]: JsonValue }
         }
@@ -2010,7 +2011,12 @@ export type ProvidersListOutput = {
           readonly url?: string
           readonly settings?: { readonly [x: string]: JsonValue }
         }
-      | { readonly type: "native"; readonly url?: string; readonly settings: { readonly [x: string]: JsonValue } }
+      | {
+          readonly type: "native"
+          readonly package?: string
+          readonly url?: string
+          readonly settings: { readonly [x: string]: JsonValue }
+        }
     readonly request: {
       readonly headers: { readonly [x: string]: string }
       readonly body: { readonly [x: string]: JsonValue }
@@ -2043,7 +2049,12 @@ export type ProvidersGetOutput = {
           readonly url?: string
           readonly settings?: { readonly [x: string]: JsonValue }
         }
-      | { readonly type: "native"; readonly url?: string; readonly settings: { readonly [x: string]: JsonValue } }
+      | {
+          readonly type: "native"
+          readonly package?: string
+          readonly url?: string
+          readonly settings: { readonly [x: string]: JsonValue }
+        }
     readonly request: {
       readonly headers: { readonly [x: string]: string }
       readonly body: { readonly [x: string]: JsonValue }

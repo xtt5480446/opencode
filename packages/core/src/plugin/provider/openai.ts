@@ -1,9 +1,10 @@
 import { createServer } from "node:http"
 import type { IntegrationOAuthMethodRegistration } from "@opencode-ai/plugin/v2/effect/integration"
 import { define } from "@opencode-ai/plugin/v2/effect/plugin"
-import { Deferred, Effect } from "effect"
+import { Deferred, Effect, Stream } from "effect"
 import type { Scope } from "effect"
 import { Credential } from "../../credential"
+import { EventV2 } from "../../event"
 import { InstallationVersion } from "../../installation/version"
 import { Integration } from "../../integration"
 import { ModelV2 } from "../../model"
@@ -17,6 +18,7 @@ const callbackPort = 1455
 const pollingSafetyMargin = 3000
 const browserMethodID = Integration.MethodID.make("chatgpt-browser")
 const headlessMethodID = Integration.MethodID.make("chatgpt-headless")
+const codexPackage = "@opencode-ai/llm/providers/openai/codex"
 
 type Pkce = {
   verifier: string
@@ -154,23 +156,54 @@ const headless = {
 export const OpenAIPlugin = define({
   id: "openai",
   effect: Effect.fn(function* (ctx) {
+    const events = yield* EventV2.Service
     yield* ctx.integration.transform((draft) => {
       draft.method.update(browser)
       draft.method.update(headless)
     })
     yield* ctx.catalog.transform(
       Effect.fn(function* (evt) {
+        const connection = yield* ctx.integration.connection.active("openai")
+        const credential = connection
+          ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          : undefined
+        const chatgpt = isChatGPT(credential)
         for (const item of evt.provider.list()) {
           if (item.provider.api.type !== "aisdk") continue
           if (item.provider.api.package !== "@ai-sdk/openai") continue
-          if (!item.models.has(ModelV2.ID.make("gpt-5-chat-latest"))) continue
-          evt.model.update(item.provider.id, ModelV2.ID.make("gpt-5-chat-latest"), (model) => {
-            // OpenAIPlugin sends OpenAI models through Responses; this alias is a
-            // chat-completions-only model, so hide it only from OpenAI's catalog.
-            model.enabled = false
-          })
+          if (item.models.has(ModelV2.ID.make("gpt-5-chat-latest"))) {
+            evt.model.update(item.provider.id, ModelV2.ID.make("gpt-5-chat-latest"), (model) => {
+              // OpenAIPlugin sends OpenAI models through Responses; this alias is a
+              // chat-completions-only model, so hide it only from OpenAI's catalog.
+              model.enabled = false
+            })
+          }
+          if (!chatgpt) continue
+          for (const model of item.models.values()) {
+            evt.model.update(item.provider.id, model.id, (draft) => {
+              if (!eligible(draft)) {
+                draft.enabled = false
+                return
+              }
+              draft.cost = draft.cost.map((cost) => ({ ...cost, input: 0, output: 0, cache: { read: 0, write: 0 } }))
+              draft.api = {
+                type: "native",
+                id: draft.api.id,
+                package: codexPackage,
+                settings:
+                  draft.api.type === "aisdk"
+                    ? { ...item.provider.api.settings, ...draft.api.settings }
+                    : draft.api.settings,
+              }
+            })
+          }
         }
       }),
+    )
+    yield* events.subscribe(Integration.Event.ConnectionUpdated).pipe(
+      Stream.filter((event) => event.data.integrationID === Integration.ID.make("openai")),
+      Stream.runForEach(() => ctx.catalog.reload()),
+      Effect.forkScoped({ startImmediately: true }),
     )
     yield* ctx.aisdk.sdk(
       Effect.fn(function* (evt) {
@@ -269,16 +302,27 @@ function authorizeURL(redirect: string, pkce: Pkce, state: string) {
     codex_cli_simplified_flow: "true",
     state,
     originator: "opencode",
-  })}`
+  }).toString()}`
 }
 
 function extractAccountID(tokens: TokenResponse) {
   return claim(tokens.id_token) ?? claim(tokens.access_token)
 }
 
+function isChatGPT(credential: { readonly type: string; readonly methodID?: string } | undefined) {
+  return (
+    credential?.type === "oauth" &&
+    (credential.methodID === browserMethodID || credential.methodID === headlessMethodID)
+  )
+}
+
+function eligible(model: { readonly id: string }) {
+  return model.id.includes("codex")
+}
+
 function claim(token: string) {
   const part = token.split(".")[1]
-  if (!part) return
+  if (!part) return undefined
   try {
     const claims = JSON.parse(Buffer.from(part, "base64url").toString()) as Claims
     return (
@@ -287,6 +331,6 @@ function claim(token: string) {
       claims.organizations?.[0]?.id
     )
   } catch {
-    return
+    return undefined
   }
 }

@@ -3,6 +3,7 @@ import { describe, expect } from "bun:test"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { Effect } from "effect"
 import { Catalog } from "@opencode-ai/core/catalog"
+import { Credential } from "@opencode-ai/core/credential"
 import { Integration } from "@opencode-ai/core/integration"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { PluginV2 } from "@opencode-ai/core/plugin"
@@ -16,7 +17,6 @@ const it = testEffect(PluginTestLayer)
 
 const addPlugin = Effect.fn(function* () {
   const plugin = yield* PluginV2.Service
-  const aisdk = yield* AISDK.Service
   const host = yield* PluginHost.make(plugin)
   const integrations = yield* Integration.Service
   yield* OpenAIPlugin.effect(host).pipe(Effect.provideService(Integration.Service, integrations))
@@ -61,7 +61,6 @@ describe("OpenAIPlugin", () => {
 
   it.effect("creates an OpenAI SDK for @ai-sdk/openai using the provider ID as SDK name", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -78,7 +77,6 @@ describe("OpenAIPlugin", () => {
 
   it.effect("ignores non-OpenAI SDK packages", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -95,7 +93,6 @@ describe("OpenAIPlugin", () => {
 
   it.effect("uses the Responses API for language models", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -114,7 +111,6 @@ describe("OpenAIPlugin", () => {
 
   it.effect("ignores non-OpenAI providers", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -171,6 +167,54 @@ describe("OpenAIPlugin", () => {
         required(yield* catalog.model.get(ProviderV2.ID.make("custom-openai"), ModelV2.ID.make("gpt-5-chat-latest")))
           .enabled,
       ).toBe(true)
+    }),
+  )
+
+  it.effect("routes eligible models to the codex package for ChatGPT connections", () =>
+    Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const credentials = yield* Credential.Service
+      yield* catalog.transform((catalog) => {
+        const item = ProviderV2.Info.make({
+          ...ProviderV2.Info.empty(ProviderV2.ID.openai),
+          api: { type: "aisdk", package: "@ai-sdk/openai", settings: { store: false } },
+        })
+        catalog.provider.update(item.id, (draft) => {
+          draft.api = item.api
+        })
+        catalog.model.update(item.id, ModelV2.ID.make("gpt-5-codex"), (draft) => {
+          draft.api = { id: ModelV2.ID.make("gpt-5-codex"), type: "aisdk", package: "@ai-sdk/openai" }
+          draft.cost = [{ input: 1, output: 2, cache: { read: 3, write: 4 } }]
+        })
+        catalog.model.update(item.id, ModelV2.ID.make("gpt-5"), (draft) => {
+          draft.api = { id: ModelV2.ID.make("gpt-5"), type: "aisdk", package: "@ai-sdk/openai" }
+        })
+      })
+      yield* credentials.create({
+        integrationID: Integration.ID.make("openai"),
+        value: Credential.OAuth.make({
+          type: "oauth",
+          methodID: Integration.MethodID.make("chatgpt-browser"),
+          access: "access",
+          refresh: "refresh",
+          expires: Date.now() + 60_000,
+          metadata: { accountID: "account-123" },
+        }),
+      })
+
+      yield* addPlugin()
+
+      expect(required(yield* catalog.model.get(ProviderV2.ID.openai, ModelV2.ID.make("gpt-5-codex")))).toMatchObject({
+        enabled: true,
+        api: {
+          type: "native",
+          id: "gpt-5-codex",
+          package: "@opencode-ai/llm/providers/openai/codex",
+          settings: { store: false },
+        },
+        cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
+      })
+      expect(required(yield* catalog.model.get(ProviderV2.ID.openai, ModelV2.ID.make("gpt-5"))).enabled).toBe(false)
     }),
   )
 })

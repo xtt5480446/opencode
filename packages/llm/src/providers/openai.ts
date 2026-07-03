@@ -1,6 +1,8 @@
 import { AuthOptions, type ProviderAuthOption } from "../route/auth-options"
+import { Auth } from "../route/auth"
 import type { Route, RouteDefaultsInput } from "../route/client"
 import { ProviderID, type ModelID } from "../schema"
+import { ProviderPackage } from "../provider-package"
 import * as OpenAIChat from "../protocols/openai-chat"
 import * as OpenAIResponses from "../protocols/openai-responses"
 import { withOpenAIOptions, type OpenAIProviderOptionsInput } from "./openai-options"
@@ -20,6 +22,8 @@ export type Config = RouteDefaultsInput &
     readonly queryParams?: Record<string, string>
     readonly providerOptions?: OpenAIProviderOptionsInput
   }
+
+export interface OpenAISettings extends ProviderPackage.Settings {}
 
 const auth = (options: ProviderAuthOption<"optional">) => AuthOptions.bearer(options, "OPENAI_API_KEY")
 
@@ -57,7 +61,16 @@ export const configure = (input: Config = {}) => {
 
 export const provider = configure()
 
-export const model = provider.model
+export const model = ProviderPackage.define((modelID, settings: OpenAISettings) =>
+  OpenAIResponses.model(modelID, {
+    auth: settings.apiKey === undefined ? Auth.none : Auth.bearer(settings.apiKey),
+    baseURL: settings.baseURL,
+    headers: settings.headers,
+    providerOptions: settings.providerOptions === undefined ? undefined : { openai: settings.providerOptions },
+    body: settings.body,
+    limits: settings.limits,
+  }),
+)
 export const responses = provider.responses
 export const responsesWebSocket = provider.responsesWebSocket
 export const chat = provider.chat

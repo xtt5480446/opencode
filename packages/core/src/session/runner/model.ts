@@ -1,11 +1,7 @@
 export * as SessionRunnerModel from "./model"
 
 import { makeLocationNode } from "../../effect/app-node"
-import { type Model } from "@opencode-ai/llm"
-import * as AnthropicMessages from "@opencode-ai/llm/protocols/anthropic-messages"
-import * as OpenAICompatibleChat from "@opencode-ai/llm/protocols/openai-compatible-chat"
-import * as OpenAIResponses from "@opencode-ai/llm/protocols/openai-responses"
-import { Auth, type AnyRoute } from "@opencode-ai/llm/route"
+import { Model } from "@opencode-ai/llm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { produce } from "immer"
 import { Catalog } from "../../catalog"
@@ -69,6 +65,7 @@ export type Error =
   | ModelUnavailableError
   | VariantUnavailableError
   | UnsupportedApiError
+  | ProviderV2.PackageLoadError
   | Integration.AuthorizationError
 
 export interface Interface {
@@ -79,27 +76,6 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 
 /** Test or embedding seam for supplying a model resolver directly. */
 export const layerWith = (resolve: Interface["resolve"]) => Layer.succeed(Service, Service.of({ resolve }))
-
-const apiKey = (model: ModelV2.Info, credential?: Credential.Value) => {
-  if (credential?.type === "key") return Auth.value(credential.key)
-  if (credential?.type === "oauth") return Auth.value(credential.access)
-  const value = model.request.body.apiKey ?? model.api.settings?.apiKey
-  if (typeof value === "string") return Auth.value(value)
-}
-
-const withDefaults = (model: ModelV2.Info, route: AnyRoute) => {
-  const body = model.request.body
-  const httpBody = Object.hasOwn(body, "apiKey")
-    ? Object.fromEntries(Object.entries(body).filter(([key]) => key !== "apiKey"))
-    : body
-  return route.with({
-    provider: model.providerID,
-    endpoint: model.api.url === undefined ? undefined : { baseURL: model.api.url },
-    headers: model.request.headers,
-    http: { body: httpBody },
-    limits: { context: model.limit.context, output: model.limit.output },
-  })
-}
 
 const withVariant = (
   model: ModelV2.Info,
@@ -131,52 +107,99 @@ const apiName = (model: ModelV2.Info) =>
 export const fromCatalogModel = (
   model: ModelV2.Info,
   credential?: Credential.Value,
-): Effect.Effect<Model, UnsupportedApiError> => {
+): Effect.Effect<Model, UnsupportedApiError | ProviderV2.PackageLoadError> => {
   const resolved =
     credential?.type !== "key" || credential.metadata === undefined
       ? model
       : produce(model, (draft) => {
           Object.assign(draft.request.body, credential.metadata)
         })
-  const key = apiKey(resolved, credential)
-  if (resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/openai") {
-    return Effect.succeed(
-      withDefaults(resolved, OpenAIResponses.route)
-        .with({ auth: key === undefined ? Auth.none : Auth.bearer(key) })
-        .model({ id: resolved.api.id }),
-    )
-  }
-  if (resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/anthropic") {
-    return Effect.succeed(
-      withDefaults(resolved, AnthropicMessages.route)
-        .with({ auth: key === undefined ? Auth.none : Auth.header("x-api-key", key) })
-        .model({ id: resolved.api.id }),
-    )
-  }
-  if (resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/openai-compatible" && resolved.api.url) {
-    return Effect.succeed(
-      withDefaults(resolved, OpenAICompatibleChat.route)
-        .with({ auth: key === undefined ? Auth.none : Auth.bearer(key) })
-        .model({ id: resolved.api.id }),
-    )
-  }
-  return Effect.fail(
-    new UnsupportedApiError({
-      providerID: resolved.providerID,
-      modelID: resolved.id,
-      api: apiName(resolved),
-    }),
+  return packageSpecifier(resolved).pipe(
+    Effect.flatMap((specifier) =>
+      ProviderV2.loadPackage(specifier).pipe(
+        Effect.map((load) => {
+          const selected = load(resolved.api.id ?? resolved.id, {
+            ...resolved.api.settings,
+            ...(credential?.type === "oauth" ? credential.metadata : undefined),
+            baseURL: resolved.api.url ?? settingsString(resolved.api.settings, "baseURL"),
+            apiKey: apiKey(resolved, credential),
+            providerOptions: requestSettings(resolved.request),
+            headers: resolved.request.headers,
+            body: stripApiKey(resolved.request.body),
+            limits: { context: resolved.limit.context, output: resolved.limit.output },
+          })
+          return Model.update(selected, {
+            provider: resolved.providerID,
+            route: selected.route.with({ provider: resolved.providerID }),
+          })
+        }),
+      ),
+    ),
   )
 }
 
 export const resolve = (session: SessionSchema.Info, model: ModelV2.Info, credential?: Credential.Value) =>
   withVariant(model, session.model?.variant).pipe(Effect.flatMap((model) => fromCatalogModel(model, credential)))
 
+/** Legacy aisdk catalog entries dispatch to the equivalent native provider packages. */
+const aisdkPackages: Record<string, string | undefined> = {
+  "@ai-sdk/openai": "@opencode-ai/llm/providers/openai",
+  "@ai-sdk/anthropic": "@opencode-ai/llm/providers/anthropic",
+  "@ai-sdk/openai-compatible": "@opencode-ai/llm/providers/openai-compatible",
+}
+
 export const supported = (model: ModelV2.Info) =>
-  model.api.type === "aisdk" &&
-  (model.api.package === "@ai-sdk/openai" ||
-    model.api.package === "@ai-sdk/anthropic" ||
-    (model.api.package === "@ai-sdk/openai-compatible" && model.api.url !== undefined))
+  (model.api.type === "native" && model.api.package !== undefined) ||
+  (model.api.type === "aisdk" &&
+    aisdkPackages[model.api.package] !== undefined &&
+    // The openai-compatible package has no default endpoint; a URL is required.
+    (model.api.package !== "@ai-sdk/openai-compatible" || model.api.url !== undefined))
+
+const packageSpecifier = (model: ModelV2.Info): Effect.Effect<string, UnsupportedApiError> => {
+  if (supported(model)) {
+    if (model.api.type === "native" && model.api.package !== undefined) return Effect.succeed(model.api.package)
+    const specifier = model.api.type === "aisdk" ? aisdkPackages[model.api.package] : undefined
+    if (specifier !== undefined) return Effect.succeed(specifier)
+  }
+  return Effect.fail(
+    new UnsupportedApiError({
+      providerID: model.providerID,
+      modelID: model.id,
+      api: apiName(model),
+    }),
+  )
+}
+
+const apiKey = (model: ModelV2.Info, credential?: Credential.Value) => {
+  if (credential?.type === "key") return credential.key
+  if (credential?.type === "oauth") return credential.access
+  const value = model.request.body.apiKey ?? model.api.settings?.apiKey
+  if (typeof value === "string") return value
+  return undefined
+}
+
+const stripApiKey = (body: ModelV2.Info["request"]["body"]) => {
+  if (!Object.hasOwn(body, "apiKey")) return body
+  return Object.fromEntries(Object.entries(body).filter(([key]) => key !== "apiKey"))
+}
+
+const requestSettings = (request: ModelV2.Info["request"]) => {
+  if (!("settings" in request)) return undefined
+  const settings = request.settings
+  if (!isRecord(settings)) return undefined
+  if (Object.keys(settings).length === 0) return undefined
+  return settings
+}
+
+const settingsString = (settings: ModelV2.Info["api"]["settings"], key: string) => {
+  const value = settings?.[key]
+  if (typeof value === "string") return value
+  return undefined
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
 
 /** Resolves models from the catalog belonging to the current Location runtime. */
 export const locationLayer = Layer.effect(

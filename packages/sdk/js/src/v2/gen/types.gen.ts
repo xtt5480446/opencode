@@ -4779,6 +4779,7 @@ export type ModelApi =
   | {
       id: string
       type: "native"
+      package?: string
       url?: string
       settings: {
         [key: string]: unknown
@@ -4853,6 +4854,7 @@ export type ProviderAisdk = {
 
 export type ProviderNative = {
   type: "native"
+  package?: string
   url?: string
   settings: {
     [key: string]: unknown

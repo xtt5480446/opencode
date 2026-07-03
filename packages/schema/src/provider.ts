@@ -34,6 +34,7 @@ export const AISDK = Schema.Struct({
 export interface Native extends Schema.Schema.Type<typeof Native> {}
 export const Native = Schema.Struct({
   type: Schema.Literal("native"),
+  package: Schema.String.pipe(optional),
   url: Schema.String.pipe(optional),
   settings: Schema.Record(Schema.String, Schema.Unknown),
 }).annotate({ identifier: "Provider.Native" })

@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { LLM, LLMClient, Provider } from "@opencode-ai/llm"
+import { LLM, LLMClient, Provider, ProviderPackage } from "@opencode-ai/llm"
 import { Route, Protocol } from "@opencode-ai/llm/route"
 import { Provider as ProviderSubpath } from "@opencode-ai/llm/provider"
+import { ProviderPackage as ProviderPackageSubpath } from "@opencode-ai/llm/provider-package"
 import {
   CloudflareAIGateway,
   CloudflareWorkersAI,
   OpenAI,
+  OpenAICodex,
   OpenAICompatible,
   OpenRouter,
   XAI,
@@ -21,6 +23,8 @@ describe("public exports", () => {
     expect(LLMClient.layer).toBeDefined()
     expect(Provider.make).toBeFunction()
     expect(ProviderSubpath.make).toBe(Provider.make)
+    expect(ProviderPackage.define).toBeFunction()
+    expect(ProviderPackageSubpath.define).toBe(ProviderPackage.define)
   })
 
   test("route barrel exposes route-authoring APIs", () => {
@@ -30,10 +34,11 @@ describe("public exports", () => {
 
   test("provider barrels expose user-facing facades", () => {
     expect(OpenAI.model).toBeFunction()
-    expect(OpenAI.provider.model).toBe(OpenAI.model)
+    expect(OpenAI.provider.model).toBeFunction()
     expect(OpenAI.provider.responses).toBe(OpenAI.responses)
     expect(OpenAI.provider.responsesWebSocket).toBe(OpenAI.responsesWebSocket)
     expect(OpenAI.configure({ apiKey: "fixture" }).responses).toBeFunction()
+    expect(OpenAICodex.model).toBeFunction()
     expect(OpenAICompatible.deepseek.model).toBeFunction()
     expect(CloudflareAIGateway.configure).toBeFunction()
     expect(CloudflareAIGateway.configure({ accountId: "fixture", gatewayApiKey: "fixture" }).model).toBeFunction()
