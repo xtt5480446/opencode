@@ -1,9 +1,8 @@
 import { describe, expect, beforeAll, beforeEach, afterAll } from "bun:test"
-import { Effect, Layer, Ref } from "effect"
+import { Effect, Layer, Logger, Ref, References } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Global } from "@opencode-ai/core/global"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
@@ -96,6 +95,22 @@ const buildLayer = (state: Ref.Ref<MockState>) =>
       [LayerNodePlatform.httpClient, Layer.succeed(HttpClient.HttpClient, makeMockClient(state))],
     ]),
   )
+
+const makeCaptureLoggerLayer = (entries: Array<{ message: string; logLevel: string }>) =>
+  Layer.mergeAll(
+    Logger.layer(
+      [
+        Logger.make<unknown, void>((options) => {
+          entries.push({ message: logMessage(options.message), logLevel: options.logLevel })
+        }),
+      ],
+      { mergeWithExisting: false },
+    ),
+    Layer.succeed(References.MinimumLogLevel, "Debug"),
+  )
+
+const logMessage = (message: unknown) =>
+  Array.isArray(message) ? message.map((item) => String(item)).join(" ") : String(message)
 
 const writeCacheText = (text: string, mtimeMs?: number) =>
   Effect.promise(async () => {
@@ -285,6 +300,45 @@ describe("ModelsDev Service", () => {
       // retryTransient retries 5xx, so calls may be > 1.
       const final = yield* Ref.get(state)
       expect(final.calls.length).toBeGreaterThanOrEqual(1)
+    }),
+  )
+
+  it.live("background refresh logs fetch failures at Debug", () =>
+    Effect.gen(function* () {
+      const entries: Array<{ message: string; logLevel: string }> = []
+      const state = yield* Ref.make({ ...initialState, status: 404, body: "boom" })
+      yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          Flag.OPENCODE_DISABLE_MODELS_FETCH = false
+        }),
+        () =>
+          Effect.gen(function* () {
+            yield* Layer.build(buildLayer(state))
+            yield* Effect.sleep("1 second")
+          }).pipe(Effect.scoped, Effect.provide(makeCaptureLoggerLayer(entries))),
+        () =>
+          Effect.sync(() => {
+            Flag.OPENCODE_DISABLE_MODELS_FETCH = true
+          }),
+      )
+      const failures = entries.filter((entry) => entry.message.includes("Failed to fetch models.dev"))
+      expect(failures.some((entry) => entry.logLevel === "Debug")).toBe(true)
+      expect(failures.some((entry) => entry.logLevel === "Error")).toBe(false)
+    }),
+  )
+
+  it.live("manual refresh logs fetch failures at Error", () =>
+    Effect.gen(function* () {
+      yield* writeCache(fixture)
+      const entries: Array<{ message: string; logLevel: string }> = []
+      const state = yield* Ref.make({ ...initialState, status: 404, body: "boom" })
+      yield* ModelsDev.Service.use((s) => s.refresh(true)).pipe(
+        Effect.provide(buildLayer(state)),
+        Effect.provide(makeCaptureLoggerLayer(entries)),
+      )
+      const failures = entries.filter((entry) => entry.message.includes("Failed to fetch models.dev"))
+      expect(failures.some((entry) => entry.logLevel === "Error")).toBe(true)
+      expect(failures.some((entry) => entry.logLevel === "Debug")).toBe(false)
     }),
   )
 })
