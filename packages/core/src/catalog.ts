@@ -77,7 +77,12 @@ const layer = Layer.effect(
 
     const projectModel = (model: ModelV2.Info, provider: ProviderV2.Info) => {
       const api =
-        model.api.type === "native" && !model.api.url && Object.keys(model.api.settings).length === 0
+        // A native api with a package is explicitly targeted; only package-less,
+        // settings-less native apis are placeholders that inherit the provider api.
+        model.api.type === "native" &&
+        model.api.package === undefined &&
+        !model.api.url &&
+        Object.keys(model.api.settings).length === 0
           ? { ...provider.api, id: model.api.id }
           : model.api.type === "aisdk" && provider.api.type === "aisdk" && !model.api.url
             ? { ...model.api, url: provider.api.url, settings: { ...provider.api.settings, ...model.api.settings } }

@@ -213,6 +213,40 @@ describe("CatalogV2", () => {
     }),
   )
 
+  it.effect("keeps an explicit native package api over the provider api", () =>
+    Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const providerID = ProviderV2.ID.make("test")
+      const modelID = ModelV2.ID.make("model")
+      yield* catalog.transform((catalog) => {
+        catalog.provider.update(providerID, (provider) => {
+          provider.api = {
+            type: "aisdk",
+            package: "@ai-sdk/openai",
+          }
+        })
+        catalog.model.update(providerID, modelID, (model) => {
+          // Plugins retarget models at explicit native packages (e.g. ChatGPT
+          // subscription models at the codex package); empty settings must not
+          // demote the api back to the provider placeholder rule.
+          model.api = {
+            type: "native",
+            id: model.api.id,
+            package: "@opencode-ai/llm/providers/openai/codex",
+            settings: {},
+          }
+        })
+      })
+
+      expect(required(yield* catalog.model.get(providerID, modelID)).api).toEqual({
+        id: modelID,
+        type: "native",
+        package: "@opencode-ai/llm/providers/openai/codex",
+        settings: {},
+      })
+    }),
+  )
+
   it.effect("resolves provider and model request merges", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service
