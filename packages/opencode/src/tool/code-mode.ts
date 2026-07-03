@@ -19,18 +19,6 @@ import { Plugin } from "@/plugin"
 
 export const CODE_MODE_TOOL = "execute"
 
-// OpenCode sets NO execution limits: no timeout, no tool-call cap, and no CodeMode output
-// truncation. Cancelling the tool call aborts `ctx.abort`, which wins the race below and
-// interrupts the execution fiber — structured concurrency takes the program and its
-// in-flight child calls down with it; every child call is permission-gated anyway. Output
-// bounding is OpenCode's native tool-output truncation (Tool.define's shared wrapper),
-// which applies to `execute` like any other tool and dumps the full output to a file when
-// it triggers.
-
-// The static base description. The full usage guide and the grouped, permission-filtered
-// tool catalog are appended per agent by the registry (`describeCodeMode`, the same
-// composition point `describeTask` uses), so `plugin.trigger("tool.definition")` sees this
-// base first, exactly like the task tool.
 const DESCRIPTION = [
   "Execute a JavaScript/TypeScript program that orchestrates the connected MCP tools inside a confined runtime.",
   "The full usage guide and the catalog of available tools follow below.",
@@ -46,8 +34,6 @@ export const Parameters = Schema.Struct({
   }),
 })
 
-/** One child tool call, surfaced live so the UI can render a per-call line that
- *  updates as the program runs. `tool` is the dotted path (e.g. `github.create_issue`). */
 export type CallEntry = { tool: string; status: "running" | "completed" | "error"; input?: Record<string, unknown> }
 
 type Metadata = {
@@ -55,17 +41,8 @@ type Metadata = {
   error?: boolean
 }
 
-/**
- * A tool-result attachment: identical to a session `FilePart` (minus the ids) and
- * carrying the actual bytes (`url`, often a base64 `data:` URL), so it lowers 1:1 into
- * `Tool.ExecuteResult.attachments`. Attachments never enter the sandbox — media stripped
- * from child tool results is accumulated host-side and returned on the outer `execute`
- * result, where the existing attachment plumbing turns it into visible images/files.
- */
 export type Attachment = NonNullable<Tool.ExecuteResult["attachments"]>[number]
 
-/** One MCP tool in the grouped catalog: the flat `server_tool` key split into its
- *  namespace (`server`) and local name, with the raw JSON Schemas used for rendering. */
 export type CatalogEntry = {
   path: string
   key: string
@@ -77,24 +54,14 @@ export type CatalogEntry = {
   outputSchema?: JsonSchema
 }
 
-/** Render-only cast: MCP definitions carry JSON Schema documents already. */
 const toJsonSchema = (schema: unknown): JsonSchema => schema as JsonSchema
 
-/** The input schema for entries without a cached MCP definition, recovered from the
- *  ai-sdk tool when possible so signatures stay informative. */
 function fallbackInputSchema(tool: AITool): JsonSchema {
   const schema = (tool.inputSchema as { jsonSchema?: unknown } | undefined)?.jsonSchema
   if (schema && typeof schema === "object") return toJsonSchema(schema)
   return { type: "object", properties: {} }
 }
 
-/**
- * Group the flat `server_tool` catalog into per-server namespaces. `servers` are
- * the sanitized MCP client names; the longest matching prefix wins so a server
- * named `a_b` beats `a` for the key `a_b_tool`. `mcpDefs` carries the raw MCP
- * definitions (keyed identically) so each entry retains its original
- * `inputSchema`/`outputSchema` for signature rendering.
- */
 export function groupByServer(
   mcpTools: Record<string, AITool>,
   servers: readonly string[],
@@ -121,8 +88,6 @@ export function groupByServer(
   return groups
 }
 
-/** The executable catalog for a (already permission-filtered) MCP tool set: grouped
- *  entries, minus any without an ai-sdk execute function. */
 export function buildCatalog(
   mcpTools: Record<string, AITool>,
   mcpDefs: Record<string, MCPToolDef>,
@@ -131,13 +96,6 @@ export function buildCatalog(
   return [...groupByServer(mcpTools, servers, mcpDefs).values()].flat().filter((entry) => entry.tool.execute !== undefined)
 }
 
-/**
- * The model-facing usage guide plus grouped catalog for the given MCP tool set: the
- * CodeMode instructions for this tool tree (syntax guide + tool signatures, or the
- * namespace overview + search for large catalogs). Callers pass an already
- * permission-filtered tool set — hard-denied tools never enter the catalog. The preview
- * tree's runs are placeholders — rendering never invokes them.
- */
 export function catalogInstructions(
   mcpTools: Record<string, AITool>,
   mcpDefs: Record<string, MCPToolDef>,
@@ -167,20 +125,11 @@ const lastSegment = (uri: string) => {
 
 const dataUrl = (mime: string, base64: string) => `data:${mime};base64,${base64}`
 
-/** The stand-in payload for a media-only tool result, so the program knows the call
- *  succeeded even though the media itself never enters the sandbox. */
 const mediaMarker = (files: number, images: number) => {
   const noun = files === images ? "image" : "file"
   return `[${files} ${noun}${files === 1 ? "" : "s"} attached to the result]`
 }
 
-/**
- * Reduce a raw MCP tool result to the value the sandbox sees. Structured content is
- * preferred; otherwise text blocks are joined. Media blocks (image/audio/resource
- * blob/resource_link) NEVER enter the sandbox: they are stripped into `collect`, the
- * per-execution attachment accumulator, and a tool that returned ONLY media yields a
- * small text marker instead. Lenient — never throws on unexpected shapes.
- */
 export function toSandboxResult(raw: unknown, collect: (attachment: Attachment) => void): unknown {
   if (raw === null || typeof raw !== "object") return raw
   const record = raw as { structuredContent?: unknown; content?: unknown }
@@ -239,19 +188,12 @@ export function toSandboxResult(raw: unknown, collect: (attachment: Attachment) 
   return raw
 }
 
-/**
- * Append captured `console.*` output to the model-facing text as a trailing `Logs:` section,
- * so a program's diagnostics ride back alongside its result — on success AND on error.
- * Returns the text unchanged when nothing was logged. This is the sandbox's only
- * stdout-like channel — it goes to the model, not the user.
- */
 export function withLogs(output: string, logs: ReadonlyArray<string> = []): string {
   if (logs.length === 0) return output
   const section = "Logs:\n" + logs.join("\n")
   return output.length > 0 ? `${output}\n\n${section}` : section
 }
 
-/** Coerce the program's return value to model-facing text without ever failing on shape. */
 export function formatValue(value: unknown): string {
   if (typeof value === "string") return value
   if (value === undefined) return "undefined"
@@ -264,8 +206,6 @@ export function formatValue(value: unknown): string {
 
 type Run = (input: unknown) => Effect.Effect<unknown, unknown>
 
-/** Build the `tools.<server>.<tool>` tree CodeMode executes against, one
- *  `Tool.make` definition per MCP tool with its render-only JSON Schemas. */
 function toolTree(catalog: readonly CatalogEntry[], run: (entry: CatalogEntry) => Run) {
   const tree: Record<string, Record<string, ToolDefinition>> = {}
   for (const entry of catalog) {
@@ -280,10 +220,6 @@ function toolTree(catalog: readonly CatalogEntry[], run: (entry: CatalogEntry) =
   return tree
 }
 
-/** Failures inside a child call — plugin hook failures, permission denials, and tool
- *  failures alike — become safe, catchable in-program errors via toolError, so a
- *  program can try/catch one call without the whole execution dying. Interruption
- *  (user cancel) keeps propagating as interruption. */
 const toCatchable = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.catchCause((cause) => {
@@ -340,8 +276,6 @@ export const CodeModeTool = Tool.define(
       description: DESCRIPTION,
       parameters: Parameters,
       execute: Effect.fn("CodeMode.execute")(function* (params, ctx) {
-        // Already cancelled: don't start the program at all. (The mid-flight case is the
-        // race below; racing alone would still let the program run its first steps.)
         if (ctx.abort.aborted) {
           return {
             title: CODE_MODE_TOOL,
@@ -349,11 +283,6 @@ export const CodeModeTool = Tool.define(
             output: "Execution cancelled.",
           } satisfies Tool.ExecuteResult<Metadata>
         }
-        // A fresh MCP snapshot per execution, so the runtime tracks live tool-list
-        // changes, filtered with the same merged agent+session ruleset that gates
-        // `ctx.ask` (see SessionTools.context). A hard-denied tool never enters the
-        // tree, so it is not dispatchable even if the model guesses its name — the
-        // program gets the normal unknown-tool diagnostic, not a permission error.
         const agent = yield* agents.get(ctx.agent)
         const session = yield* sessions.get(ctx.sessionID).pipe(Effect.orDie)
         const ruleset = Permission.merge(agent.permission, session.permission ?? [])
@@ -362,22 +291,10 @@ export const CodeModeTool = Tool.define(
         const catalog = buildCatalog(mcpTools, yield* mcp.defs(), servers)
 
         const calls: CallEntry[] = []
-        // Media stripped from child tool results accumulates here for the life of the
-        // call; the bytes never enter the sandbox (see toSandboxResult).
         const attachments: Attachment[] = []
         const collect = (attachment: Attachment) => void attachments.push(attachment)
-        // Stream the current call list to the UI. Sent on every status change so the
-        // tool part shows each child call appearing and resolving while the program runs.
         const publish = () => ctx.metadata({ title: CODE_MODE_TOOL, metadata: { toolCalls: calls.map((c) => ({ ...c })) } })
 
-        // One CodeMode tool per MCP tool: plugin before hook → permission ask →
-        // Tool.execute span → dispatch through the ai-sdk wrapper, which owns callTool
-        // timeouts/progress and turns an MCP isError into a thrown Error → plugin after
-        // hook. This keeps plugins aware of child calls. Each child gets a
-        // synthetic hook/span callID `${parentCallID}/${n}` (per-execution counter,
-        // opaque — nothing parses it); the ai-sdk toolCallId is unchanged. Failures —
-        // hook, denial, or tool — fail only that child call as a safe, catchable
-        // in-program error (toCatchable); the raw result is then shaped for the sandbox.
         let childCalls = 0
         const callTool = (entry: CatalogEntry) => (input: unknown) =>
           toCatchable(
@@ -412,11 +329,7 @@ export const CodeModeTool = Tool.define(
             }),
         })
 
-        // The shared tool runner does not wire ctx.abort to fiber interruption (it runs
-        // tools via Effect.runPromise with no abort handling), so without this race the
-        // program would keep running after the user cancels. The abort signal winning the
-        // race interrupts the execution fiber; the cancelled result keeps the runner's
-        // post-abort bookkeeping (completeToolCall) on its normal path.
+        // Bridge ai-sdk AbortSignal cancellation into the Effect fiber.
         const cancelled = Effect.callback<ExecuteResult>((resume) => {
           const onAbort = () =>
             resume(
@@ -443,8 +356,6 @@ export const CodeModeTool = Tool.define(
             ...attached,
           } satisfies Tool.ExecuteResult<Metadata>
         }
-        // Diagnostics may carry suggestions (e.g. pointing an unknown tool at
-        // discovery); append the ones the message doesn't already contain.
         const hints = (result.error.suggestions ?? []).filter((hint) => !result.error.message.includes(hint))
         return {
           title: CODE_MODE_TOOL,

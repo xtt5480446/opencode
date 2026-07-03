@@ -35,8 +35,6 @@ const ctx: Tool.Context = {
   ask: () => Effect.void,
 }
 
-// Build a real MCP-derived AI SDK tool over a fake transport, so the adapter exercises
-// the same `convertTool` execution path that `mcp.tools()` produces at runtime.
 function mcpTool(
   name: string,
   handler: (args: Record<string, unknown>) => unknown,
@@ -48,12 +46,6 @@ function mcpTool(
   return McpCatalog.convertTool({ name, description: name, inputSchema } as any, client as any)
 }
 
-// Truncate echoes its input so assertions read the exact program output. Agent.get is
-// consulted by the shared wrapper during truncation AND at execute time for the
-// permission ruleset that filters the dispatchable tool tree; Session.get supplies the
-// (empty) session-level ruleset half of that merge. Plugin.trigger defaults to the
-// pass-through the real service uses when no plugin implements a hook; tests observing
-// or failing hooks override it.
 function harness(input: {
   mcpTools: Record<string, AITool>
   defs?: Record<string, MCPToolDef>
@@ -82,8 +74,6 @@ function harness(input: {
   )
 }
 
-// Derive sanitized server namespaces from the catalog keys, mirroring how the registry
-// passes `Object.keys(mcp.clients()).map(sanitize)`.
 function serverNames(mcpTools: Record<string, AITool>, servers?: string[]) {
   return servers ?? [...new Set(Object.keys(mcpTools).map((key) => key.split("_")[0]!))]
 }
@@ -104,8 +94,6 @@ function build(
   )
 }
 
-// The agent-facing description, as the registry composes it (`describeCodeMode`):
-// permission-filtered tool set → grouped catalog → CodeMode instructions.
 function describeFor(
   mcpTools: Record<string, AITool>,
   defs: Record<string, MCPToolDef> = {},
@@ -184,13 +172,9 @@ describe("code mode execute", () => {
     )
     expect(description).toContain("tools.github.list_issues(")
     expect(description).toContain("tools.linear.search(")
-    // A schema with no properties renders as an empty object, not `{  }`.
     expect(description).toContain("tools.linear.search(input: {}): Promise<unknown>")
-    // Fully inlined catalog: no discovery round-trip is needed or advertised.
     expect(description).not.toContain("$codemode")
     expect(description).not.toContain("Browse one namespace")
-    // The workflow/rules sections use placeholder call forms only — the example machinery
-    // never cherry-picks a catalog tool or fabricates result fields.
     expect(description).toContain("## Workflow")
     expect(description).toContain("1. Pick a tool from the list under `## Available tools`")
     expect(description).toContain('`const data = typeof res === "string" ? JSON.parse(res) : res` - most tools return JSON as a string')
@@ -237,37 +221,24 @@ describe("code mode execute", () => {
     })
     const description = describeFor(tools, {}, ["alpha", "zeta"])
 
-    // Every namespace is listed with counts; signatures inline round-robin across
-    // namespaces (cheapest-first within each) until the budget runs out, and the
-    // description states exactly how comprehensive the list is. Round-robin fairness:
-    // the small zeta namespace is fully shown even though alpha alone could exhaust
-    // the whole budget.
     expect(description).toContain("Available tools (PARTIAL - ")
     expect(description).toMatch(/- alpha \(150 tools, \d+ shown\)/)
     expect(description).toContain("- zeta (1 tool)\n")
     expect(description).toContain("tools.zeta.only_tool(input: { topic: string }): Promise<unknown>")
     expect(description).toContain("tools.$codemode.search(")
-    // PARTIAL catalogs put search first in the workflow and advertise namespace browsing.
     expect(description).toContain("1. Find a tool (skip when it is already listed below)")
     expect(description).toContain('- Browse one namespace: `await tools.$codemode.search({ query: "", namespace: "<name>" })`.')
     expect(description).not.toContain("total_count")
-    // All op lines cost the same estimated tokens (chars/4 rounds away the 1- vs 3-digit
-    // name difference), so the path tiebreak decides: the lexicographically-first ops made
-    // the cut and the lexicographic tail (op_99 is maximal) did not.
     expect(description).toContain("tools.alpha.op_0(")
     expect(description).not.toContain("tools.alpha.op_99(")
 
-    // The runtime search tool works in-program and returns complete signatures.
     const tool = await build(tools, {}, ["alpha", "zeta"])
     const out = await Effect.runPromise(
       tool.execute({ code: "return await tools.$codemode.search({ query: 'only tool', limit: 3 })" }, ctx),
     )
     const result = JSON.parse(out.output)
-    // Search-result paths carry the `tools.` prefix so each is directly usable as a call site.
     expect(result.items.map((i: any) => i.path)).toContain("tools.zeta.only_tool")
     expect(result.items[0].signature).toContain("tools.")
-    // Search results render the pretty multiline signature: MCP input-property
-    // descriptions ride along as JSDoc field comments. The inline catalog stays compact.
     const signature = result.items.find((i: any) => i.path === "tools.zeta.only_tool").signature
     expect(signature).toContain("tools.zeta.only_tool(input: {\n")
     expect(signature).toContain("  /** Subject to look up */\n  topic: string")
@@ -414,7 +385,6 @@ describe("code mode execute", () => {
 
     expect(output.output).toBe("denied: permission denied by user")
     expect(output.metadata.error).toBeUndefined()
-    // The MCP tool itself never ran.
     expect(called).toEqual([])
     expect(output.metadata.toolCalls).toEqual([{ tool: "a.tool", status: "error" }])
   })
@@ -442,7 +412,6 @@ describe("code mode execute", () => {
     )
 
     expect(out.output).toBe("done")
-    // callID is synthetic and per-execution: `${parentCallID}/${n}`, n starting at 1.
     expect(events.map((e) => [e.name, e.input.tool, e.input.callID])).toEqual([
       ["tool.execute.before", "a_tool", "call_code_mode/1"],
       ["tool.execute.after", "a_tool", "call_code_mode/1"],
@@ -453,7 +422,6 @@ describe("code mode execute", () => {
     expect(before!.input.sessionID).toBe(ctx.sessionID)
     expect(before!.output).toEqual({ args: { x: 1 } })
     expect(after!.input.args).toEqual({ x: 1 })
-    // The after hook sees the raw MCP result — the same payload the legacy path passes.
     expect(after!.output).toEqual({ content: [{ type: "text", text: "one" }] })
   })
 
@@ -489,10 +457,8 @@ describe("code mode execute", () => {
       ),
     )
 
-    // The program handled the hook failure; the rest ran and the outer result is ok.
     expect(out.metadata.error).toBeUndefined()
     expect(out.output).toBe("hook exploded / ok")
-    // The before hook gates dispatch: the failed child's tool never executed.
     expect(called).toEqual(["b"])
   })
 
@@ -508,7 +474,6 @@ describe("code mode execute", () => {
       tool.execute({ code: "await tools.greeter.hello({ name: 'Ada' }); return 'done'" }, recordingCtx),
     )
 
-    // The UI sees the call appear as running, then resolve to completed.
     expect(snapshots).toContainEqual({
       toolCalls: [{ tool: "greeter.hello", status: "running", input: { name: "Ada" } }],
     })
@@ -546,7 +511,6 @@ describe("code mode execute", () => {
     })
 
     const out = await Effect.runPromise(tool.execute({ code: "return await tools.shot.take({})" }, ctx))
-    // The program received the structured content; the media rode along host-side.
     expect(JSON.parse(out.output)).toEqual({ name: "shot.png" })
     expect(out.attachments).toEqual([{ type: "file", mime: "image/png", url: "data:image/png;base64,PNGDATA" }])
     expect(out.output).not.toContain("PNGDATA")
@@ -579,9 +543,6 @@ describe("code mode execute", () => {
   })
 
   test("cancelling via ctx.abort interrupts the running program", async () => {
-    // The child call triggers the abort itself, deterministically, while the program
-    // swallows the call's failure and heads into an infinite loop. If abort did not
-    // interrupt the execution fiber, this test would hang on the busy loop.
     const controller = new AbortController()
     const tool = await build({
       host_trigger: mcpTool("trigger", () => {
@@ -613,8 +574,6 @@ describe("code mode execute", () => {
   })
 
   test("leaves oversized results to OpenCode's native tool-output truncation", async () => {
-    // No CodeMode output limit is set, so the full result reaches the shared Tool.define
-    // wrapper intact (the harness Truncate fake passes it through un-truncated).
     const tool = await build({})
     const output = await Effect.runPromise(tool.execute({ code: "return 'x'.repeat(40000)" }, ctx))
     expect(output.metadata.error).toBeUndefined()
@@ -689,7 +648,6 @@ describe("code mode permission visibility", () => {
     expect(denied.output).not.toContain("permission")
     expect(called).toEqual([])
 
-    // The rest of the namespace still works.
     const allowed = await Effect.runPromise(
       tool.execute({ code: "return await tools.github.list_issues({})" }, ctx),
     )
@@ -718,7 +676,6 @@ describe("code mode permission visibility", () => {
     const visible = Permission.visibleTools(tools, [
       deny("a_tool"),
       askRule("b_tool"),
-      // A scoped (non-"*") deny does not hide the tool from the catalog.
       { permission: "c_tool", pattern: "something", action: "deny" },
     ])
     expect(Object.keys(visible)).toEqual(["b_tool", "c_tool"])
@@ -850,12 +807,9 @@ describe("formatting helpers", () => {
   })
 
   test("withLogs", () => {
-    // No logs: output is returned untouched.
     expect(withLogs("result", [])).toBe("result")
     expect(withLogs("result")).toBe("result")
-    // Logs are appended as a trailing section, one line each.
     expect(withLogs("result", ["a", "[warn] b"])).toBe("result\n\nLogs:\na\n[warn] b")
-    // Empty output still gets the section (no leading blank lines).
     expect(withLogs("", ["[error] boom"])).toBe("Logs:\n[error] boom")
   })
 })

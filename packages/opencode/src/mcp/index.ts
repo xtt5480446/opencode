@@ -159,11 +159,6 @@ export interface Interface {
   readonly clients: () => Effect.Effect<Record<string, MCPClient>>
   readonly instructions: () => Effect.Effect<ServerInstructions[]>
   readonly tools: () => Effect.Effect<Record<string, Tool>>
-  /**
-   * Raw MCP tool definitions keyed identically to {@link tools} (`toolName(client, name)`).
-   * Unlike {@link tools}, these retain the original `inputSchema`/`outputSchema`, which code
-   * mode uses to render tool signatures (including return types) to the model.
-   */
   readonly defs: () => Effect.Effect<Record<string, MCPToolDef>>
   readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
   readonly resources: (clientName?: string) => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
@@ -209,10 +204,6 @@ const layer = Layer.effect(
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
 
-    /**
-     * Connect a client via the given transport with resource safety:
-     * on failure the transport is closed; on success the caller owns it.
-     */
     const connectTransport = Effect.fn("MCP.connectTransport")(function* (transport: Transport, timeout: number) {
       const directory = yield* InstanceState.directory
       return yield* Effect.acquireUseRelease(

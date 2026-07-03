@@ -20,7 +20,6 @@ import {
 import type { Tool as AITool } from "ai"
 import { Effect, Layer } from "effect"
 
-// A 1x1 transparent PNG, base64-encoded, used to exercise image attachments.
 const PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
@@ -37,16 +36,7 @@ const ctx: Tool.Context = {
   ask: () => Effect.void,
 }
 
-/**
- * A minimal JSON-RPC MCP client speaking the real protocol over the in-memory transport.
- * Deliberately NOT the SDK `Client`: `test/mcp/lifecycle.test.ts` (and friends) replace
- * `@modelcontextprotocol/sdk/client/index.js` via bun's `mock.module`, which is
- * process-global and irreversible — in a full `bun test` run (CI) any later import of the
- * SDK Client gets the mock, whose `listTools` returns a canned `test_tool`. Speaking raw
- * JSON-RPC keeps this suite's "real server, real transport, real protocol" property while
- * being immune to that contamination. Only the surface `convertTool`/this file use is
- * implemented: connect handshake, tools/list, tools/call.
- */
+// Avoid the SDK Client here; other MCP tests mock it process-globally.
 class RawJsonRpcClient {
   private nextId = 1
   private pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>()
@@ -56,7 +46,7 @@ class RawJsonRpcClient {
   async connect() {
     this.transport.onmessage = (message) => {
       const msg = message as { id?: number; result?: unknown; error?: { message: string } }
-      if (msg.id === undefined) return // notifications/requests from the server are not needed here
+      if (msg.id === undefined) return
       const entry = this.pending.get(msg.id)
       if (!entry) return
       this.pending.delete(msg.id)
@@ -83,16 +73,11 @@ class RawJsonRpcClient {
     return this.request("tools/list", {})
   }
 
-  /** The `convertTool` surface: schema/options (timeouts, progress) are SDK-client
-   *  concerns and are ignored here — the server never sees them. */
   callTool(params: { name: string; arguments?: Record<string, unknown> }, _schema?: unknown, _options?: unknown) {
     return this.request("tools/call", params)
   }
 }
 
-// A real MCP server, exposed over an in-memory transport, with a representative mix
-// of tools: plain text, structured data (with an outputSchema), an image, and a
-// failing tool. Tools are defined with raw JSON Schema so outputSchema is exact.
 const TOOL_DEFS: MCPToolDef[] = [
   {
     name: "get_text",
@@ -158,9 +143,6 @@ async function buildTool() {
     mcpTools[key] = McpCatalog.convertTool(def, client as unknown as Client)
   }
 
-  // Truncate echoes its input so assertions read the exact program output; Agent/Session
-  // supply the (empty) permission rulesets the execute path merges; MCP serves the tools
-  // this real in-memory server listed — the same snapshot shape the live service returns.
   const layer = Layer.mergeAll(
     Layer.mock(Plugin.Service, {
       trigger: (((_name: unknown, _input: unknown, output: unknown) =>
@@ -179,7 +161,6 @@ async function buildTool() {
   )
   return {
     tool: await Effect.runPromise(CodeModeTool.pipe(Effect.flatMap(Tool.init), Effect.provide(layer))),
-    // The catalog section the registry appends to the base description (describeCodeMode).
     description: catalogInstructions(mcpTools, mcpDefs, [SERVER]),
   }
 }
@@ -201,9 +182,7 @@ describe("code mode integration (real MCP server)", () => {
     )
     expect(description).toContain("tools.fixtures.get_text(input: { name: string }): Promise<unknown>")
     expect(description).toContain("// Add two numbers and return the structured sum")
-    // Small catalog: everything is inline, so no discovery tool is advertised.
     expect(description).not.toContain("$codemode")
-    // The workflow section is present with placeholder-only call forms.
     expect(description).toContain("## Workflow")
     expect(description).toContain("`const res = await tools.<namespace>.<tool>(input)`")
     expect(description).not.toContain("total_count")
@@ -252,7 +231,6 @@ describe("code mode integration (real MCP server)", () => {
       value: "[1 image attached to the result]",
     })
     expect(out.output).not.toContain(PNG)
-    // The stripped image still arrives as a real attachment.
     expect(out.attachments).toHaveLength(1)
   })
 
