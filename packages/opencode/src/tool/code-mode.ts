@@ -114,12 +114,8 @@ function projectMcpResult(result: CallToolResult, collect: (attachment: Attachme
         break
       }
       case "resource_link":
-        push({
-          type: "file",
-          mime: block.mimeType ?? "application/octet-stream",
-          url: block.uri,
-          filename: block.name,
-        })
+        // A link is a reference, not fetchable media; hand it to the program instead of the attachment channel.
+        text.push(`${block.name}: ${block.uri}`)
         break
     }
   }

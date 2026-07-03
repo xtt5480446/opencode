@@ -513,7 +513,7 @@ describe("code mode execute", () => {
       media_mixed: mcpTool("mixed", () => ({
         content: [
           { type: "image", data: "PNG3", mimeType: "image/png" },
-          { type: "resource_link", uri: "file:///tmp/report.pdf", name: "report.pdf", mimeType: "application/pdf" },
+          { type: "resource", resource: { uri: "file:///tmp/report.pdf", mimeType: "application/pdf", blob: "PDF1" } },
         ],
       })),
     })
@@ -539,8 +539,23 @@ describe("code mode execute", () => {
       { type: "file", mime: "image/png", url: "data:image/png;base64,PNG1" },
       { type: "file", mime: "image/png", url: "data:image/png;base64,PNG2" },
       { type: "file", mime: "image/png", url: "data:image/png;base64,PNG3" },
-      { type: "file", mime: "application/pdf", url: "file:///tmp/report.pdf", filename: "report.pdf" },
+      { type: "file", mime: "application/pdf", url: "data:application/pdf;base64,PDF1", filename: "report.pdf" },
     ])
+  })
+
+  test("resource links flow to the program as text, never as attachments", async () => {
+    const tool = await build({
+      docs_find: mcpTool("find", () => ({
+        content: [
+          { type: "resource_link", uri: "https://example.com/guide.pdf", name: "guide.pdf", mimeType: "application/pdf" },
+          { type: "resource_link", uri: "file:///tmp/notes.md", name: "notes.md" },
+        ],
+      })),
+    })
+    const out = await Effect.runPromise(tool.execute({ code: "return await tools.docs.find({})" }, ctx))
+
+    expect(out.output).toBe("guide.pdf: https://example.com/guide.pdf\nnotes.md: file:///tmp/notes.md")
+    expect(out.attachments).toBeUndefined()
   })
 
   test("attachments still flow when the program returns something else entirely", async () => {
