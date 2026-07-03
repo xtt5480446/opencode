@@ -2,7 +2,7 @@ export * as SessionRunnerModel from "./model"
 
 import { makeLocationNode } from "../../effect/app-node"
 import { Model } from "@opencode-ai/llm"
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Layer, Predicate, Schema } from "effect"
 import { produce } from "immer"
 import { Catalog } from "../../catalog"
 import { Credential } from "../../credential"
@@ -186,7 +186,7 @@ const stripApiKey = (body: ModelV2.Info["request"]["body"]) => {
 const requestSettings = (request: ModelV2.Info["request"]) => {
   if (!("settings" in request)) return undefined
   const settings = request.settings
-  if (!isRecord(settings)) return undefined
+  if (!Predicate.isReadonlyObject(settings)) return undefined
   if (Object.keys(settings).length === 0) return undefined
   return settings
 }
@@ -195,10 +195,6 @@ const settingsString = (settings: ModelV2.Info["api"]["settings"], key: string) 
   const value = settings?.[key]
   if (typeof value === "string") return value
   return undefined
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 /** Resolves models from the catalog belonging to the current Location runtime. */
