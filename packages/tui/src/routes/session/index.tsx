@@ -950,7 +950,10 @@ export function Session() {
                   </Match>
                   <Match when={forms().length > 0}>
                     <Show when={forms()[0]?.id} keyed>
-                      {() => <Show when={forms()[0]}>{(form) => <FormPrompt form={form()} />}</Show>}
+                      {(_) => {
+                        const form = forms()[0]
+                        return form ? <FormPrompt form={form} /> : null
+                      }}
                     </Show>
                   </Match>
                   <Match when={composer.open || !!session()?.parentID}>{null}</Match>
