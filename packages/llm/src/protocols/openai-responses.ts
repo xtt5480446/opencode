@@ -1,13 +1,11 @@
 import { Effect, Schema } from "effect"
-import { Route, type RoutePatch } from "../route/client"
-import { Auth, type Auth as AuthDef } from "../route/auth"
+import { Route } from "../route/client"
+import { Auth } from "../route/auth"
 import { Endpoint } from "../route/endpoint"
 import { HttpTransport, WebSocketTransport } from "../route/transport"
 import { Protocol } from "../route/protocol"
 import {
   LLMEvent,
-  type Model,
-  type ProviderOptions,
   Usage,
   type FinishReason,
   type JsonSchema,
@@ -992,27 +990,6 @@ export const route = Route.make({
   transport: httpTransport,
   defaults: { providerOptions: { openai: { store: false } } },
 })
-
-export interface ModelConfig {
-  readonly auth: AuthDef
-  readonly baseURL?: string
-  readonly headers?: Readonly<Record<string, string>>
-  readonly providerOptions?: ProviderOptions
-  readonly body?: Readonly<Record<string, unknown>>
-  readonly limits?: { readonly context: number; readonly output: number }
-}
-
-export const model = (id: string, config: ModelConfig): Model =>
-  route
-    .with({
-      auth: config.auth,
-      endpoint: config.baseURL === undefined ? undefined : { baseURL: config.baseURL },
-      headers: config.headers,
-      providerOptions: config.providerOptions,
-      http: config.body === undefined ? undefined : { body: config.body },
-      limits: config.limits,
-    } satisfies RoutePatch<OpenAIResponsesBody, unknown>)
-    .model({ id })
 
 const decodeWebSocketMessage = ProviderShared.validateWith(Schema.decodeUnknownEffect(OpenAIResponsesWebSocketMessage))
 

@@ -2,7 +2,7 @@ import { describe, expect } from "bun:test"
 import { Effect, Schema } from "effect"
 import { HttpClientRequest } from "effect/unstable/http"
 import { LLM, LLMClient } from "../../src"
-import { Anthropic, OpenAI, OpenAICodex } from "../../src/providers"
+import { Anthropic, OpenAI, OpenAICodex, OpenAICompatible } from "../../src/providers"
 import { it } from "../lib/effect"
 import { dynamicResponse } from "../lib/http"
 import { sseEvents } from "../lib/sse"
@@ -111,6 +111,42 @@ describe("provider package contract", () => {
                 sseEvents({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } }),
                 { headers: { "content-type": "text/event-stream" } },
               )
+            }),
+          ),
+        ),
+      )
+    }),
+  )
+
+  it.effect("builds OpenAI-compatible Chat models from flat settings", () =>
+    Effect.gen(function* () {
+      yield* LLMClient.generate(
+        requestFor(
+          OpenAICompatible.model("compatible-x", {
+            apiKey: "compatible-key",
+            baseURL: "https://api.compatible.test/v1",
+            body: { user: "provider-package" },
+            providerOptions: { serviceTier: "priority" },
+          }),
+        ),
+      ).pipe(
+        Effect.provide(
+          dynamicResponse((input) =>
+            Effect.gen(function* () {
+              const web = yield* HttpClientRequest.toWeb(input.request).pipe(Effect.orDie)
+              const body = decodeJsonRecord(input.text)
+
+              expect(web.url).toBe("https://api.compatible.test/v1/chat/completions")
+              expect(web.headers.get("authorization")).toBe("Bearer compatible-key")
+              expect(body).toMatchObject({
+                model: "compatible-x",
+                user: "provider-package",
+                stream: true,
+              })
+              expect(body).not.toHaveProperty("apiKey")
+              return input.respond(sseEvents({ choices: [{ delta: {}, finish_reason: "stop" }], usage: null }), {
+                headers: { "content-type": "text/event-stream" },
+              })
             }),
           ),
         ),

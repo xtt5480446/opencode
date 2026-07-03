@@ -67,7 +67,6 @@ requiredAuthModel("custom-model", {})
 // @ts-expect-error auth is an override, so apiKey cannot be supplied with it.
 requiredAuthModel("custom-model", { apiKey: "key", auth })
 
-OpenAI.responses("gpt-4.1-mini")
 OpenAI.configure({}).responses("gpt-4.1-mini")
 OpenAI.configure({ apiKey: "sk-test" }).responses("gpt-4.1-mini")
 OpenAI.configure({ apiKey: configApiKey }).responses("gpt-4.1-mini")
@@ -99,7 +98,6 @@ OpenAI.configure({ providerOptions: { openai: { store: "false" } } })
 // @ts-expect-error auth is an override, so OpenAI rejects apiKey with auth.
 OpenAI.configure({ apiKey: "sk-test", auth: RuntimeAuth.bearer("oauth-token") })
 
-OpenAI.chat("gpt-4.1-mini")
 OpenAI.configure({ apiKey: "sk-test" }).chat("gpt-4.1-mini")
 OpenAI.configure({ apiKey: configApiKey }).chat("gpt-4.1-mini")
 OpenAI.configure({ auth: RuntimeAuth.bearer("oauth-token") }).chat("gpt-4.1-mini")
@@ -155,9 +153,14 @@ XAI.configure({ apiKey: "xai-key" }).responses("grok-4", {})
 // @ts-expect-error xAI Chat selectors only accept model ids.
 XAI.configure({ apiKey: "xai-key" }).chat("grok-4", {})
 
-OpenAICompatible.deepseek.configure({ apiKey: "deepseek-key" }).model("deepseek-chat")
-// @ts-expect-error OpenAI-compatible family selectors only accept model ids.
-OpenAICompatible.deepseek.configure({ apiKey: "deepseek-key" }).model("deepseek-chat", {})
+OpenAICompatible.configure({
+  apiKey: "deepseek-key",
+  provider: "deepseek",
+  baseURL: "https://api.deepseek.com/v1",
+}).model("deepseek-chat")
+OpenAICompatible.configure({ apiKey: "deepseek-key", provider: "deepseek", baseURL: "https://api.deepseek.com/v1" })
+  // @ts-expect-error OpenAI-compatible model selectors only accept model ids.
+  .model("deepseek-chat", {})
 
 Cloudflare.CloudflareWorkersAI.configure({ accountId: "account", apiKey: "cf-key" }).model("@cf/meta/llama")
 // @ts-expect-error Cloudflare Workers AI model selectors only accept model ids.

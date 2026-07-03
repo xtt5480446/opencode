@@ -39,17 +39,21 @@ const cloudflareAIGatewayWorkers = cloudflareAIGateway.model("workers-ai/@cf/met
 const cloudflareAIGatewayWorkersTools = cloudflareAIGateway.model("workers-ai/@cf/openai/gpt-oss-20b")
 const cloudflareWorkersAI = cloudflareWorkers.model("@cf/meta/llama-3.1-8b-instruct")
 const cloudflareWorkersAITools = cloudflareWorkers.model("@cf/openai/gpt-oss-20b")
-const deepseek = OpenAICompatible.deepseek
-  .configure({ apiKey: process.env.DEEPSEEK_API_KEY ?? "fixture" })
-  .model("deepseek-chat")
-const together = OpenAICompatible.togetherai
-  .configure({
-    apiKey: process.env.TOGETHER_AI_API_KEY ?? "fixture",
-  })
-  .model("meta-llama/Llama-3.3-70B-Instruct-Turbo")
-const groq = OpenAICompatible.groq
-  .configure({ apiKey: process.env.GROQ_API_KEY ?? "fixture" })
-  .model("llama-3.3-70b-versatile")
+const deepseek = OpenAICompatible.configure({
+  apiKey: process.env.DEEPSEEK_API_KEY ?? "fixture",
+  provider: "deepseek",
+  baseURL: "https://api.deepseek.com/v1",
+}).model("deepseek-chat")
+const together = OpenAICompatible.configure({
+  apiKey: process.env.TOGETHER_AI_API_KEY ?? "fixture",
+  provider: "togetherai",
+  baseURL: "https://api.together.xyz/v1",
+}).model("meta-llama/Llama-3.3-70B-Instruct-Turbo")
+const groq = OpenAICompatible.configure({
+  apiKey: process.env.GROQ_API_KEY ?? "fixture",
+  provider: "groq",
+  baseURL: "https://api.groq.com/openai/v1",
+}).model("llama-3.3-70b-versatile")
 const openRouter = OpenRouter.configure({ apiKey: process.env.OPENROUTER_API_KEY ?? "fixture" })
 const openrouter = openRouter.model("openai/gpt-4o-mini")
 const openrouterGpt55 = openRouter.model("openai/gpt-5.5")

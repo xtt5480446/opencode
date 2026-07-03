@@ -3,13 +3,13 @@ import { Auth } from "../route/auth"
 import type { ProviderAuthOption } from "../route/auth-options"
 import { ProviderID, type ModelID } from "../schema"
 import { ProviderPackage } from "../provider-package"
-import * as AnthropicMessages from "../protocols/anthropic-messages"
+import { AnthropicMessages } from "../protocols/anthropic-messages"
 
 export const id = ProviderID.make("anthropic")
 
 export const routes = [AnthropicMessages.route]
 
-export type Config = RouteDefaultsInput & ProviderAuthOption<"optional"> & { readonly baseURL?: string }
+type Config = RouteDefaultsInput & ProviderAuthOption<"optional"> & { readonly baseURL?: string }
 
 export interface AnthropicSettings extends ProviderPackage.Settings {}
 
@@ -34,14 +34,15 @@ export const configure = (input: Config = {}) => {
   }
 }
 
-export const provider = configure()
 export const model = ProviderPackage.define((modelID, settings: AnthropicSettings) =>
-  AnthropicMessages.model(modelID, {
-    auth: settings.apiKey === undefined ? Auth.none : Auth.header("x-api-key", settings.apiKey),
-    baseURL: settings.baseURL,
-    headers: settings.headers,
-    providerOptions: settings.providerOptions === undefined ? undefined : { anthropic: settings.providerOptions },
-    body: settings.body,
-    limits: settings.limits,
-  }),
+  AnthropicMessages.route
+    .with({
+      auth: settings.apiKey === undefined ? Auth.none : Auth.header("x-api-key", settings.apiKey),
+      endpoint: { baseURL: settings.baseURL },
+      headers: settings.headers,
+      providerOptions: settings.providerOptions && { anthropic: settings.providerOptions },
+      http: { body: settings.body },
+      limits: settings.limits,
+    })
+    .model({ id: modelID }),
 )

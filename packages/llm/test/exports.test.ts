@@ -34,12 +34,12 @@ describe("public exports", () => {
 
   test("provider barrels expose user-facing facades", () => {
     expect(OpenAI.model).toBeFunction()
-    expect(OpenAI.provider.model).toBeFunction()
-    expect(OpenAI.provider.responses).toBe(OpenAI.responses)
-    expect(OpenAI.provider.responsesWebSocket).toBe(OpenAI.responsesWebSocket)
     expect(OpenAI.configure({ apiKey: "fixture" }).responses).toBeFunction()
     expect(OpenAICodex.model).toBeFunction()
-    expect(OpenAICompatible.deepseek.model).toBeFunction()
+    expect(OpenAICompatible.model).toBeFunction()
+    expect(
+      OpenAICompatible.configure({ baseURL: "https://api.compatible.test/v1", apiKey: "fixture" }).model,
+    ).toBeFunction()
     expect(CloudflareAIGateway.configure).toBeFunction()
     expect(CloudflareAIGateway.configure({ accountId: "fixture", gatewayApiKey: "fixture" }).model).toBeFunction()
     expect(CloudflareWorkersAI.configure).toBeFunction()

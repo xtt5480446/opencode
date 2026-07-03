@@ -3,8 +3,8 @@ import { Auth } from "../route/auth"
 import type { Route, RouteDefaultsInput } from "../route/client"
 import { ProviderID, type ModelID } from "../schema"
 import { ProviderPackage } from "../provider-package"
-import * as OpenAIChat from "../protocols/openai-chat"
-import * as OpenAIResponses from "../protocols/openai-responses"
+import { OpenAIChat } from "../protocols/openai-chat"
+import { OpenAIResponses } from "../protocols/openai-responses"
 import { withOpenAIOptions, type OpenAIProviderOptionsInput } from "./openai-options"
 
 export type { OpenAIOptionsInput, OpenAIResponseIncludable } from "./openai-options"
@@ -16,7 +16,7 @@ export const routes = [OpenAIResponses.route, OpenAIResponses.webSocketRoute, Op
 // This provider facade wraps the lower-level Responses and Chat model factories
 // with OpenAI-specific conveniences: typed options, API-key sugar, env fallback,
 // and default option normalization.
-export type Config = RouteDefaultsInput &
+type Config = RouteDefaultsInput &
   ProviderAuthOption<"optional"> & {
     readonly baseURL?: string
     readonly queryParams?: Record<string, string>
@@ -59,18 +59,15 @@ export const configure = (input: Config = {}) => {
   }
 }
 
-export const provider = configure()
-
 export const model = ProviderPackage.define((modelID, settings: OpenAISettings) =>
-  OpenAIResponses.model(modelID, {
-    auth: settings.apiKey === undefined ? Auth.none : Auth.bearer(settings.apiKey),
-    baseURL: settings.baseURL,
-    headers: settings.headers,
-    providerOptions: settings.providerOptions === undefined ? undefined : { openai: settings.providerOptions },
-    body: settings.body,
-    limits: settings.limits,
-  }),
+  OpenAIResponses.route
+    .with({
+      auth: settings.apiKey === undefined ? Auth.none : Auth.bearer(settings.apiKey),
+      endpoint: { baseURL: settings.baseURL },
+      headers: settings.headers,
+      providerOptions: settings.providerOptions && { openai: settings.providerOptions },
+      http: { body: settings.body },
+      limits: settings.limits,
+    })
+    .model({ id: modelID }),
 )
-export const responses = provider.responses
-export const responsesWebSocket = provider.responsesWebSocket
-export const chat = provider.chat
