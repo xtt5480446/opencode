@@ -182,10 +182,9 @@ export function Session() {
     )
   })
   const forms = createMemo(() => {
+    const sessionIDs = session()?.parentID ? [route.sessionID] : [route.sessionID, ...descendantSessionIDs()]
     return [
-      ...[route.sessionID, ...(session()?.parentID ? [] : descendantSessionIDs())].flatMap(
-        (sessionID) => data.session.form.list(sessionID) ?? [],
-      ),
+      ...sessionIDs.flatMap((sessionID) => data.session.form.list(sessionID) ?? []),
       ...(data.session.form.list("global") ?? []),
     ]
   })
