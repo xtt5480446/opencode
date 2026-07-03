@@ -149,7 +149,7 @@ describe("Config", () => {
           agent: "reviewer",
           model: "anthropic/claude",
           variant: "high",
-          subtask: true,
+          subagent: true,
         },
       })
     }),

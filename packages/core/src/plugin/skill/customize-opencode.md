@@ -303,7 +303,8 @@ model: anthropic/claude-sonnet-4-6
 
 - `template` is the command body — everything below the frontmatter — and is required: it is the prompt opencode runs when the command is invoked. Do not also put a `template:` key in the frontmatter.
 - `$ARGUMENTS` is replaced with everything the user typed after the command; `$1`, `$2`, … pull individual positional arguments.
-- Optional: `description`, `agent`, `model`, `variant`, `subtask`.
+- Optional: `description`, `agent`, `model`, `variant`, `subagent`.
+- `subtask` is still accepted for older commands and is treated like `subagent`.
 
 ## Plugins
 

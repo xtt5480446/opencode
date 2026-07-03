@@ -8,5 +8,5 @@ export class Info extends Schema.Class<Info>("ConfigV2.Command")({
   agent: Schema.String.pipe(Schema.optional),
   model: Schema.String.pipe(Schema.optional),
   variant: Schema.String.pipe(Schema.optional),
-  subtask: Schema.Boolean.pipe(Schema.optional),
+  subagent: Schema.Boolean.pipe(Schema.optional),
 }) {}

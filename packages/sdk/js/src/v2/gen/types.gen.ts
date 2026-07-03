@@ -5506,7 +5506,7 @@ export type CommandV2Info = {
   description?: string
   agent?: string
   model?: ModelRef
-  subtask?: boolean
+  subagent?: boolean
 }
 
 export type SkillV2Info = {
@@ -9461,7 +9461,7 @@ export type CommandV2Info2 = {
   description?: string
   agent?: string
   model?: ModelRef2
-  subtask?: boolean
+  subagent?: boolean
 }
 
 export type SkillV2Info2 = {

@@ -155,7 +155,7 @@ const layer = Layer.effect(
       const info = Option.getOrUndefined(
         ConfigMigrateV1.isV1(input)
           ? decodeV1Info(input).pipe(Option.map(ConfigMigrateV1.migrate), Option.flatMap(decodeInfo))
-          : decodeInfo(input),
+          : decodeInfo(normalizeCommandAliases(input)),
       )
       if (!info) return
       return new Document({ type: "document", path: filepath, info })
@@ -223,3 +223,21 @@ export const node = makeLocationNode({
   layer,
   deps: [FSUtil.node, Global.node, Location.node, Policy.node],
 })
+
+function normalizeCommandAliases(input: unknown) {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input
+  const commands = (input as Record<string, unknown>).commands
+  if (typeof commands !== "object" || commands === null || Array.isArray(commands)) return input
+  return {
+    ...input,
+    commands: Object.fromEntries(
+      Object.entries(commands).map(([name, command]) => {
+        if (typeof command !== "object" || command === null || Array.isArray(command)) return [name, command]
+        const data = command as Record<string, unknown>
+        if (data.subagent !== undefined || typeof data.subtask !== "boolean") return [name, command]
+        const { subtask, ...rest } = data
+        return [name, { ...rest, subagent: subtask }]
+      }),
+    ),
+  }
+}

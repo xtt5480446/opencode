@@ -72,7 +72,7 @@ export function migrate(info: typeof ConfigV1.Info.Type) {
       buffer: info.compaction.reserved,
     },
     skills: info.skills && [...(info.skills.paths ?? []), ...(info.skills.urls ?? [])],
-    commands: info.command,
+    commands: commands(info.command),
     instructions: info.instructions,
     references: info.references ?? info.reference,
     plugins: info.plugin?.map((plugin) =>
@@ -81,6 +81,17 @@ export function migrate(info: typeof ConfigV1.Info.Type) {
     experimental: info.experimental?.policies && { policies: info.experimental.policies },
     providers: providers(info.provider),
   }
+}
+
+function commands(info?: typeof ConfigV1.Info.Type.command) {
+  if (!info) return undefined
+  return Object.fromEntries(
+    Object.entries(info).map(([name, command]) => {
+      if (command?.subtask === undefined) return [name, command]
+      const { subtask, ...rest } = command
+      return [name, { ...rest, subagent: subtask }]
+    }),
+  )
 }
 
 function permissions(info?: ConfigPermissionV1.Info, tools?: Readonly<Record<string, boolean>>) {

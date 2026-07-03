@@ -44,9 +44,16 @@ description: File review
 agent: reviewer
 model: anthropic/claude
 variant: high
-subtask: true
+subagent: true
 ---
 Review files`,
+            )
+            await fs.writeFile(
+              path.join(tmp.path, "commands", "legacy.md"),
+              `---
+subtask: true
+---
+Legacy review`,
             )
             await fs.writeFile(path.join(tmp.path, "commands", "nested", "docs.md"), "Write docs")
             await fs.writeFile(path.join(tmp.path, "commands", "empty.md"), "")
@@ -80,9 +87,10 @@ Review files`,
                 id: ModelV2.ID.make("claude"),
                 variant: ModelV2.VariantID.make("high"),
               },
-              subtask: true,
+              subagent: true,
             }),
             CommandV2.Info.make({ name: "empty", template: "" }),
+            CommandV2.Info.make({ name: "legacy", template: "Legacy review", subagent: true }),
             CommandV2.Info.make({ name: "nested/docs", template: "Write docs" }),
           ])
         }),
