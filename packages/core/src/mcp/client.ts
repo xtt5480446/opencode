@@ -32,7 +32,7 @@ import { InstallationVersion } from "../installation/version"
 
 const DEFAULT_STARTUP_TIMEOUT = 30_000
 const DEFAULT_REQUEST_TIMEOUT = 30_000
-const ELICITATION_PROGRESS_INTERVAL = 10_000
+const TOOL_CALL_TIMEOUT = 2_147_483_647
 
 type Transport = StdioClientTransport | StreamableHTTPClientTransport
 
@@ -183,31 +183,9 @@ export const connect = Effect.fnUntraced(function* (
     Promise.resolve({ roots: [{ uri: pathToFileURL(directory).href }] }),
   )
   if (elicitation) {
-    client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
-      const progressToken = extra._meta?.progressToken
-      const started = Date.now()
-      // Human input can exceed the server's request timeout; progress keeps cooperative callers alive.
-      const sendProgress = () => {
-        if (progressToken === undefined) return
-        void extra
-          .sendNotification({
-            method: "notifications/progress",
-            params: {
-              progressToken,
-              progress: Date.now() - started,
-              message: "Waiting for user response",
-            },
-          })
-          .catch(() => undefined)
-      }
-      const interval = progressToken === undefined ? undefined : setInterval(sendProgress, ELICITATION_PROGRESS_INTERVAL)
-      sendProgress()
-      try {
-        return await Effect.runPromise(elicitation.create({ server, params: request.params, signal: extra.signal }))
-      } finally {
-        if (interval !== undefined) clearInterval(interval)
-      }
-    })
+    client.setRequestHandler(ElicitRequestSchema, (request, extra) =>
+      Effect.runPromise(elicitation.create({ server, params: request.params, signal: extra.signal })),
+    )
     client.setNotificationHandler(ElicitationCompleteNotificationSchema, (notification) =>
       Effect.runPromise(elicitation.complete({ server, elicitationID: notification.params.elicitationId })),
     )
@@ -304,8 +282,8 @@ export const connect = Effect.fnUntraced(function* (
             client.callTool(
               { name: input.name, arguments: input.args ?? {} },
               CallToolResultSchema,
-              // Keep progress tokens available without imposing a client timeout on tool execution.
-              { signal, resetTimeoutOnProgress: true, onprogress: () => {} },
+              // The SDK does not support disabling request timeouts; use the setTimeout max.
+              { signal, timeout: TOOL_CALL_TIMEOUT, resetTimeoutOnProgress: true, onprogress: () => {} },
             ),
           catch: (error) => (error instanceof Error ? error : new Error(String(error))),
         }).pipe(
