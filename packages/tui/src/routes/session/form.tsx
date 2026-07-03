@@ -172,16 +172,19 @@ function FieldsPrompt(props: { form: FormInfo & { mode: "form" } }) {
   let textarea: TextareaRenderable | undefined
   let review: ScrollBoxRenderable | undefined
 
-  const fields = createMemo(() =>
-    props.form.fields.filter((field) =>
-      (field.when ?? []).every((when) => {
-        const value = store.answers[when.key]
+  const fields = createMemo(() => {
+    const answers: Record<string, FormValue | undefined> = {}
+    return props.form.fields.filter((field) => {
+      const active = (field.when ?? []).every((when) => {
+        const value = answers[when.key]
         if (value === undefined) return false
         const hit = Array.isArray(value) ? value.some((item) => item === when.value) : value === when.value
         return when.op === "eq" ? hit : !hit
-      }),
-    ),
-  )
+      })
+      if (active) answers[field.key] = store.answers[field.key]
+      return active
+    })
+  })
   const single = createMemo(() => {
     const list = fields()
     if (list.length !== 1) return false
@@ -254,11 +257,20 @@ function FieldsPrompt(props: { form: FormInfo & { mode: "form" } }) {
     answer(current.key, value)
     if (customValue !== undefined) setStore("custom", { ...store.custom, [current.key]: customValue })
     if (single()) {
-      void sdk.api.form.reply({
-        sessionID: props.form.sessionID,
-        formID: props.form.id,
-        answer: { [current.key]: value },
-      })
+      sdk.api.form
+        .reply({
+          sessionID: props.form.sessionID,
+          formID: props.form.id,
+          answer: { [current.key]: value },
+        })
+        .catch((error: unknown) => {
+          setStore(
+            "error",
+            typeof error === "object" && error !== null && "message" in error && typeof error.message === "string"
+              ? error.message
+              : "Invalid answer",
+          )
+        })
       return
     }
     setStore("tab", store.tab + 1)
@@ -445,6 +457,13 @@ function FieldsPrompt(props: { form: FormInfo & { mode: "form" } }) {
             setStore("custom", { ...store.custom, [current.key]: "" })
             setStore("editing", false)
             return
+          }
+          if (current.type === "string") {
+            const invalid = validateText(current, text)
+            if (invalid) {
+              setStore("error", invalid)
+              return
+            }
           }
           pick(text, text)
           setStore("editing", false)
