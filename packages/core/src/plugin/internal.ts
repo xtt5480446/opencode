@@ -29,7 +29,6 @@ import { Npm } from "../npm"
 import { PluginV2 } from "../plugin"
 import { PluginRuntime } from "../plugin/runtime"
 import { PermissionV2 } from "../permission"
-import { QuestionV2 } from "../question"
 import { Reference } from "../reference"
 import { Ripgrep } from "../ripgrep"
 import { SessionInstructions } from "../session/instructions"
@@ -82,7 +81,6 @@ export type Requirements =
   | Npm.Service
   | PermissionV2.Service
   | PluginRuntime.Service
-  | QuestionV2.Service
   | ReadToolFileSystem.Service
   | Reference.Service
   | Ripgrep.Service
@@ -125,7 +123,6 @@ const layer = Layer.effectDiscard(
       Context.make(FileMutation.Service, yield* FileMutation.Service),
       Context.make(Image.Service, yield* Image.Service),
       Context.make(PermissionV2.Service, yield* PermissionV2.Service),
-      Context.make(QuestionV2.Service, yield* QuestionV2.Service),
       Context.make(ReadToolFileSystem.Service, yield* ReadToolFileSystem.Service),
       Context.make(SessionInstructions.Service, yield* SessionInstructions.Service),
       Context.make(SessionTodo.Service, yield* SessionTodo.Service),
@@ -199,7 +196,6 @@ export const node = makeLocationNode({
     Global.node,
     httpClient,
     PermissionV2.node,
-    QuestionV2.node,
     ReadToolFileSystem.node,
     SessionInstructions.node,
     SessionTodo.node,
