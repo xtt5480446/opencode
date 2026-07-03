@@ -31,22 +31,48 @@ const update = (previous: ReadonlyArray<Summary>, current: ReadonlyArray<Summary
     (server) => server.server,
     (before, after) => before.instructions !== after.instructions,
   )
+  const items = [
+    ...diff.added.map((server) => ({
+      key: server.server,
+      description: "MCP server instructions",
+      action: "added" as const,
+    })),
+    ...diff.removed.map((server) => ({
+      key: server.server,
+      description: "MCP server instructions",
+      action: "removed" as const,
+    })),
+    ...diff.changed.map((server) => ({
+      key: server.current.server,
+      description: "MCP server instructions",
+      action: "updated" as const,
+    })),
+  ]
   // Additions and removals render as small deltas; anything else restates the full list.
   if (diff.changed.length > 0 || (diff.added.length === 0 && diff.removed.length === 0))
-    return [
-      "The available MCP server instructions have changed. This list supersedes the previous one.",
-      render(current),
-    ].join("\n")
-  return [
-    ...(diff.added.length === 0
-      ? []
-      : ["New MCP server instructions are available in addition to those previously listed:", ...entries(diff.added)]),
-    ...(diff.removed.length === 0
-      ? []
-      : [
-          `Instructions for the following MCP servers are no longer available: ${diff.removed.map((server) => server.server).join(", ")}.`,
-        ]),
-  ].join("\n")
+    return {
+      text: [
+        "The available MCP server instructions have changed. This list supersedes the previous one.",
+        render(current),
+      ].join("\n"),
+      items,
+    }
+  return {
+    text: [
+      ...(diff.added.length === 0
+        ? []
+        : [
+            "New MCP server instructions are available in addition to those previously listed:",
+            ...entries(diff.added),
+          ]),
+      ...(diff.removed.length === 0
+        ? []
+        : [
+            `Instructions for the following MCP servers are no longer available: ${diff.removed.map((server) => server.server).join(", ")}.`,
+          ]),
+    ].join("\n"),
+    items,
+  }
 }
 
 export interface Interface {
@@ -83,6 +109,7 @@ export const layer = Layer.effect(
         if (visible.length === 0) return SystemContext.empty
         return SystemContext.make({
           key: SystemContext.Key.make("core/mcp-guidance"),
+          description: "MCP server instructions",
           codec: Schema.toCodecJson(Schema.Array(Summary)),
           load: Effect.succeed(visible),
           baseline: render,

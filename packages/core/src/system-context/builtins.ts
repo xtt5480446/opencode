@@ -26,6 +26,7 @@ const layer = Layer.effect(
     const context = SystemContext.combine([
       SystemContext.make({
         key: SystemContext.Key.make("core/environment"),
+        description: "Environment",
         codec: Schema.toCodecJson(Schema.String),
         load: Effect.succeed(environment),
         baseline: (environment) =>
@@ -34,6 +35,7 @@ const layer = Layer.effect(
       }),
       SystemContext.make({
         key: SystemContext.Key.make("core/date"),
+        description: "Current date",
         codec: Schema.toCodecJson(Schema.String),
         load: DateTime.nowAsDate.pipe(Effect.map((date) => date.toDateString())),
         baseline: (date) => `Today's date: ${date}`,

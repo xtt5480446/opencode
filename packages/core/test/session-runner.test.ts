@@ -186,6 +186,7 @@ const systemContext = Layer.mock(SystemContextBuiltIns.Service, {
           : [
               SystemContext.make({
                 key: systemContextKey,
+                description: "Test context",
                 codec: Schema.toCodecJson(Schema.String),
                 load: systemLoadHook.pipe(
                   Effect.andThen(Effect.sync(() => (systemUnavailable ? SystemContext.unavailable : systemBaseline))),
@@ -205,6 +206,7 @@ const skillGuidance = Layer.mock(SkillGuidance.Service, {
       skillBaselines.has(agent.id)
         ? SystemContext.make({
             key: SystemContext.Key.make("test/skill-guidance"),
+            description: "Test skill guidance",
             codec: Schema.toCodecJson(Schema.String),
             load: Effect.succeed(skillBaselines.get(agent.id)!),
             baseline: String,
@@ -809,7 +811,9 @@ describe("SessionRunnerLLM", () => {
         .where(eq(SessionContextCheckpointTable.session_id, sessionID))
         .get()
         .pipe(Effect.orDie)
-      expect(healed?.snapshot).toEqual({ "test/context": { value: "Initial context", removed: expect.any(String) } })
+      expect(healed?.snapshot).toEqual({
+        "test/context": { value: "Initial context", description: "Test context", removed: expect.any(String) },
+      })
     }),
   )
 
@@ -2807,8 +2811,7 @@ describe("SessionRunnerLLM", () => {
           description: "Ask the user",
           input: Schema.Struct({}),
           output: Schema.Struct({}),
-          execute: (_, context) =>
-            questions.ask({ sessionID: context.sessionID, questions: [] }).pipe(Effect.as({}), Effect.orDie),
+          execute: (_, context) => questions.ask({ sessionID: context.sessionID, questions: [] }).pipe(Effect.as({}), Effect.orDie),
         }),
       })
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Ask then stop" }), resume: false })

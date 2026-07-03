@@ -36,11 +36,32 @@ export type Unavailable = typeof unavailable
 /** Defines one typed source before its value type is hidden by `make`. */
 export interface Source<A> {
   readonly key: Key
-  readonly codec: Schema.Codec<A, Schema.Json, never, never>
+  readonly description: string
+  readonly codec: Schema.Codec<A, Schema.Json>
   readonly load: Effect.Effect<A | Unavailable>
   readonly baseline: (current: A) => string
-  readonly update: (previous: A, current: A) => string
+  readonly update: (previous: A, current: A) => string | StructuredUpdate
   readonly removed?: (previous: A) => string
+}
+
+export type ReconcileAction = "added" | "updated" | "removed"
+
+export interface ReconcileItemUpdate {
+  readonly key: string
+  readonly description: string
+  readonly action: ReconcileAction
+}
+
+export interface ReconcileUpdate {
+  readonly key: Key
+  readonly description: string
+  readonly action: ReconcileAction
+  readonly items?: ReadonlyArray<ReconcileItemUpdate>
+}
+
+export interface StructuredUpdate {
+  readonly text: string
+  readonly items?: ReadonlyArray<ReconcileItemUpdate>
 }
 
 const ContextTypeId: unique symbol = Symbol.for("@opencode/SystemContext")
@@ -53,6 +74,7 @@ export interface SystemContext {
 /** The value last applied to the model for one admitted source. */
 export const AppliedSource = Schema.Struct({
   value: Schema.Json,
+  description: Schema.optional(Schema.NonEmptyString),
   removed: Schema.optional(Schema.NonEmptyString),
 })
 export type AppliedSource = typeof AppliedSource.Type
@@ -70,6 +92,7 @@ export interface Baseline {
 export interface Updated {
   readonly _tag: "Updated"
   readonly text: string
+  readonly updates: ReadonlyArray<ReconcileUpdate>
   readonly applied: Applied
 }
 
@@ -94,16 +117,18 @@ export class DuplicateKeyError extends Schema.TaggedErrorClass<DuplicateKeyError
 
 interface PackedSource {
   readonly key: Key
+  readonly description: string
   readonly load: Effect.Effect<Observed | Unavailable>
   /** Restates the model's belief from a last-applied value when the source cannot be observed. */
   readonly recall: (stored: AppliedSource) => string | undefined
 }
 
 interface Observed {
+  readonly description: string
   readonly applied: AppliedSource
   readonly baseline: () => string
   /** `undefined` means unchanged. An undecodable previous value re-renders the baseline (treat-as-new). */
-  readonly update: (previous: AppliedSource) => string | undefined
+  readonly update: (previous: AppliedSource) => StructuredUpdate | undefined
 }
 
 interface Entry {
@@ -120,10 +145,12 @@ export function make<A>(source: Source<A>): SystemContext {
   const decode = Schema.decodeUnknownOption(source.codec)
   const encode = Schema.encodeSync(source.codec)
   const equivalent = Schema.toEquivalence(source.codec)
+  const description = requireText(source.key, "description", source.description)
   const baseline = (value: A) => requireText(source.key, "baseline", source.baseline(value))
   return context([
     {
       key: source.key,
+      description,
       recall: (stored) =>
         Option.match(decode(stored.value), {
           onNone: () => undefined,
@@ -133,18 +160,18 @@ export function make<A>(source: Source<A>): SystemContext {
         Effect.map((value) => {
           if (isUnavailable(value)) return value
           return {
+            description,
             applied: {
               value: encode(value),
+              description,
               ...(source.removed ? { removed: requireText(source.key, "removal", source.removed(value)) } : {}),
             },
             baseline: () => baseline(value),
             update: (previous) =>
               Option.match(decode(previous.value), {
-                onNone: () => baseline(value),
+                onNone: () => ({ text: baseline(value) }),
                 onSome: (decoded) =>
-                  equivalent(decoded, value)
-                    ? undefined
-                    : requireText(source.key, "update", source.update(decoded, value)),
+                  equivalent(decoded, value) ? undefined : normalizeUpdate(source.key, source.update(decoded, value)),
               }),
           } satisfies Observed
         }),
@@ -216,7 +243,8 @@ export function initialize(value: SystemContext): Effect.Effect<Baseline, Initia
 export function reconcile(value: SystemContext, previous: Applied): Effect.Effect<ReconcileResult> {
   return observe(value).pipe(
     Effect.map((entries): ReconcileResult => {
-      const updates: string[] = []
+      const parts: string[] = []
+      const updates: ReconcileUpdate[] = []
       const applied: Record<string, AppliedSource> = {}
       for (const entry of entries) {
         const stored = get(previous, entry.key)
@@ -226,16 +254,23 @@ export function reconcile(value: SystemContext, previous: Applied): Effect.Effec
           continue
         }
         if (!stored) {
-          updates.push(entry.observed.baseline())
+          parts.push(entry.observed.baseline())
+          updates.push({ key: entry.key, description: entry.observed.description, action: "added" })
           applied[entry.key] = entry.observed.applied
           continue
         }
-        const text = entry.observed.update(stored)
-        if (text === undefined) {
+        const update = entry.observed.update(stored)
+        if (update === undefined) {
           applied[entry.key] = stored
           continue
         }
-        updates.push(text)
+        parts.push(update.text)
+        updates.push({
+          key: entry.key,
+          description: entry.observed.description,
+          action: "updated",
+          ...(update.items === undefined ? {} : { items: update.items }),
+        })
         applied[entry.key] = entry.observed.applied
       }
       const keys = new Set<string>(entries.map((entry) => entry.key))
@@ -244,10 +279,17 @@ export function reconcile(value: SystemContext, previous: Applied): Effect.Effec
         const removed = previous[key].removed
         // An unannounced removal retains the belief; it clears at the next rebaseline.
         if (removed === undefined) applied[key] = previous[key]
-        else updates.push(removed)
+        else {
+          parts.push(removed)
+          updates.push({
+            key: Key.make(key),
+            description: previous[key].description ?? key,
+            action: "removed",
+          })
+        }
       }
       if (updates.length === 0) return { _tag: "Unchanged" }
-      return { _tag: "Updated", text: render(updates), applied }
+      return { _tag: "Updated", text: render(parts), updates, applied }
     }),
   )
 }
@@ -296,6 +338,11 @@ function isUnavailable(value: unknown): value is Unavailable {
 function requireText(key: Key, kind: string, text: string) {
   if (text.length === 0) throw new Error(`System context source ${key} rendered an empty ${kind}`)
   return text
+}
+
+function normalizeUpdate(key: Key, update: string | StructuredUpdate) {
+  if (typeof update === "string") return { text: requireText(key, "update", update) }
+  return { ...update, text: requireText(key, "update", update.text) }
 }
 
 function assertUniqueKeys(sources: ReadonlyArray<PackedSource>) {

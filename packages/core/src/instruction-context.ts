@@ -34,6 +34,7 @@ const layer = Layer.effect(
     const source = (value: ReadonlyArray<File> | SystemContext.Unavailable) =>
       SystemContext.make({
         key,
+        description: "Ambient instructions",
         codec: Schema.toCodecJson(Files),
         load: Effect.succeed(value),
         baseline: render,

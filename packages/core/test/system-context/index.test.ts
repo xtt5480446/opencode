@@ -3,16 +3,18 @@ import { Cause, Effect, Exit, Schema } from "effect"
 import { SystemContext } from "@opencode-ai/core/system-context"
 import { it } from "../lib/effect"
 
-const key = SystemContext.Key.make
+const key = (value: string) => SystemContext.Key.make(value)
 const stringContext = (input: {
   key: string
   value: string | SystemContext.Unavailable
+  description?: string
   baseline?: (value: string) => string
-  update?: (previous: string, current: string) => string
+  update?: (previous: string, current: string) => string | SystemContext.StructuredUpdate
   removed?: (value: string) => string
 }) =>
   SystemContext.make({
     key: key(input.key),
+    description: input.description ?? `Description for ${input.key}`,
     codec: Schema.toCodecJson(Schema.String),
     load: Effect.succeed(input.value),
     baseline: input.baseline ?? String,
@@ -25,6 +27,7 @@ describe("SystemContext", () => {
     Effect.gen(function* () {
       const context = SystemContext.make({
         key: key("core/date"),
+        description: "Current date",
         codec: Schema.toCodecJson(Schema.DateFromString),
         load: Effect.succeed(new Date("2026-06-03T12:00:00.000Z")),
         baseline: (date) => date.toISOString(),
@@ -42,6 +45,7 @@ describe("SystemContext", () => {
       const context = SystemContext.combine([
         SystemContext.make({
           key: key("core/date"),
+          description: "Current date",
           codec: Schema.toCodecJson(Schema.String),
           load: Effect.sync(() => {
             loads++
@@ -57,8 +61,8 @@ describe("SystemContext", () => {
       expect(yield* SystemContext.initialize(context)).toEqual({
         text: "Today's date is 2026-06-03.\n\nDirectory: /repo",
         applied: {
-          "core/date": { value: "2026-06-03", removed: "The date was removed." },
-          "core/location": { value: "/repo" },
+          "core/date": { value: "2026-06-03", description: "Current date", removed: "The date was removed." },
+          "core/location": { value: "/repo", description: "Description for core/location" },
         },
       })
       expect(loads).toBe(1)
@@ -84,8 +88,13 @@ describe("SystemContext", () => {
       expect(yield* SystemContext.reconcile(changed, previous)).toEqual({
         _tag: "Updated",
         text: "The date changed from 2026-06-03 to 2026-06-04.",
+        updates: [{ key: key("core/date"), description: "Description for core/date", action: "updated" }],
         applied: {
-          "core/date": { value: "2026-06-04", removed: "The date was removed." },
+          "core/date": {
+            value: "2026-06-04",
+            description: "Description for core/date",
+            removed: "The date was removed.",
+          },
           "core/location": { value: "/repo", removed: "Removed: /repo" },
         },
       })
@@ -113,7 +122,8 @@ describe("SystemContext", () => {
       expect(yield* SystemContext.reconcile(context, {})).toEqual({
         _tag: "Updated",
         text: "Available skill: effect",
-        applied: { "core/skills": { value: "effect" } },
+        updates: [{ key: key("core/skills"), description: "Description for core/skills", action: "added" }],
+        applied: { "core/skills": { value: "effect", description: "Description for core/skills" } },
       })
     }),
   )
@@ -150,6 +160,7 @@ describe("SystemContext", () => {
       ).toEqual({
         _tag: "Updated",
         text: "Instructions removed; stop applying them.",
+        updates: [{ key: key("core/instructions"), description: "core/instructions", action: "removed" }],
         applied: {},
       })
     }),
@@ -169,8 +180,9 @@ describe("SystemContext", () => {
       ).toEqual({
         _tag: "Updated",
         text: "effect",
+        updates: [{ key: key("core/skills"), description: "Description for core/skills", action: "added" }],
         applied: {
-          "core/skills": { value: "effect" },
+          "core/skills": { value: "effect", description: "Description for core/skills" },
           "core/date": { value: "2026-06-04" },
         },
       })
@@ -208,7 +220,8 @@ describe("SystemContext", () => {
       ).toEqual({
         _tag: "Updated",
         text: "2026-06-04",
-        applied: { "core/date": { value: "2026-06-04" } },
+        updates: [{ key: key("core/date"), description: "Description for core/date", action: "updated" }],
+        applied: { "core/date": { value: "2026-06-04", description: "Description for core/date" } },
       })
     }),
   )
@@ -232,9 +245,13 @@ describe("SystemContext", () => {
       ).toEqual({
         _tag: "Updated",
         text: "2026-06-03 -> 2026-06-04\n\n/repo",
+        updates: [
+          { key: key("core/date"), description: "Description for core/date", action: "updated" },
+          { key: key("core/location"), description: "Description for core/location", action: "updated" },
+        ],
         applied: {
-          "core/date": { value: "2026-06-04" },
-          "core/location": { value: "/repo" },
+          "core/date": { value: "2026-06-04", description: "Description for core/date" },
+          "core/location": { value: "/repo", description: "Description for core/location" },
         },
       })
     }),
@@ -245,6 +262,7 @@ describe("SystemContext", () => {
       let loads = 0
       const context = SystemContext.make({
         key: key("core/date"),
+        description: "Current date",
         codec: Schema.toCodecJson(Schema.String),
         load: Effect.sync(() => {
           loads++
@@ -256,7 +274,7 @@ describe("SystemContext", () => {
 
       expect(yield* SystemContext.rebaseline(context, { "core/date": { value: "2026-06-03" } })).toEqual({
         text: "2026-06-04",
-        applied: { "core/date": { value: "2026-06-04" } },
+        applied: { "core/date": { value: "2026-06-04", description: "Current date" } },
       })
       expect(loads).toBe(1)
     }),
@@ -280,7 +298,7 @@ describe("SystemContext", () => {
       ).toEqual({
         text: "2026-06-04\n\nInstructions: contents",
         applied: {
-          "core/date": { value: "2026-06-04" },
+          "core/date": { value: "2026-06-04", description: "Description for core/date" },
           "core/remote": { value: "contents", removed: "Instructions removed" },
         },
       })
@@ -330,6 +348,34 @@ describe("SystemContext", () => {
             current: { name: "effect", description: "Build with Effect v4" },
           },
         ],
+      })
+    }),
+  )
+
+  it.effect("includes structured item updates from source reconciliation", () =>
+    Effect.gen(function* () {
+      const context = stringContext({
+        key: "core/skills",
+        value: "new",
+        description: "Available skills",
+        update: () => ({
+          text: "Skill changes",
+          items: [{ key: "effect", description: "Build with Effect", action: "updated" }],
+        }),
+      })
+
+      expect(yield* SystemContext.reconcile(context, { "core/skills": { value: "old" } })).toEqual({
+        _tag: "Updated",
+        text: "Skill changes",
+        updates: [
+          {
+            key: key("core/skills"),
+            description: "Available skills",
+            action: "updated",
+            items: [{ key: "effect", description: "Build with Effect", action: "updated" }],
+          },
+        ],
+        applied: { "core/skills": { value: "new", description: "Available skills" } },
       })
     }),
   )

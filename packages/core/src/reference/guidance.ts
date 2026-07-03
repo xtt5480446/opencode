@@ -35,22 +35,45 @@ const update = (previous: ReadonlyArray<typeof Summary.Type>, current: ReadonlyA
     (reference) => reference.name,
     (before, after) => before.path !== after.path || before.description !== after.description,
   )
+  const items = [
+    ...diff.added.map((reference) => ({
+      key: reference.name,
+      description: reference.description ?? reference.path,
+      action: "added" as const,
+    })),
+    ...diff.removed.map((reference) => ({
+      key: reference.name,
+      description: reference.description ?? reference.path,
+      action: "removed" as const,
+    })),
+    ...diff.changed.map((reference) => ({
+      key: reference.current.name,
+      description: reference.current.description ?? reference.current.path,
+      action: "updated" as const,
+    })),
+  ]
   // Additions and removals render as small deltas; anything else restates the full list.
   if (diff.changed.length > 0 || (diff.added.length === 0 && diff.removed.length === 0))
-    return [
-      "The available project references have changed. This list supersedes the previous reference list.",
-      render(current),
-    ].join("\n")
-  return [
-    ...(diff.added.length === 0
-      ? []
-      : ["New project references are available in addition to those previously listed:", ...entries(diff.added)]),
-    ...(diff.removed.length === 0
-      ? []
-      : [
-          `The following project references are no longer available and must not be used: ${diff.removed.map((reference) => reference.name).join(", ")}.`,
-        ]),
-  ].join("\n")
+    return {
+      text: [
+        "The available project references have changed. This list supersedes the previous reference list.",
+        render(current),
+      ].join("\n"),
+      items,
+    }
+  return {
+    text: [
+      ...(diff.added.length === 0
+        ? []
+        : ["New project references are available in addition to those previously listed:", ...entries(diff.added)]),
+      ...(diff.removed.length === 0
+        ? []
+        : [
+            `The following project references are no longer available and must not be used: ${diff.removed.map((reference) => reference.name).join(", ")}.`,
+          ]),
+    ].join("\n"),
+    items,
+  }
 }
 
 export interface Interface {
@@ -77,6 +100,7 @@ const layer = Layer.effect(
         if (available.length === 0) return SystemContext.empty
         return SystemContext.make({
           key: SystemContext.Key.make("core/reference-guidance"),
+          description: "Project references",
           codec: Schema.toCodecJson(Schema.Array(Summary)),
           load: Effect.succeed(available),
           baseline: render,

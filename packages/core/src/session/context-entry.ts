@@ -38,6 +38,7 @@ const renderBlock = (key: Key, value: Schema.Json) =>
 const source = (entry: Info) =>
   SystemContext.make({
     key: SystemContext.Key.make(`api/${entry.key}`),
+    description: `Session context: ${entry.key}`,
     codec: Schema.toCodecJson(Schema.Json),
     load: Effect.succeed(entry.value),
     baseline: (value) => renderBlock(entry.key, value),

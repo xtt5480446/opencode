@@ -37,22 +37,37 @@ const update = (previous: ReadonlyArray<Summary>, current: ReadonlyArray<Summary
     (skill) => skill.name,
     (before, after) => before.description !== after.description,
   )
+  const items = [
+    ...diff.added.map((skill) => ({ key: skill.name, description: skill.description, action: "added" as const })),
+    ...diff.removed.map((skill) => ({ key: skill.name, description: skill.description, action: "removed" as const })),
+    ...diff.changed.map((skill) => ({
+      key: skill.current.name,
+      description: skill.current.description,
+      action: "updated" as const,
+    })),
+  ]
   // Additions and removals render as small deltas; anything else restates the full list.
   if (diff.changed.length > 0 || (diff.added.length === 0 && diff.removed.length === 0))
-    return [
-      "The available skills have changed. This list supersedes the previous available skills list.",
-      render(current),
-    ].join("\n")
-  return [
-    ...(diff.added.length === 0
-      ? []
-      : ["New skills are available in addition to those previously listed:", ...entries(diff.added)]),
-    ...(diff.removed.length === 0
-      ? []
-      : [
-          `The following skills are no longer available and must not be used: ${diff.removed.map((skill) => skill.name).join(", ")}.`,
-        ]),
-  ].join("\n")
+    return {
+      text: [
+        "The available skills have changed. This list supersedes the previous available skills list.",
+        render(current),
+      ].join("\n"),
+      items,
+    }
+  return {
+    text: [
+      ...(diff.added.length === 0
+        ? []
+        : ["New skills are available in addition to those previously listed:", ...entries(diff.added)]),
+      ...(diff.removed.length === 0
+        ? []
+        : [
+            `The following skills are no longer available and must not be used: ${diff.removed.map((skill) => skill.name).join(", ")}.`,
+          ]),
+    ].join("\n"),
+    items,
+  }
 }
 
 export interface Interface {
@@ -82,6 +97,7 @@ const layer = Layer.effect(
           .toSorted((a, b) => a.name.localeCompare(b.name))
         return SystemContext.make({
           key: SystemContext.Key.make("core/skill-guidance"),
+          description: "Available skills",
           codec: Schema.toCodecJson(Schema.Array(Summary)),
           load: Effect.succeed(available),
           baseline: render,

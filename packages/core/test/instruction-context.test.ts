@@ -94,6 +94,13 @@ describe("InstructionContext", () => {
               `Instructions from: ${globalFile}\nglobal`,
               `Instructions from: ${projectFile}\nproject`,
             ].join("\n\n"),
+            updates: [
+              {
+                key: SystemContext.Key.make("core/instructions"),
+                description: "Ambient instructions",
+                action: "updated",
+              },
+            ],
             applied: expect.any(Object),
           })
 
@@ -101,6 +108,13 @@ describe("InstructionContext", () => {
           expect(yield* SystemContext.reconcile(yield* load, initialized.applied)).toEqual({
             _tag: "Updated",
             text: "Previously loaded instructions no longer apply.",
+            updates: [
+              {
+                key: SystemContext.Key.make("core/instructions"),
+                description: "Ambient instructions",
+                action: "removed",
+              },
+            ],
             applied: {},
           })
         }),
