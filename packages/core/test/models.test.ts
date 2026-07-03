@@ -3,7 +3,6 @@ import { Effect, Layer, Ref } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Global } from "@opencode-ai/core/global"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
@@ -13,7 +12,7 @@ import path from "path"
 
 // test/preload.ts pins OPENCODE_MODELS_PATH to a fixture so other tests can
 // resolve providers without network. These tests need to drive the on-disk
-// cache themselves and silence the eager refresh fork. Save/restore around
+// cache themselves and control background refresh. Save/restore around
 // the suite — never leak the mutation to subsequent test files in the same
 // bun process.
 const ORIGINAL_MODELS_PATH = Flag.OPENCODE_MODELS_PATH
@@ -96,6 +95,9 @@ const buildLayer = (state: Ref.Ref<MockState>) =>
       [LayerNodePlatform.httpClient, Layer.succeed(HttpClient.HttpClient, makeMockClient(state))],
     ]),
   )
+
+const buildAutoRefreshLayer = (state: Ref.Ref<MockState>) =>
+  ModelsDev.autoRefreshLayer.pipe(Layer.provideMerge(buildLayer(state)))
 
 const writeCacheText = (text: string, mtimeMs?: number) =>
   Effect.promise(async () => {
@@ -269,20 +271,66 @@ describe("ModelsDev Service", () => {
     }),
   )
 
-  it.live("refresh swallows HTTP errors and leaves cache intact", () =>
+  it.live("refresh surfaces HTTP errors and leaves cache intact", () =>
     Effect.gen(function* () {
       yield* writeCache(fixture)
       const state = yield* Ref.make({ ...initialState, status: 500, body: "boom" })
-      const result = yield* provided(
-        state,
-        Effect.gen(function* () {
-          const svc = yield* ModelsDev.Service
-          yield* svc.refresh(true)
-          return yield* svc.get()
+      const result = yield* Effect.exit(
+        provided(
+          state,
+          Effect.gen(function* () {
+            const svc = yield* ModelsDev.Service
+            yield* svc.refresh(true)
+            return yield* svc.get()
+          }),
+        ),
+      )
+      expect(result._tag).toBe("Failure")
+      expect(yield* Effect.promise(() => readFile(cacheFile, "utf8"))).toBe(JSON.stringify(fixture))
+      // retryTransient retries 5xx, so calls may be > 1.
+      const final = yield* Ref.get(state)
+      expect(final.calls.length).toBeGreaterThanOrEqual(1)
+    }),
+  )
+
+  it.live("constructing the service does not start a background refresh", () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(initialState)
+      yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          Flag.OPENCODE_DISABLE_MODELS_FETCH = false
         }),
+        () => Layer.build(buildLayer(state)).pipe(Effect.andThen(Effect.sleep("20 millis"))),
+        () =>
+          Effect.sync(() => {
+            Flag.OPENCODE_DISABLE_MODELS_FETCH = true
+          }),
+      )
+      const final = yield* Ref.get(state)
+      expect(final.calls).toEqual([])
+    }),
+  )
+
+  it.live("autoRefreshLayer starts best-effort background refresh", () =>
+    Effect.gen(function* () {
+      yield* writeCache(fixture, Date.now() - 10 * 60 * 1000)
+      const state = yield* Ref.make({ ...initialState, status: 500, body: "boom" })
+      const result = yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          Flag.OPENCODE_DISABLE_MODELS_FETCH = false
+        }),
+        () =>
+          Effect.gen(function* () {
+            const context = yield* Layer.build(buildAutoRefreshLayer(state))
+            yield* Effect.sleep("700 millis")
+            return yield* ModelsDev.Service.use((s) => s.get()).pipe(Effect.provide(context))
+          }),
+        () =>
+          Effect.sync(() => {
+            Flag.OPENCODE_DISABLE_MODELS_FETCH = true
+          }),
       )
       expect(result).toEqual(fixture)
-      // retryTransient retries 5xx, so calls may be > 1.
       const final = yield* Ref.get(state)
       expect(final.calls.length).toBeGreaterThanOrEqual(1)
     }),

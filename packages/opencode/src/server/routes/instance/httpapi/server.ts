@@ -292,6 +292,7 @@ export function createRoutes(
       HttpServer.layerServices,
     ]),
     Layer.provide(Layer.succeed(CorsConfig)(corsOptions)),
+    Layer.provideMerge(ModelsDev.autoRefreshLayer.pipe(Layer.provide(AppNodeBuilderV1.build(app)))),
     Layer.provideMerge(Observability.layer),
 
     Layer.provide(sessionLocationLayer),

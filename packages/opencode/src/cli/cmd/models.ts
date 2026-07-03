@@ -26,7 +26,9 @@ export const ModelsCommand = effectCmd({
   handler: Effect.fn("Cli.models")(function* (args) {
     const { Provider } = yield* Effect.promise(() => import("@/provider/provider"))
     if (args.refresh) {
-      yield* ModelsDev.Service.use((s) => s.refresh(true))
+      yield* ModelsDev.Service.use((s) => s.refresh(true)).pipe(
+        Effect.catch((error) => fail(`Failed to refresh models cache: ${String(error)}`)),
+      )
       UI.println(UI.Style.TEXT_SUCCESS_BOLD + "Models cache refreshed" + UI.Style.TEXT_NORMAL)
     }
 

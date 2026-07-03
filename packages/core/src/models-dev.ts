@@ -115,7 +115,7 @@ declare const OPENCODE_MODELS_DEV: Record<string, Provider> | undefined
 
 export interface Interface {
   readonly get: () => Effect.Effect<Record<string, Provider>>
-  readonly refresh: (force?: boolean) => Effect.Effect<void>
+  readonly refresh: (force?: boolean) => Effect.Effect<void, unknown>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ModelsDev") {}
@@ -224,18 +224,23 @@ const layer = Layer.effect(
           yield* invalidate
           yield* events.publish(Event.Refreshed, {})
         }),
-      ).pipe(
-        Effect.tapCause((cause) => Effect.logError("Failed to fetch models.dev", { cause: cause })),
-        Effect.ignore,
       )
     })
 
-    if (!Flag.OPENCODE_DISABLE_MODELS_FETCH && !process.argv.includes("--get-yargs-completions")) {
-      // Schedule.spaced runs the effect once, then waits between completions.
-      yield* Effect.forkScoped(refresh().pipe(Effect.repeat(Schedule.spaced("60 minutes")), Effect.ignore))
-    }
-
     return Service.of({ get, refresh })
+  }),
+)
+
+export const autoRefreshLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    if (Flag.OPENCODE_DISABLE_MODELS_FETCH) return
+    if (process.argv.includes("--get-yargs-completions")) return
+    const svc = yield* Service
+    const refresh = svc.refresh().pipe(
+      Effect.catchCause((cause) => Effect.logWarning("Failed to refresh models.dev catalog", { cause })),
+    )
+    // Schedule.spaced runs the effect once, then waits between completions.
+    yield* Effect.forkScoped(refresh.pipe(Effect.repeat(Schedule.spaced("60 minutes"))))
   }),
 )
 
