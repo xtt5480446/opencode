@@ -14,9 +14,7 @@ import { Plugin } from "@/plugin"
 import { Session } from "@/session/session"
 import { Tool } from "@/tool/tool"
 import * as Truncate from "@/tool/truncate"
-import { McpCatalog } from "@/mcp/catalog"
 import { MessageID, SessionID } from "@/session/schema"
-import type { Tool as AITool } from "ai"
 import { Effect, Layer, Schema } from "effect"
 
 const ctx: Tool.Context = {
@@ -34,16 +32,18 @@ function mcpTool(
   name: string,
   handler: (args: Record<string, unknown>) => unknown,
   inputSchema: Record<string, unknown> = { type: "object", properties: {} },
-): AITool {
-  const client = {
-    callTool: async (params: { arguments?: Record<string, unknown> }) => handler(params.arguments ?? {}),
+  outputSchema?: Record<string, unknown>,
+): MCP.McpTool {
+  return {
+    def: { name, description: name, inputSchema, ...(outputSchema ? { outputSchema } : {}) } as MCPToolDef,
+    client: {
+      callTool: async (params: { arguments?: Record<string, unknown> }) => handler(params.arguments ?? {}),
+    } as unknown as MCP.McpTool["client"],
   }
-  return McpCatalog.convertTool({ name, description: name, inputSchema } as any, client as any)
 }
 
 function harness(input: {
-  mcpTools: Record<string, AITool>
-  defs?: Record<string, MCPToolDef>
+  mcpTools: Record<string, MCP.McpTool>
   servers: string[]
   permission?: PermissionV1.Rule[]
   trigger?: Plugin.Interface["trigger"]
@@ -63,19 +63,17 @@ function harness(input: {
     }),
     Layer.mock(MCP.Service, {
       tools: () => Effect.succeed(input.mcpTools),
-      defs: () => Effect.succeed(input.defs ?? {}),
       clients: () => Effect.succeed(Object.fromEntries(input.servers.map((name) => [name, {} as any]))),
     }),
   )
 }
 
-function serverNames(mcpTools: Record<string, AITool>, servers?: string[]) {
+function serverNames(mcpTools: Record<string, MCP.McpTool>, servers?: string[]) {
   return servers ?? [...new Set(Object.keys(mcpTools).map((key) => key.split("_")[0]!))]
 }
 
 function build(
-  mcpTools: Record<string, AITool>,
-  defs: Record<string, MCPToolDef> = {},
+  mcpTools: Record<string, MCP.McpTool>,
   servers?: string[],
   permission?: PermissionV1.Rule[],
   trigger?: Plugin.Interface["trigger"],
@@ -84,18 +82,13 @@ function build(
   return Effect.runPromise(
     CodeModeTool.pipe(
       Effect.flatMap(Tool.init),
-      Effect.provide(harness({ mcpTools, defs, servers: names, permission, trigger })),
+      Effect.provide(harness({ mcpTools, servers: names, permission, trigger })),
     ),
   )
 }
 
-function describeFor(
-  mcpTools: Record<string, AITool>,
-  defs: Record<string, MCPToolDef> = {},
-  servers?: string[],
-  permission: PermissionV1.Rule[] = [],
-) {
-  return describeCatalog(Permission.visibleTools(mcpTools, permission), defs, serverNames(mcpTools, servers))
+function describeFor(mcpTools: Record<string, MCP.McpTool>, servers?: string[], permission: PermissionV1.Rule[] = []) {
+  return describeCatalog(Permission.visibleTools(mcpTools, permission), serverNames(mcpTools, servers))
 }
 
 describe("code mode execute", () => {
@@ -106,26 +99,29 @@ describe("code mode execute", () => {
   })
 
   test("groups multi-underscore server names by longest matching prefix", () => {
-    const description = describeFor({ my_server_do_thing: mcpTool("do_thing", () => "") }, {}, ["my_server"])
+    const description = describeFor({ my_server_do_thing: mcpTool("do_thing", () => "") }, ["my_server"])
     expect(description).toContain("- my_server (1 tool)")
     expect(description).toContain("tools.my_server.do_thing(")
   })
 
   test("groupByServer uses the whole key as the server name when it has no underscore", () => {
-    const description = describeFor({ standalone: mcpTool("standalone", () => "") }, {}, [])
+    const description = describeFor({ standalone: mcpTool("standalone", () => "") }, [])
     expect(description).toContain("- standalone (1 tool)")
     expect(description).toContain("tools.standalone.standalone(")
   })
 
   test("describeCatalog carries the raw MCP schemas for rendering", () => {
-    const defs: Record<string, MCPToolDef> = {
-      weather_current: {
-        name: "current",
-        inputSchema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
-        outputSchema: { type: "object", properties: { tempC: { type: "number" } }, required: ["tempC"] },
-      } as any,
-    }
-    const description = describeFor({ weather_current: mcpTool("current", () => "") }, defs, ["weather"])
+    const description = describeFor(
+      {
+        weather_current: mcpTool(
+          "current",
+          () => "",
+          { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+          { type: "object", properties: { tempC: { type: "number" } }, required: ["tempC"] },
+        ),
+      },
+      ["weather"],
+    )
     expect(description).toContain("tools.weather.current(input: { city: string }): Promise<{ tempC: number }>")
   })
 
@@ -167,43 +163,42 @@ describe("code mode execute", () => {
   })
 
   test("signatures render the declared outputSchema as the return type", () => {
-    const defs: Record<string, MCPToolDef> = {
-      weather_current: {
-        name: "current",
-        inputSchema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
-        outputSchema: {
+    const description = describeFor({
+      weather_current: mcpTool(
+        "current",
+        () => "",
+        { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+        {
           type: "object",
           properties: { tempC: { type: "number" }, summary: { type: "string" } },
           required: ["tempC"],
         },
-      } as any,
-    }
-    const description = describeFor({ weather_current: mcpTool("current", () => "") }, defs)
+      ),
+    })
     expect(description).toContain(
       "tools.weather.current(input: { city: string }): Promise<{ tempC: number; summary?: string }>",
     )
   })
 
   test("large catalogs inline a budgeted PARTIAL list plus runtime search", async () => {
-    const tools: Record<string, AITool> = {}
+    const tools: Record<string, MCP.McpTool> = {}
     const filler = "a searchable description of this operation that consumes catalog budget ".repeat(3)
     for (let i = 0; i < 150; i++) {
-      const client = { callTool: async () => ({ content: [] }) }
-      tools[`alpha_op_${i}`] = McpCatalog.convertTool(
-        {
+      tools[`alpha_op_${i}`] = {
+        def: {
           name: `op_${i}`,
           description: `${filler}${i}`,
           inputSchema: { type: "object", properties: { value: { type: "string" }, count: { type: "number" } } },
-        } as any,
-        client as any,
-      )
+        } as MCPToolDef,
+        client: { callTool: async () => ({ content: [] }) } as unknown as MCP.McpTool["client"],
+      }
     }
     tools["zeta_only_tool"] = mcpTool("only_tool", () => "", {
       type: "object",
       properties: { topic: { type: "string", description: "Subject to look up" } },
       required: ["topic"],
     })
-    const description = describeFor(tools, {}, ["alpha", "zeta"])
+    const description = describeFor(tools, ["alpha", "zeta"])
 
     expect(description).toContain("Available tools (PARTIAL - ")
     expect(description).toMatch(/- alpha \(150 tools, \d+ shown\)/)
@@ -216,7 +211,7 @@ describe("code mode execute", () => {
     expect(description).toContain("tools.alpha.op_0(")
     expect(description).not.toContain("tools.alpha.op_99(")
 
-    const tool = await build(tools, {}, ["alpha", "zeta"])
+    const tool = await build(tools, ["alpha", "zeta"])
     const out = await Effect.runPromise(
       tool.execute({ code: "return await tools.$codemode.search({ query: 'only tool', limit: 3 })" }, ctx),
     )
@@ -385,7 +380,6 @@ describe("code mode execute", () => {
         a_tool: mcpTool("a", () => ({ content: [{ type: "text", text: "one" }] })),
         b_tool: mcpTool("b", () => ({ content: [{ type: "text", text: "two" }] })),
       },
-      {},
       undefined,
       undefined,
       trigger,
@@ -421,7 +415,6 @@ describe("code mode execute", () => {
     }
     const tool = await build(
       { a_tool: mcpTool("a", record("a")), b_tool: mcpTool("b", record("b")) },
-      {},
       undefined,
       undefined,
       trigger,
@@ -520,7 +513,7 @@ describe("code mode execute", () => {
       media_mixed: mcpTool("mixed", () => ({
         content: [
           { type: "image", data: "PNG3", mimeType: "image/png" },
-          { type: "resource_link", uri: "file:///tmp/report.pdf", mimeType: "application/pdf" },
+          { type: "resource_link", uri: "file:///tmp/report.pdf", name: "report.pdf", mimeType: "application/pdf" },
         ],
       })),
     })
@@ -633,7 +626,7 @@ describe("code mode permission visibility", () => {
       github_create_issue: mcpTool("create_issue", ok),
       github_list_issues: mcpTool("list_issues", ok),
     }
-    const description = describeFor(mcpTools, {}, ["github"], [deny("github_create_issue")])
+    const description = describeFor(mcpTools, ["github"], [deny("github_create_issue")])
     expect(description).toContain("tools.github.list_issues(")
     expect(description).not.toContain("create_issue")
     expect(description).toContain("- github (1 tool)")
@@ -644,7 +637,7 @@ describe("code mode permission visibility", () => {
       github_create_issue: mcpTool("create_issue", ok),
       github_list_issues: mcpTool("list_issues", ok),
     }
-    const description = describeFor(mcpTools, {}, ["github"], [askRule("github_create_issue")])
+    const description = describeFor(mcpTools, ["github"], [askRule("github_create_issue")])
     expect(description).toContain("tools.github.create_issue(")
     expect(description).toContain("tools.github.list_issues(")
     expect(description).toContain("- github (2 tools)")
@@ -660,7 +653,6 @@ describe("code mode permission visibility", () => {
         }),
         github_list_issues: mcpTool("list_issues", ok),
       },
-      {},
       ["github"],
       [deny("github_create_issue")],
     )
@@ -685,7 +677,6 @@ describe("code mode permission visibility", () => {
     const askCtx: Tool.Context = { ...ctx, ask: (req) => Effect.sync(() => void asked.push(req.permission)) }
     const tool = await build(
       { github_list_issues: mcpTool("list_issues", ok) },
-      {},
       ["github"],
       [askRule("github_list_issues")],
     )
