@@ -196,9 +196,6 @@ function stateApi(sync: ReturnType<typeof useSync>, data: ReturnType<typeof useD
           tool: request.source?.type === "tool" ? { messageID: request.source.messageID, callID: request.source.callID } : undefined,
         }))
       },
-      question(sessionID) {
-        return sync.data.question[sessionID] ?? []
-      },
     },
     part(messageID) {
       return sync.data.part[messageID] ?? []

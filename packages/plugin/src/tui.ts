@@ -10,7 +10,6 @@ import type {
   Part,
   Provider,
   PermissionRequest,
-  QuestionRequest,
   Session,
   SessionStatus,
   TextPart,
@@ -391,7 +390,6 @@ export type TuiState = {
     messages: (sessionID: string) => ReadonlyArray<Message>
     status: (sessionID: string) => SessionStatus | undefined
     permission: (sessionID: string) => ReadonlyArray<PermissionRequest>
-    question: (sessionID: string) => ReadonlyArray<QuestionRequest>
   }
   part: (messageID: string) => ReadonlyArray<Part>
   lsp: () => ReadonlyArray<TuiSidebarLspItem>
