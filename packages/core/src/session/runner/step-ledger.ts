@@ -1,4 +1,11 @@
-import { ToolOutput, type LLMEvent, type ProviderMetadata, type ToolResultValue, type Usage } from "@opencode-ai/llm"
+import {
+  ToolOutput,
+  type LLMEvent,
+  type ProviderErrorEvent,
+  type ProviderMetadata,
+  type ToolResultValue,
+  type Usage,
+} from "@opencode-ai/llm"
 import { DateTime, Effect } from "effect"
 import { EventV2 } from "../../event"
 import { ModelV2 } from "../../model"
@@ -69,7 +76,9 @@ export const createStepLedger = (events: EventV2.Interface, input: Input) => {
   let assistantActive = false
   let assistantFailed = false
   let providerFailed = false
+  let heldOverflowEvent: ProviderErrorEvent | undefined
   let stepSettlement: { readonly finish: string; readonly tokens: ReturnType<typeof tokens> } | undefined
+  const localToolCalls = new Set<string>()
 
   const startAssistant = Effect.fnUntraced(function* () {
     if (assistantMessageID !== undefined) return assistantMessageID
@@ -227,6 +236,11 @@ export const createStepLedger = (events: EventV2.Interface, input: Input) => {
   const assistantMessageIDForTool = (callID: string) => {
     const tool = tools.get(callID)
     return tool ? Effect.succeed(tool.assistantMessageID) : Effect.die(new Error(`Unknown tool call: ${callID}`))
+  }
+
+  const admitLocalToolCall = (callID: string) => {
+    const tool = tools.get(callID)
+    if (tool?.called && !tool.providerExecuted) localToolCalls.add(callID)
   }
 
   const publish = Effect.fn("SessionRunner.publishLLMEvent")(function* (
@@ -397,8 +411,14 @@ export const createStepLedger = (events: EventV2.Interface, input: Input) => {
     flush,
     failAssistant,
     failUnsettledTools,
+    admitLocalToolCall,
+    holdOverflow: (event: ProviderErrorEvent) => {
+      heldOverflowEvent = event
+    },
+    heldOverflow: () => heldOverflowEvent,
     hasActiveAssistant: () => assistantActive,
     hasAssistantStarted: () => assistantMessageID !== undefined,
+    hasLocalToolCalls: () => localToolCalls.size > 0,
     hasProviderError: () => providerFailed,
     stepSettlement: () => stepSettlement,
     startAssistant,

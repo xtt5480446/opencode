@@ -1,15 +1,6 @@
 export * as SessionRunnerLLM from "./llm"
 
-import {
-  LLM,
-  LLMClient,
-  LLMError,
-  LLMEvent,
-  Message,
-  SystemPart,
-  isContextOverflowFailure,
-  type ProviderErrorEvent,
-} from "@opencode-ai/llm"
+import { LLM, LLMClient, LLMError, LLMEvent, Message, SystemPart, isContextOverflowFailure } from "@opencode-ai/llm"
 import { Cause, DateTime, Effect, Exit, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
@@ -185,7 +176,6 @@ const layer = Layer.effect(
         session.id,
       )
       const toolFibers = yield* FiberSet.make<void, ToolOutputStore.Error>()
-      let needsContinuation = false
       let currentStep = step
       if (promotion) {
         let promoted = 0
@@ -236,14 +226,13 @@ const layer = Layer.effect(
       const serialized = <A, E, R>(effect: Effect.Effect<A, E, R>) => publication.withPermit(effect)
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         serialized(ledger.publish(event, outputPaths))
-      let overflowFailure: ProviderErrorEvent | undefined
       const providerStream = llm.stream(request).pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
-            if (overflowFailure || ledger.hasProviderError()) return
+            if (ledger.heldOverflow() || ledger.hasProviderError()) return
             if (LLMEvent.is.providerError(event)) {
               if (isContextOverflowFailure(event) && !ledger.hasAssistantStarted()) {
-                overflowFailure = event
+                ledger.holdOverflow(event)
                 return
               }
             }
@@ -253,7 +242,7 @@ const layer = Layer.effect(
               yield* serialized(ledger.failUnsettledTools("Tools are disabled after the maximum agent steps"))
               return
             }
-            needsContinuation = true
+            ledger.admitLocalToolCall(event.id)
             const assistantMessageID = yield* ledger.assistantMessageID(event.id)
             yield* Effect.uninterruptibleMask((restore) =>
               restore(
@@ -320,7 +309,7 @@ const layer = Layer.effect(
           if (
             recoverOverflow &&
             !ledger.hasAssistantStarted() &&
-            isContextOverflowFailure(overflowFailure ?? streamFailure) &&
+            isContextOverflowFailure(ledger.heldOverflow() ?? streamFailure) &&
             (yield* restore(recoverOverflow({ sessionID: session.id, messages: context, request })))
           )
             return { _tag: "RestartAfterOverflowCompaction", step: currentStep } as const
@@ -328,7 +317,8 @@ const layer = Layer.effect(
           // An unrecovered held-back overflow becomes the step's durable provider error. A
           // thrown LLM failure fails hosted tool calls and the assistant unless a provider
           // error was already recorded from the stream.
-          if (overflowFailure) yield* publish(overflowFailure)
+          const heldOverflow = ledger.heldOverflow()
+          if (heldOverflow) yield* publish(heldOverflow)
           const llmFailure = streamFailure instanceof LLMError ? streamFailure : undefined
           if (llmFailure && !ledger.hasProviderError()) {
             yield* serialized(ledger.failUnsettledTools("Provider did not return a tool result", true))
@@ -379,7 +369,7 @@ const layer = Layer.effect(
             return yield* Effect.failCause(settled.cause)
           return {
             _tag: "Completed",
-            needsContinuation: !providerFailed && needsContinuation,
+            needsContinuation: !providerFailed && ledger.hasLocalToolCalls(),
             step: currentStep,
           } as const
         }),
