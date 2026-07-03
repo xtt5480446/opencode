@@ -43,31 +43,6 @@ export const toModelOutput = (
   return `User has answered your questions: ${formatted}. You can now continue with the user's answers in mind.`
 }
 
-// Each question becomes one field keyed by position; answers translate back positionally.
-export const toField = (question: QuestionV2.Prompt, index: number): Form.Field => {
-  const shared = {
-    key: `q${index}`,
-    title: question.header,
-    description: question.question,
-    options: question.options.map((option) => ({
-      value: option.label,
-      label: option.label,
-      description: option.description,
-    })),
-    custom: true,
-  }
-  if (question.multiple === true) return { ...shared, type: "multiselect" }
-  return { ...shared, type: "string" }
-}
-
-export const toAnswers = (questions: ReadonlyArray<QuestionV2.Prompt>, answer: Form.Answer) =>
-  questions.map((_, index): QuestionV2.Answer => {
-    const value = answer[`q${index}`]
-    if (value === undefined) return []
-    if (typeof value === "object") return Array.from(value)
-    return [String(value)]
-  })
-
 export const Plugin = {
   id: "core-question-tool",
   effect: Effect.fn("QuestionTool.Plugin")(function* (ctx: PluginContext) {
@@ -103,14 +78,32 @@ export const Plugin = {
                         tool: { messageID: context.assistantMessageID, callID: context.toolCallID },
                       },
                       mode: "form",
-                      fields: input.questions.map(toField),
+                      fields: input.questions.map((question, index): Form.Field => ({
+                        key: `q${index}`,
+                        title: question.header,
+                        description: question.question,
+                        type: question.multiple === true ? "multiselect" : "string",
+                        options: question.options.map((option) => ({
+                          value: option.label,
+                          label: option.label,
+                          description: option.description,
+                        })),
+                        custom: true,
+                      })),
                     })
                     .pipe(Effect.orDie),
                 ),
                 Effect.flatMap((state) => {
                   // The runner halts the loop on this exact defect (session/runner/llm.ts).
                   if (state.status !== "answered") return Effect.die(new QuestionV2.RejectedError())
-                  return Effect.succeed({ answers: toAnswers(input.questions, state.answer) })
+                  return Effect.succeed({
+                    answers: input.questions.map((_, index): QuestionV2.Answer => {
+                      const value = state.answer[`q${index}`]
+                      if (value === undefined) return []
+                      if (typeof value === "object") return Array.from(value)
+                      return [String(value)]
+                    }),
+                  })
                 }),
               ),
         }),
