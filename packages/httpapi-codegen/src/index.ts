@@ -57,6 +57,14 @@ export type Endpoint = {
   readonly unwrapData: boolean
   readonly errors: ReadonlyArray<{ readonly status: number; readonly schema: Schema.Top }>
   readonly successes: ReadonlyArray<Schema.Top>
+  readonly wire: {
+    readonly params: Schema.Top | undefined
+    readonly query: Schema.Top | undefined
+    readonly headers: Schema.Top | undefined
+    readonly payloads: ReadonlyArray<Schema.Top>
+    readonly errors: ReadonlyArray<{ readonly status: number; readonly schema: Schema.Top }>
+    readonly successes: ReadonlyArray<Schema.Top>
+  }
   readonly effectPortable: boolean
 }
 
@@ -75,6 +83,12 @@ type Slot = {
 type PromiseInputField =
   | (InputField & { readonly optional: boolean })
   | { readonly name: string; readonly source: "wildcard"; readonly optional: false }
+
+type PromiseReferences = {
+  readonly types: Map<string, string>
+  readonly variants: Map<string, Map<string, string>>
+  readonly names: Set<string>
+}
 
 const resolveHttpApiStatus = SchemaAST.resolveAt<number>("httpApiStatus")
 const resolveHttpApiEncoding = SchemaAST.resolveAt<HttpApiSchema.Encoding>("~httpApiEncoding")
@@ -161,6 +175,14 @@ export function compile<Id extends string, Groups extends HttpApiGroup.Any>(
         unwrapData: isDataEnvelope(success.schema),
         successes: [success.schema],
         errors: errorSchemas.map((item) => ({ status: item.status, schema: item.schema })),
+        wire: {
+          params: params?.wire,
+          query: query?.wire,
+          headers: headers?.wire,
+          payloads: payloads.map((item) => item.wire),
+          successes: [success.wire],
+          errors: errorSchemas.map((item) => ({ status: item.status, schema: item.wire })),
+        },
         effectPortable,
         operation: {
           group: groupName,
@@ -356,7 +378,7 @@ function groupShapeTypeName(group: Group, endpoint: Endpoint) {
 
 function assertPromiseEndpoint(endpoint: Endpoint) {
   const name = `${endpoint.group}.${endpoint.endpoint.name}`
-  const payload = endpoint.payloads[0]
+  const payload = endpoint.wire.payloads[0]
   const payloadEncoding = payload === undefined ? undefined : resolveHttpApiEncoding(payload.ast)
   if (
     payload !== undefined &&
@@ -364,7 +386,7 @@ function assertPromiseEndpoint(endpoint: Endpoint) {
   ) {
     throw new GenerationError({ reason: `Unsupported Promise payload encoding: ${name}` })
   }
-  const success = endpoint.successes[0]
+  const success = endpoint.wire.successes[0]
   if (isStreamSchema(success)) {
     if (
       success._tag !== "StreamSse" ||
@@ -379,7 +401,7 @@ function assertPromiseEndpoint(endpoint: Endpoint) {
       throw new GenerationError({ reason: `Unsupported Promise success encoding: ${name}` })
     }
   }
-  for (const error of endpoint.errors) {
+  for (const error of endpoint.wire.errors) {
     if (declaredErrorFields(error.schema) === undefined) {
       throw new GenerationError({ reason: `Promise error must have a literal discriminator: ${name}` })
     }
@@ -521,24 +543,35 @@ function renderPromiseTypes(
   outputTypes?: Readonly<Record<string, { readonly name: string; readonly import: string }>>,
 ) {
   const types = new Map<SchemaAST.AST, string>()
+  const references: PromiseReferences = { types: new Map(), variants: new Map(), names: new Set() }
   const typeOf = (schema: Schema.Top, decoded = false) => {
     const projected = decoded ? Schema.toType(schema) : Schema.toEncoded(schema)
     const cached = types.get(projected.ast)
     if (cached !== undefined) return cached
-    const type = structuralType(projected)
+    const type = structuralType(projected, references)
     types.set(projected.ast, type)
     return type
   }
   const errors = new Map(
     groups.flatMap((group) =>
       group.endpoints.flatMap((endpoint) =>
-        endpoint.errors.flatMap((error) => {
+        endpoint.wire.errors.flatMap((error) => {
           const tagged = declaredErrorFields(error.schema)
           return tagged === undefined ? [] : [[tagged.tag, tagged] as const]
         }),
       ),
     ),
   )
+  references.names.add("JsonValue")
+  for (const error of errors.values()) references.names.add(error.identifier)
+  for (const override of Object.values(outputTypes ?? {})) references.names.add(override.name)
+  for (const group of groups) {
+    for (const endpoint of group.endpoints) {
+      const prefix = promiseTypePrefix(group.identifier, endpoint.operation.name)
+      references.names.add(`${prefix}Input`)
+      references.names.add(`${prefix}Output`)
+    }
+  }
   const errorTypes = Array.from(errors.values()).map((error) => {
     const fields = error.fields
       .map(([name, schema, optional]) => `readonly ${JSON.stringify(name)}${optional ? "?" : ""}: ${typeOf(schema)}`)
@@ -550,10 +583,10 @@ function renderPromiseTypes(
       group.endpoints.flatMap((endpoint) => {
         const prefix = promiseTypePrefix(group.identifier, endpoint.operation.name)
         const schemas = {
-          params: endpoint.params,
-          query: endpoint.query,
-          headers: endpoint.headers,
-          payload: endpoint.payloads[0],
+          params: endpoint.wire.params,
+          query: endpoint.wire.query,
+          headers: endpoint.wire.headers,
+          payload: endpoint.wire.payloads[0],
         }
         const input = promiseInput(endpoint)
           .map((field) => {
@@ -564,7 +597,7 @@ function renderPromiseTypes(
             return `readonly ${JSON.stringify(field.name)}${field.optional ? "?" : ""}: (${typeOf(schema, field.source === "query")})[${JSON.stringify(field.name)}]`
           })
           .join("; ")
-        const successSchema = endpoint.successes[0]
+        const successSchema = endpoint.wire.successes[0]
         const success =
           outputTypes?.[`${group.identifier}.${endpoint.operation.name}`]?.name ??
           typeOf(
@@ -581,11 +614,12 @@ function renderPromiseTypes(
       }),
     )
     .join("\n\n")
-  const json = operations.includes("JsonValue")
+  const referenceTypes = Array.from(references.types, ([name, type]) => `export type ${name} = ${type}`).join("\n\n")
+  const json = [referenceTypes, operations, ...errorTypes].some((source) => source.includes("JsonValue"))
     ? "export type JsonValue = null | boolean | number | string | ReadonlyArray<JsonValue> | { readonly [key: string]: JsonValue }"
     : ""
   const imports = [...new Set(Object.values(outputTypes ?? {}).map((override) => override.import))]
-  return [...imports, json, ...errorTypes, operations].filter(Boolean).join("\n\n")
+  return [...imports, json, ...errorTypes, referenceTypes, operations].filter(Boolean).join("\n\n")
 }
 
 function renderPromiseClient(groups: ReadonlyArray<Group>) {
@@ -612,14 +646,14 @@ function renderPromiseClient(groups: ReadonlyArray<Group>) {
           : `{ ${inputs.map((field) => `${JSON.stringify(field.name)}: ${access(field.name)}`).join(", ")} }`
       }
       const parts = [
-        endpoint.query === undefined ? undefined : `query: ${part("query")}`,
-        endpoint.headers === undefined ? undefined : `headers: ${part("headers")}`,
-        endpoint.payloads.length === 0 ? undefined : `body: ${part("payload")}`,
+        endpoint.wire.query === undefined ? undefined : `query: ${part("query")}`,
+        endpoint.wire.headers === undefined ? undefined : `headers: ${part("headers")}`,
+        endpoint.wire.payloads.length === 0 ? undefined : `body: ${part("payload")}`,
       ].filter((value): value is string => value !== undefined)
-      const declaredStatuses = [...new Set(endpoint.errors.map((error) => error.status))]
-      const descriptor = `{ method: ${JSON.stringify(endpoint.endpoint.method)}, path: ${path}${parts.length === 0 ? "" : `, ${parts.join(", ")}`}, successStatus: ${resolveHttpApiStatus(endpoint.successes[0].ast) ?? 200}, declaredStatuses: [${declaredStatuses.join(", ")}], empty: ${endpoint.operation.success === "void"}${isBinarySchema(endpoint.successes[0]) ? ", binary: true" : ""} }`
+      const declaredStatuses = [...new Set(endpoint.wire.errors.map((error) => error.status))]
+      const descriptor = `{ method: ${JSON.stringify(endpoint.endpoint.method)}, path: ${path}${parts.length === 0 ? "" : `, ${parts.join(", ")}`}, successStatus: ${resolveHttpApiStatus(endpoint.wire.successes[0].ast) ?? 200}, declaredStatuses: [${declaredStatuses.join(", ")}], empty: ${endpoint.operation.success === "void"}${isBinarySchema(endpoint.wire.successes[0]) ? ", binary: true" : ""} }`
       if (endpoint.operation.success === "stream") {
-        const success = endpoint.successes[0]
+        const success = endpoint.wire.successes[0]
         if (!isStreamSchema(success) || success._tag !== "StreamSse" || success.sseMode !== "data") {
           throw new GenerationError({
             reason: `Promise stream emission is not implemented: ${group.identifier}.${endpoint.endpoint.name}`,
@@ -652,7 +686,7 @@ function identifierPart(value: string) {
     .join("")
 }
 
-function structuralType(schema: Schema.Top) {
+function structuralType(schema: Schema.Top, references: PromiseReferences) {
   const document = SchemaRepresentation.toCodeDocument(SchemaRepresentation.fromASTs([schema.ast]))
   if (
     document.artifacts.some(
@@ -663,28 +697,62 @@ function structuralType(schema: Schema.Top) {
   ) {
     throw new GenerationError({ reason: "Referenced Promise types are not implemented" })
   }
-  const references = new Map(
-    document.references.nonRecursives.map((reference) => [reference.$ref, reference.code.Type]),
+  const source = new Map(
+    document.references.nonRecursives.map((reference) => [reference.$ref, promiseType(reference.code.Type)]),
   )
   const expand = (type: string, seen = new Set<string>()): string => {
-    for (const [reference, value] of references) {
-      const pattern = `(?<![A-Za-z0-9_$.'"])${reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_$.'"])`
-      if (!new RegExp(pattern).test(type)) continue
-      if (seen.has(reference)) {
-        throw new GenerationError({ reason: `Recursive Promise types are not implemented: ${reference}` })
-      }
-      type = type.replace(new RegExp(pattern, "g"), `(${expand(value, new Set([...seen, reference]))})`)
+    for (const [name, value] of source) {
+      const pattern = typeReferencePattern(name)
+      if (!pattern.test(type)) continue
+      if (seen.has(name)) throw new GenerationError({ reason: `Recursive Promise type reference: ${name}` })
+      type = type.replace(pattern, `(${expand(value, new Set([...seen, name]))})`)
     }
     return type
   }
-  return expand(document.codes[0].Type)
-    .replaceAll(/ & Brand\.Brand<"[^"]+">/g, "")
-    .replaceAll("Schema.Json", "JsonValue")
+  const names = new Map<string, string>()
+  for (const reference of document.references.nonRecursives) {
+    const canonical = expand(source.get(reference.$ref)!)
+    const variants = references.variants.get(reference.$ref) ?? new Map<string, string>()
+    const existing = variants.get(canonical)
+    if (existing !== undefined) {
+      names.set(reference.$ref, existing)
+      continue
+    }
+    const name = uniqueTypeName(identifierPart(reference.$ref), references.names)
+    references.names.add(name)
+    variants.set(canonical, name)
+    references.variants.set(reference.$ref, variants)
+    names.set(reference.$ref, name)
+  }
+  const rewrite = (type: string) => {
+    for (const [from, to] of names) type = type.replace(typeReferencePattern(from), to)
+    return type
+  }
+  for (const reference of document.references.nonRecursives) {
+    const name = names.get(reference.$ref)!
+    if (!references.types.has(name)) references.types.set(name, rewrite(source.get(reference.$ref)!))
+  }
+  return rewrite(promiseType(document.codes[0].Type))
+}
+
+function typeReferencePattern(name: string) {
+  return new RegExp(`(?<![A-Za-z0-9_$.'"])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_$.'"])`, "g")
+}
+
+function uniqueTypeName(name: string, names: ReadonlySet<string>) {
+  if (!names.has(name)) return name
+  let suffix = 2
+  while (names.has(`${name}${suffix}`)) suffix++
+  return `${name}${suffix}`
+}
+
+function promiseType(type: string) {
+  return type.replaceAll(/ & Brand\.Brand<"[^"]+">/g, "").replaceAll("Schema.Json", "JsonValue")
 }
 
 function normalizePromiseClientContent(content: string, groups: ReadonlyArray<Group>) {
   const endpoints = groups.flatMap((group) => group.endpoints)
-  const usesBinary = endpoints.some((endpoint) => isBinarySchema(endpoint.successes[0]))
+  const usesBinary = endpoints.some((endpoint) => isBinarySchema(endpoint.wire.successes[0]))
   const usesWildcard = endpoints.some((endpoint) => promiseWildcardInput(endpoint) !== undefined)
 
   const sseReady = replaceOne(content, "let next: ReadableStreamReadResult<Uint8Array>", "let next")
@@ -769,7 +837,7 @@ function normalizeTransport(
   operation: string,
 ) {
   if (schema === undefined) return undefined
-  if (isStreamSchema(schema)) return { schema, effectPortable: true } as const
+  if (isStreamSchema(schema)) return { schema, wire: schema, effectPortable: true } as const
   if (!metadataPortable(schema.ast, new Set())) {
     throw new GenerationError({ reason: `Unportable schema: ${operation}.${source}` })
   }
@@ -798,8 +866,8 @@ function normalizeTransport(
               ? Array.from(rebuilt.success)[0]
               : Array.from(rebuilt.error)[0]
   if (normalized === undefined) throw new GenerationError({ reason: `Unportable schema: ${operation}.${source}` })
-  if (!sameEncoding(schema.ast, normalized.ast)) return { schema, effectPortable: false } as const
-  return { schema: decoded, effectPortable: true } as const
+  if (!sameEncoding(schema.ast, normalized.ast)) return { schema, wire: schema, effectPortable: false } as const
+  return { schema: decoded, wire: schema, effectPortable: true } as const
 }
 
 function isPathInput(path: string): path is HttpRouter.PathInput {

@@ -270,8 +270,8 @@ describe("HttpApiCodegen.generate", () => {
     expect(types).not.toContain("Brand")
   })
 
-  test("inlines non-recursive references in Promise wire types", () => {
-    const Referenced = Schema.Struct({ value: Schema.String }).annotate({ identifier: "Referenced" })
+  test("preserves non-recursive references as named Promise wire types", () => {
+    const Referenced = Schema.Struct({ value: Schema.String }).annotate({ identifier: "Session.Info" })
     const output = emitPromise(
       compileContract(
         api(
@@ -282,12 +282,12 @@ describe("HttpApiCodegen.generate", () => {
       ),
     )
 
-    expect(output.files.find((file) => file.path === "types.ts")?.content).toContain(
-      'export type SessionGetOutput = ({ readonly "data": ({ readonly "value": string }) })["data"]',
-    )
+    const types = output.files.find((file) => file.path === "types.ts")?.content
+    expect(types).toContain('export type SessionInfo = { readonly "value": string }')
+    expect(types).toContain('export type SessionGetOutput = ({ readonly "data": SessionInfo })["data"]')
   })
 
-  test("expands Promise references only at identifier boundaries", () => {
+  test("preserves distinct Promise reference names at identifier boundaries", () => {
     const Session = Schema.Struct({ name: Schema.Literal("Session"), id: Schema.String }).annotate({
       identifier: "Session",
     })
@@ -302,9 +302,47 @@ describe("HttpApiCodegen.generate", () => {
       ),
     )
 
-    expect(output.files.find((file) => file.path === "types.ts")?.content).toContain(
-      'readonly "session": ({ readonly "name": "Session", readonly "id": string })',
+    const types = output.files.find((file) => file.path === "types.ts")?.content
+    expect(types).toContain('export type Session = { readonly "name": "Session", readonly "id": string }')
+    expect(types).toContain("export type SessionID = string")
+    expect(types).toContain('readonly "session": Session, readonly "sessionID": SessionID')
+  })
+
+  test("preserves encoded shapes in named Promise wire types", () => {
+    const Referenced = Schema.Struct({ value: Schema.Number }).annotate({ identifier: "Referenced" })
+    const output = emitPromise(
+      compileContract(
+        api(
+          HttpApiEndpoint.get("get", "/session", {
+            success: Schema.Struct({ data: Referenced }),
+          }),
+        ),
+      ),
     )
+
+    const types = output.files.find((file) => file.path === "types.ts")?.content
+    expect(types).toContain('export type Referenced = { readonly "value": number | "Infinity" | "-Infinity" | "NaN" }')
+    expect(types).toContain('export type SessionGetOutput = ({ readonly "data": Referenced })["data"]')
+  })
+
+  test("distinguishes decoded inputs from encoded Promise references", () => {
+    const Referenced = Schema.Struct({ value: Schema.NumberFromString }).annotate({ identifier: "Referenced" })
+    const output = emitPromise(
+      compileContract(
+        api(
+          HttpApiEndpoint.get("get", "/session", {
+            query: { filter: Referenced },
+            success: Schema.Struct({ data: Referenced }),
+          }),
+        ),
+      ),
+    )
+
+    const types = output.files.find((file) => file.path === "types.ts")?.content
+    expect(types).toContain('export type Referenced = { readonly "value": number }')
+    expect(types).toContain('export type Referenced2 = { readonly "value": string }')
+    expect(types).toContain('readonly "filter": ({ readonly "filter": Referenced })["filter"]')
+    expect(types).toContain('export type SessionGetOutput = ({ readonly "data": Referenced2 })["data"]')
   })
 
   test("emits Effect Json schemas as standalone Promise types", () => {
