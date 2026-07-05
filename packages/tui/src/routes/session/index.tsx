@@ -72,6 +72,7 @@ import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
 import { createSessionRows, type PartRef, type SessionRow } from "./rows"
 import { switchLabel } from "../../util/model"
+import { revertedPrompt } from "../../util/revert-prompt"
 
 addDefaultParsers(parsers.parsers)
 
@@ -398,17 +399,21 @@ export function Session() {
       title: "Undo previous message",
       value: "session.undo",
       category: "Session",
-      slash: { name: "undo" },
+      slash: { name: "undo", aliases: ["revert"] },
       run: () => {
         void (async () => {
+          const current = prompt?.current
+          if (current && current.parts.length === 0 && ["/undo", "/revert"].includes(current.input.trim())) {
+            prompt?.reset()
+          }
           const boundary = session()?.revert?.messageID
           const list = messages()
-          let target: string | undefined
+          let target: SessionMessageUser | undefined
           for (let i = list.length - 1; i >= 0; i--) {
             const message = list[i]
             if (message.type !== "user" || !message.text.trim()) continue
             if (boundary && message.id >= boundary) continue
-            target = message.id
+            target = message
             break
           }
           if (!target) {
@@ -416,11 +421,15 @@ export function Session() {
             dialog.clear()
             return
           }
-          const error = await sdk.api.session.revertStage({ sessionID: route.sessionID, messageID: target }).then(
+          const error = await sdk.api.session.revertStage({ sessionID: route.sessionID, messageID: target.id }).then(
             () => undefined,
             (error) => error,
           )
           if (error) toast.show({ message: errorMessage(error), variant: "error", duration: 5000 })
+          if (!error && prompt) {
+            const restored = revertedPrompt(prompt.current, target)
+            if (restored) prompt.set(restored)
+          }
           dialog.clear()
         })()
       },
