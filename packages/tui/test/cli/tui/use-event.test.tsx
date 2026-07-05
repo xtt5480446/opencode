@@ -1,11 +1,10 @@
 /** @jsxImportSource @opentui/solid */
 import { describe, expect, test } from "bun:test"
-import type { OpenCodeClient } from "@opencode-ai/client/promise"
 import { testRender } from "@opentui/solid"
-import type { OpencodeClient, V2Event } from "@opencode-ai/sdk/v2"
+import type { V2Event } from "@opencode-ai/sdk/v2"
 import { onMount } from "solid-js"
 import { ProjectProvider, useProject } from "../../../src/context/project"
-import { SDKProvider, useSDK } from "../../../src/context/sdk"
+import { SDKProvider, useSDK, type SDKDiscovery } from "../../../src/context/sdk"
 import { useEvent } from "../../../src/context/event"
 import { createApi, createClient, createEventStream, createFetch } from "../../fixture/tui-sdk"
 import { TestTuiContexts } from "../../fixture/tui-environment"
@@ -49,7 +48,7 @@ function update(version: string): V2Event {
   }
 }
 
-async function mount(discover?: () => Promise<{ client: OpencodeClient; api: OpenCodeClient }>) {
+async function mount(discover?: () => Promise<SDKDiscovery>, restart?: () => void) {
   const events = createEventStream()
   const calls = createFetch(undefined, events)
   const seen: V2Event[] = []
@@ -63,7 +62,12 @@ async function mount(discover?: () => Promise<{ client: OpencodeClient; api: Ope
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)} discover={discover}>
+      <SDKProvider
+        client={createClient(calls.fetch)}
+        api={createApi(calls.fetch)}
+        discover={discover}
+        restart={restart}
+      >
         <ProjectProvider>
           <Probe
             onReady={async (ctx) => {
@@ -194,6 +198,27 @@ describe("useEvent", () => {
       await wait(() => seen.some((item) => item.type === "vcs.branch.updated" && item.data.branch === "recovered"))
 
       expect(sdk.client).toBe(original)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("requests a restart when discovery finds a newer service", async () => {
+    let restarts = 0
+    const { app, events, sdk } = await mount(
+      async () => ({ restart: true }),
+      () => {
+        restarts += 1
+      },
+    )
+
+    try {
+      await wait(() => sdk.connection.status() === "connected")
+      events.disconnect()
+      await wait(() => restarts === 1)
+      await Bun.sleep(300)
+
+      expect(restarts).toBe(1)
     } finally {
       app.renderer.destroy()
     }

@@ -12,8 +12,9 @@ import type { Args } from "@opencode-ai/tui/context/args"
 export function runTui(
   transport: Service.Transport,
   args: Args,
-  discover?: () => Promise<Service.Transport>,
+  discover?: () => Promise<Service.Transport | { restart: true }>,
   reload?: () => Promise<void>,
+  restart?: () => void,
 ) {
   const config = TuiConfig.resolve({}, { terminalSuspend: false })
   let disposeSlots: (() => void) | undefined
@@ -32,12 +33,14 @@ export function runTui(
       discover: discover
         ? async () => {
             const next = await discover()
+            if ("restart" in next) return next
             return {
               client: createOpencodeClient({ baseUrl: next.url, headers: next.headers, directory }),
               api: OpenCode.make({ baseUrl: next.url, headers: next.headers }),
             }
           }
         : undefined,
+      restart,
       reload,
       args,
       config,

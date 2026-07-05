@@ -10,12 +10,15 @@ export type SDKConnectionStatus = "connected" | "connecting"
 type SDKEventMap = { [Type in V2Event["type"]]: Extract<V2Event, { type: Type }> }
 const connectTimeout = 2_000
 
+export type SDKDiscovery = { client: OpencodeClient; api: OpenCodeClient } | { restart: true }
+
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   name: "SDK",
   init: (props: {
     client: OpencodeClient
     api: OpenCodeClient
-    discover?: () => Promise<{ client: OpencodeClient; api: OpenCodeClient }>
+    discover?: () => Promise<SDKDiscovery>
+    restart?: () => void
     // Stops and starts the managed service; present only in service mode.
     reload?: () => Promise<void>
   }) => {
@@ -66,7 +69,8 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
               return connection.signal.reason instanceof Error
                 ? connection.signal.reason
                 : new Error("Event stream disconnected")
-            if (first.value.type !== "server.connected") return new Error("Event stream did not start with server.connected")
+            if (first.value.type !== "server.connected")
+              return new Error("Event stream did not start with server.connected")
             clearTimeout(timeout)
             attempt = 0
             events.emit(first.value.type, first.value)
@@ -93,6 +97,10 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
             const next = await props.discover().catch(() => undefined)
             if (abort.signal.aborted || controller.signal.aborted) return
             if (next) {
+              if ("restart" in next) {
+                props.restart?.()
+                return
+              }
               client = next.client
               api = next.api
             }

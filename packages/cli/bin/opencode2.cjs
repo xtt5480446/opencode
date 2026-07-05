@@ -6,8 +6,9 @@ const path = require("path")
 const os = require("os")
 
 const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"]
+const restartExitCode = 75
 
-function run(target) {
+function run(target, restarted = false) {
   const child = childProcess.spawn(target, process.argv.slice(2), { stdio: "inherit" })
   child.on("error", (error) => {
     console.error(error.message)
@@ -25,6 +26,7 @@ function run(target) {
   child.on("exit", (code, signal) => {
     for (const forwardedSignal of forwardedSignals) process.removeListener(forwardedSignal, forwarders[forwardedSignal])
     if (signal) return process.kill(process.pid, signal)
+    if (code === restartExitCode && !restarted) return run(target, true)
     process.exit(typeof code === "number" ? code : 0)
   })
 }

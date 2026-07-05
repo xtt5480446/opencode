@@ -8,6 +8,8 @@ import { ServiceConfig } from "../../services/service-config"
 import { Standalone } from "../../services/standalone"
 import { Updater } from "../../services/updater"
 
+const restartExitCode = 75
+
 export default Runtime.handler(Commands, (input) =>
   Effect.gen(function* () {
     const directory = Option.getOrUndefined(input.directory)
@@ -22,9 +24,7 @@ export default Runtime.handler(Commands, (input) =>
         const password = yield* Env.password
         const explicit = {
           url: server,
-          headers: password
-            ? { authorization: "Basic " + btoa("opencode:" + Redacted.value(password)) }
-            : undefined,
+          headers: password ? { authorization: "Basic " + btoa("opencode:" + Redacted.value(password)) } : undefined,
         } satisfies Service.Transport
         // Fail loudly before entering the TUI: an explicit server that is
         // unreachable or rejects auth should not present as reconnect churn.
@@ -60,7 +60,7 @@ export default Runtime.handler(Commands, (input) =>
             Effect.gen(function* () {
               const found = yield* Service.discover(serviceOptions)
               return found ?? (yield* Service.start(serviceOptions))
-            }).pipe(Effect.provide(NodeFileSystem.layer)),
+            }).pipe(Effect.catchIf(versionMismatch, restart), Effect.provide(NodeFileSystem.layer)),
           )
       : () => Promise.resolve(transport)
     // Restart the managed service in place; start() resolves once the
@@ -76,11 +76,36 @@ export default Runtime.handler(Commands, (input) =>
             }).pipe(Effect.provide(NodeFileSystem.layer)),
           )
       : undefined
-    yield* runTui(
+    return yield* runTui(
       transport,
       { continue: input.continue, sessionID: Option.getOrUndefined(input.session) },
       discover,
       reload,
+      () => {
+        process.exitCode = restartExitCode
+      },
     )
-  }),
+  }).pipe(
+    Effect.catchIf(versionMismatch, (error) =>
+      restart(error).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            process.exitCode = restartExitCode
+          }),
+        ),
+        Effect.asVoid,
+      ),
+    ),
+  ),
 )
+
+function restart(error: Service.VersionMismatchError) {
+  return Effect.logInfo("restarting stale client", {
+    clientVersion: error.clientVersion,
+    serverVersion: error.serverVersion,
+  }).pipe(Effect.as({ restart: true as const }))
+}
+
+function versionMismatch(error: unknown): error is Service.VersionMismatchError {
+  return error instanceof Service.VersionMismatchError
+}

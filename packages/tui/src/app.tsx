@@ -30,7 +30,7 @@ import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
-import { SDKProvider, useSDK } from "./context/sdk"
+import { SDKProvider, useSDK, type SDKDiscovery } from "./context/sdk"
 import { StartupLoading } from "./component/startup-loading"
 import { Reconnecting } from "./component/reconnecting"
 import { SyncProvider, useSync } from "./context/sync"
@@ -138,7 +138,8 @@ const appBindingCommands = [
 export type TuiInput = {
   client: OpencodeClient
   api: OpenCodeClient
-  discover?: () => Promise<{ client: OpencodeClient; api: OpenCodeClient }>
+  discover?: () => Promise<SDKDiscovery>
+  restart?: () => void
   reload?: () => Promise<void>
   args: Args
   config: TuiConfig.Resolved
@@ -302,7 +303,16 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                   >
                                     <TuiConfigProvider config={input.config}>
                                       <PluginRuntimeProvider value={pluginRuntime}>
-                                        <SDKProvider client={input.client} api={input.api} discover={input.discover} reload={input.reload}>
+                                        <SDKProvider
+                                          client={input.client}
+                                          api={input.api}
+                                          discover={input.discover}
+                                          restart={() => {
+                                            input.restart?.()
+                                            destroyRenderer(renderer)
+                                          }}
+                                          reload={input.reload}
+                                        >
                                           <PermissionProvider>
                                             <ProjectProvider>
                                               <SyncProvider>
@@ -812,8 +822,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                 toast.show({ variant: "info", message: "Reloading server...", duration: 30000 })
                 // reload resolves once the replacement service is healthy; the
                 // event stream reattaches through the reconnect loop.
-                await sdk
-                  .reload!()
+                await sdk.reload!()
                   .then(() => toast.show({ variant: "success", message: "Server reloaded" }))
                   .catch(toast.error)
               },

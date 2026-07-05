@@ -1,4 +1,4 @@
-import { Effect, FileSystem, Option, Schedule, Schema } from "effect"
+import { Data, Effect, FileSystem, Option, Schedule, Schema } from "effect"
 import { spawn } from "node:child_process"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -23,6 +23,9 @@ export type Options = {
   // When set, discovery only returns a server reporting this exact version,
   // and start() replaces a healthy server whose version differs.
   readonly version?: string
+  // Decides whether start() may terminate a healthy version-mismatched server.
+  // Defaults to true for callers that do not need directional version handling.
+  readonly canReplace?: (version: string | undefined) => boolean
   // Argv used to spawn the service. Defaults to ["opencode", "serve",
   // "--service"] resolved from PATH.
   readonly command?: ReadonlyArray<string>
@@ -44,7 +47,11 @@ export const start = Effect.fn("service.start")(function* (options: Options = {}
   const compatible = yield* discover(options)
   if (compatible !== undefined) return compatible
   const mismatched = yield* find(options)
-  if (mismatched !== undefined) yield* kill(mismatched.info, options).pipe(Effect.ignore)
+  if (mismatched !== undefined) {
+    const error = replacementError(mismatched.info, options)
+    if (error) return yield* Effect.fail(error)
+    yield* kill(mismatched.info, options).pipe(Effect.ignore)
+  }
 
   const [command, ...args] = options.command ?? ["opencode", "serve", "--service"]
   if (command === undefined) return yield* Effect.fail(new Error("Missing service command"))
@@ -67,8 +74,12 @@ export const start = Effect.fn("service.start")(function* (options: Options = {}
 export const stop = Effect.fn("service.stop")(function* (options: Options = {}) {
   const fs = yield* FileSystem.FileSystem
   const existing = yield* find(options)
-  if (existing !== undefined) yield* kill(existing.info, options)
-  yield* fs.remove(options.file ?? fallback()).pipe(Effect.ignore)
+  if (existing !== undefined) {
+    const error = replacementError(existing.info, options)
+    if (error) return yield* Effect.fail(error)
+    yield* kill(existing.info, options)
+  }
+  return yield* fs.remove(options.file ?? fallback()).pipe(Effect.ignore)
 })
 
 function fallback() {
@@ -88,6 +99,22 @@ export const Info = Schema.Struct({
   password: Schema.optional(Schema.String),
 })
 export type Info = typeof Info.Type
+
+export class VersionMismatchError extends Data.TaggedError("ServiceVersionMismatchError")<{
+  readonly clientVersion: string | undefined
+  readonly serverVersion: string | undefined
+  readonly message: string
+}> {}
+
+function replacementError(info: Info, options: Options): VersionMismatchError | undefined {
+  if (options.version === undefined || info.version === options.version || options.canReplace?.(info.version) !== false)
+    return undefined
+  return new VersionMismatchError({
+    clientVersion: options.version,
+    serverVersion: info.version,
+    message: `Client version ${options.version} cannot replace server version ${info.version ?? "unknown"}`,
+  })
+}
 
 const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(Info))
 
