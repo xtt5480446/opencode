@@ -2,6 +2,7 @@ export * as LocationMutation from "./location-mutation"
 
 import { makeLocationNode } from "./effect/app-node"
 import path from "path"
+import nodeFs from "fs"
 import { Context, Effect, Layer, Schema } from "effect"
 import { FSUtil } from "./fs-util"
 import { Location } from "./location"
@@ -78,21 +79,35 @@ interface ResolvedPath {
 
 const slash = (value: string) => value.replaceAll("\\", "/")
 
+function simulationLog(type: string, data?: unknown) {
+  if (!process.env.OPENCODE_SIMULATION) return
+  try {
+    const file = process.env.OPENCODE_SIMULATION_LOG || "/tmp/opencode-simulation.log"
+    nodeFs.mkdirSync(path.dirname(file), { recursive: true })
+    nodeFs.appendFileSync(file, JSON.stringify({ time: new Date().toISOString(), pid: process.pid, type, data }) + "\n")
+  } catch {
+    return
+  }
+}
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
     const location = yield* Location.Service
     const locationRoot = yield* fs.realPath(location.directory)
+    simulationLog("location-mutation.layer", { directory: location.directory, locationRoot })
 
     function notFound<A>(effect: Effect.Effect<A, FSUtil.Error>) {
       return effect.pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(undefined)))
     }
 
     const resolvePath = Effect.fnUntraced(function* (absolute: string) {
+      simulationLog("location-mutation.resolvePath.start", { absolute })
       const existing = yield* notFound(fs.realPath(absolute))
       if (existing !== undefined) {
         const info = yield* fs.stat(existing)
+        simulationLog("location-mutation.resolvePath.existing", { absolute, existing, type: info.type })
         return {
           canonical: existing,
           type: info.type,
@@ -102,10 +117,18 @@ const layer = Layer.effect(
 
       let anchor = path.dirname(absolute)
       while (true) {
+        simulationLog("location-mutation.resolvePath.anchor", { absolute, anchor })
         const canonical = yield* notFound(fs.realPath(anchor))
         if (canonical !== undefined) {
           const info = yield* fs.stat(canonical)
+          simulationLog("location-mutation.resolvePath.anchor.found", { absolute, anchor, canonical, type: info.type })
           if (info.type !== "Directory") {
+            simulationLog("location-mutation.resolvePath.error", {
+              absolute,
+              anchor,
+              canonical,
+              reason: "non_directory_ancestor",
+            })
             return yield* new PathError({ path: absolute, reason: "non_directory_ancestor" })
           }
           return {
@@ -114,7 +137,10 @@ const layer = Layer.effect(
           } satisfies ResolvedPath
         }
         const parent = path.dirname(anchor)
-        if (parent === anchor) return yield* new PathError({ path: absolute, reason: "non_directory_ancestor" })
+        if (parent === anchor) {
+          simulationLog("location-mutation.resolvePath.error", { absolute, anchor, reason: "non_directory_ancestor" })
+          return yield* new PathError({ path: absolute, reason: "non_directory_ancestor" })
+        }
         anchor = parent
       }
     })
@@ -123,10 +149,27 @@ const layer = Layer.effect(
       const relative = !path.isAbsolute(input.path)
       const absolute = path.resolve(location.directory, input.path)
       const lexicallyInternal = FSUtil.contains(location.directory, absolute)
-      if (relative && !lexicallyInternal) return yield* new PathError({ path: input.path, reason: "relative_escape" })
+      simulationLog("location-mutation.resolve.start", {
+        input,
+        locationDirectory: location.directory,
+        locationRoot,
+        relative,
+        absolute,
+        lexicallyInternal,
+      })
+      if (relative && !lexicallyInternal) {
+        simulationLog("location-mutation.resolve.error", { input, absolute, reason: "relative_escape" })
+        return yield* new PathError({ path: input.path, reason: "relative_escape" })
+      }
 
       const resolved = yield* resolvePath(absolute)
       if (lexicallyInternal && !FSUtil.contains(locationRoot, resolved.canonical)) {
+        simulationLog("location-mutation.resolve.error", {
+          input,
+          absolute,
+          resolved,
+          reason: "location_escape",
+        })
         return yield* new PathError({ path: input.path, reason: "location_escape" })
       }
 
@@ -137,7 +180,7 @@ const layer = Layer.effect(
       const externalDirectory =
         input.kind === "directory" && resolved.type === "Directory" ? resolved.canonical : resolved.directory
       const externalResource = slash(path.join(externalDirectory, "*"))
-      return {
+      const target = {
         canonical: resolved.canonical,
         resource,
         externalDirectory: external
@@ -154,6 +197,8 @@ const layer = Layer.effect(
             }
           : undefined,
       } satisfies Target
+      simulationLog("location-mutation.resolve.result", { input, absolute, resolved, target })
+      return target
     })
 
     return Service.of({ resolve })

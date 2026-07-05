@@ -3,6 +3,7 @@ import { createMockKeys, createMockMouse, type MockInput, type MockMouse } from 
 import type { SimulationProtocol } from "../protocol"
 import { SimulationRenderer } from "./renderer"
 import { SimulationTrace } from "./trace"
+import { SimulationLog } from "../log"
 
 export type Action = SimulationProtocol.Frontend.Action
 export type Element = SimulationProtocol.Frontend.Element
@@ -112,6 +113,11 @@ export function actions(renderer: CliRenderer, options: { text?: string } = {}):
 }
 
 export function state(harness: Harness) {
+  SimulationLog.add("ui.state.snapshot", {
+    focused: harness.renderer.currentFocusedRenderable?.num,
+    editor: Boolean(harness.renderer.currentFocusedEditor),
+    elements: elements(harness.renderer).length,
+  })
   return {
     screen: harness.screen(),
     focused: {
@@ -125,6 +131,7 @@ export function state(harness: Harness) {
 
 export async function execute(harness: Harness, action: Action) {
   SimulationTrace.add("ui.action", { action })
+  SimulationLog.add("ui.action", { action })
   switch (action.type) {
     case "typeText":
       await harness.mockInput.typeText(action.text)

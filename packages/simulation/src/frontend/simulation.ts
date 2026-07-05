@@ -2,6 +2,7 @@ import { createCliRenderer, type CliRenderer, type CliRendererConfig } from "@op
 import { SimulationActions } from "./actions"
 import { SimulationRenderer } from "./renderer"
 import { SimulationServer } from "./server"
+import { SimulationLog } from "../log"
 
 /**
  * Simulation-mode renderer entry point.
@@ -12,12 +13,17 @@ import { SimulationServer } from "./server"
  * caller only manages the renderer lifecycle.
  */
 export async function createSimulation(options: CliRendererConfig): Promise<CliRenderer> {
+  SimulationLog.add("frontend.create", {
+    renderer: process.env.OPENCODE_SIMULATION_RENDERER === "fake" ? "fake" : "visible",
+    log: SimulationLog.filePath(),
+  })
   const renderer =
     process.env.OPENCODE_SIMULATION_RENDERER === "fake"
       ? await SimulationRenderer.create(options)
       : await createCliRenderer(options)
   const server = SimulationServer.start(SimulationActions.createHarness(renderer))
   if (server) {
+    process.stderr.write(`opencode simulation log: ${SimulationLog.filePath()}\n`)
     process.stderr.write(`opencode simulation websocket: ${server.url}\n`)
     renderer.once("destroy", () => server.stop())
   }

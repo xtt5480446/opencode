@@ -6,6 +6,7 @@ import { SimulationFileSystem } from "./filesystem"
 import { SimulationFSUtil } from "./fs-util"
 import { SimulationNetwork } from "./network"
 import { SimulationOpenAI } from "./openai"
+import { SimulationLog } from "../log"
 
 /**
  * Layer replacements applied when the server is built in simulation mode.
@@ -25,10 +26,20 @@ import { SimulationOpenAI } from "./openai"
  * inspection (standalone topology; also the headless-simulation interface).
  */
 
+SimulationLog.add("backend.load", {
+  cwd: process.cwd(),
+  root: process.env.OPENCODE_SIMULATION_ROOT,
+  state: process.env.OPENCODE_SIMULATION_STATE,
+  config: process.env.OPENCODE_CONFIG_DIR,
+  db: process.env.OPENCODE_DB,
+  log: SimulationLog.filePath(),
+})
 SimulationNetwork.register(SimulationOpenAI.route)
+SimulationLog.add("network.route.register", { name: "openai-chat" })
 // ModelsDev dies when its catalog fetch fails, so simulation answers it with
 // an empty catalog; providers come from seeded config instead.
 SimulationNetwork.register(SimulationNetwork.json("GET", "https://models.dev/api.json", {}))
+SimulationLog.add("network.route.register", { method: "GET", url: "https://models.dev/api.json" })
 
 SimulationControl.start()
 

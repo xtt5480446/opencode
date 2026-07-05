@@ -2,6 +2,7 @@ import { Effect, FileSystem, Layer, Option, Stream } from "effect"
 import { systemError, type PlatformError, type SystemErrorTag } from "effect/PlatformError"
 import nodeFs from "fs"
 import path from "path"
+import { SimulationLog } from "../log"
 
 /**
  * In-memory simulated `FileSystem.FileSystem`.
@@ -43,6 +44,10 @@ export function make(options: Options): FileSystem.FileSystem {
   const temp = { value: 0 }
   const encoder = new TextEncoder()
   store.set(root, makeDirectoryEntry())
+  SimulationLog.add("filesystem.make", {
+    root,
+    seedFiles: Object.keys(options.files ?? {}).sort(),
+  })
 
   const within = (resolved: string) => resolved === root || resolved.startsWith(withSep(root))
 
@@ -120,6 +125,7 @@ export function make(options: Options): FileSystem.FileSystem {
     Effect.suspend(() => {
       const resolved = path.resolve(root, file)
       const entry = within(resolved) ? store.get(resolved) : undefined
+      SimulationLog.add("filesystem.probe", { method, file, resolved, found: entry !== undefined, type: entry?.type })
       if (!entry) return fail("NotFound", method, file)
       return Effect.succeed(entry)
     })
@@ -142,6 +148,7 @@ export function make(options: Options): FileSystem.FileSystem {
     requireEntry("readFile", file).pipe(
       Effect.flatMap(([, entry]) => {
         if (entry.type !== "File") return fail("BadResource", "readFile", file, "path is a directory")
+        SimulationLog.add("filesystem.readFile", { file, bytes: entry.content.length })
         return Effect.succeed(entry.content.slice())
       }),
     )
@@ -153,6 +160,7 @@ export function make(options: Options): FileSystem.FileSystem {
         if (existing?.type === "Directory") return fail("BadResource", "writeFile", file, "path is a directory")
         return requireParentDirectory("writeFile", resolved, file).pipe(
           Effect.map(() => {
+            SimulationLog.add("filesystem.writeFile", { file, resolved, bytes: data.length })
             store.set(resolved, {
               type: "File",
               content: data.slice(),
@@ -185,7 +193,9 @@ export function make(options: Options): FileSystem.FileSystem {
         const names = readOptions?.recursive
           ? children.map((key) => path.relative(resolved, key))
           : children.filter((key) => path.dirname(key) === resolved).map((key) => path.basename(key))
-        return Effect.succeed(names.sort((a, b) => a.localeCompare(b)))
+        const sorted = names.sort((a, b) => a.localeCompare(b))
+        SimulationLog.add("filesystem.readDirectory", { file, resolved, recursive: readOptions?.recursive, names: sorted })
+        return Effect.succeed(sorted)
       }),
     )
 
@@ -341,9 +351,15 @@ export const layer = (options?: Partial<Options>) =>
   )
 
 function loadSnapshotFiles(stateDirectory: string | undefined) {
-  if (!stateDirectory) return {}
+  if (!stateDirectory) {
+    SimulationLog.add("snapshot.skip", { reason: "OPENCODE_SIMULATION_STATE not set" })
+    return {}
+  }
   const project = path.join(stateDirectory, "project")
-  if (!nodeFs.existsSync(project)) return {}
+  if (!nodeFs.existsSync(project)) {
+    SimulationLog.add("snapshot.skip", { stateDirectory, project, reason: "project directory not found" })
+    return {}
+  }
   const files: Record<string, Uint8Array> = {}
   const walk = (dir: string) => {
     for (const entry of nodeFs.readdirSync(dir, { withFileTypes: true })) {
@@ -353,6 +369,7 @@ function loadSnapshotFiles(stateDirectory: string | undefined) {
     }
   }
   walk(project)
+  SimulationLog.add("snapshot.load", { stateDirectory, project, files: Object.keys(files).sort() })
   return files
 }
 

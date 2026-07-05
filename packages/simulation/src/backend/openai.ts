@@ -3,6 +3,7 @@ import { HttpClientResponse } from "effect/unstable/http"
 import { OpenAIChatEvent, DEFAULT_BASE_URL, PATH } from "@opencode-ai/llm/protocols/openai-chat"
 import { SimulationLLMExchange } from "./llm-exchange"
 import { SimulationNetwork } from "./network"
+import { SimulationLog } from "../log"
 
 /**
  * Driver-answered OpenAI endpoint for the simulated network.
@@ -74,6 +75,7 @@ export const route: SimulationNetwork.Route = {
     if (url.origin + url.pathname !== DEFAULT_BASE_URL + PATH) return undefined
     return Effect.gen(function* () {
       const body = request.body._tag === "Uint8Array" ? JSON.parse(new TextDecoder().decode(request.body.body)) : {}
+      SimulationLog.add("openai.match", { url: url.toString(), body })
       const exchange = yield* SimulationLLMExchange.open({ url: url.toString(), body })
       return HttpClientResponse.fromWeb(
         request,

@@ -357,6 +357,60 @@ test("tracks session status from active sessions and execution events", async ()
   }
 })
 
+test("clears stale running status after reconnect", async () => {
+  const events = createEventStream()
+  let activeRequests = 0
+  const calls = createFetch((url) => {
+    if (url.pathname === "/api/session/active") {
+      activeRequests++
+      return json({ data: {}, watermarks: {} })
+    }
+  }, events)
+  let data!: ReturnType<typeof useData>
+
+  function Probe() {
+    data = useData()
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </SDKProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => data.connection.status() === "connected")
+    emitEvent(events, {
+      id: "evt_reconnect_step_started",
+      created: 0,
+      type: "step.started",
+      durable: durable("session-reconnect"),
+      data: {
+        sessionID: "session-reconnect",
+        assistantMessageID: "message-reconnect",
+        agent: "build",
+        model: { id: "model", providerID: "provider" },
+      },
+    })
+    await wait(() => data.session.status("session-reconnect") === "running")
+
+    events.disconnect()
+    await wait(() => data.connection.status() === "connecting")
+    await wait(() => data.connection.status() === "connected", 4000)
+    await wait(() => activeRequests >= 2)
+    expect(data.session.status("session-reconnect")).toBe("idle")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("refreshes integrations after integration updates", async () => {
   const events = createEventStream()
   const requests = { integration: 0, model: 0, provider: 0 }

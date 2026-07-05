@@ -1,6 +1,8 @@
 import { SimulationProtocol } from "../protocol"
 import { SimulationActions, type Harness } from "./actions"
 import { SimulationTrace } from "./trace"
+import { SimulationLog } from "../log"
+import { SimulationEventStream } from "./event-stream"
 
 const DefaultPort = 40900
 const MaxPortAttempts = 100
@@ -19,6 +21,11 @@ function isPortUnavailable(error: unknown) {
   return message.includes("eaddrinuse") || message.includes("address already in use") || message.includes(" in use")
 }
 
+function configuredPort() {
+  const port = Number(process.env.OPENCODE_SIMULATION_UI_PORT)
+  return Number.isInteger(port) && port > 0 ? port : undefined
+}
+
 function actionParam(params: unknown) {
   return SimulationProtocol.Frontend.decodeActionParams(params).action
 }
@@ -28,6 +35,7 @@ function parseRequest(input: string | Buffer) {
 }
 
 async function handle(harness: Harness, request: SimulationProtocol.JsonRpc.Request) {
+  SimulationLog.add("frontend.request", { method: request.method, id: request.id })
   switch (request.method) {
     case "ui.state": {
       const result = SimulationActions.state(harness)
@@ -42,6 +50,14 @@ async function handle(harness: Harness, request: SimulationProtocol.JsonRpc.Requ
       SimulationTrace.add("ui.render", { elements: result.elements.length, actions: result.actions.length })
       return result
     }
+    case "event.pause":
+      SimulationEventStream.pause()
+      return { state: SimulationEventStream.current() }
+    case "event.resume":
+      SimulationEventStream.resume()
+      return { state: SimulationEventStream.current() }
+    case "event.state":
+      return { state: SimulationEventStream.current() }
     case "trace.list":
       return { records: SimulationTrace.list() }
     case "trace.clear":
@@ -81,6 +97,10 @@ function serve(
             const next = SimulationProtocol.JsonRpc.success(request.id, result)
             if (next) socket.send(JSON.stringify(next))
           } catch (error) {
+            SimulationLog.add("frontend.error", {
+              method: request?.method,
+              message: error instanceof Error ? error.message : String(error),
+            })
             socket.send(JSON.stringify(SimulationProtocol.JsonRpc.failure(request?.id, error)))
           }
         },
@@ -94,13 +114,16 @@ function serve(
 
 export function start(harness: Harness): Server | undefined {
   if (!isEnabled()) return
-  const server = serve(harness)
+  const port = configuredPort()
+  const server = serve(harness, port ?? DefaultPort, port === undefined ? MaxPortAttempts : 1)
   const url = `ws://${server.hostname}:${server.port}`
   SimulationTrace.add("control.start", { url })
+  SimulationLog.add("frontend.start", { url })
   return {
     url,
     stop: () => {
       SimulationTrace.add("control.stop", { url })
+      SimulationLog.add("frontend.stop", { url })
       server.stop(true)
     },
   }

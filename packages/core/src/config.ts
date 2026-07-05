@@ -2,6 +2,7 @@ export * as Config from "./config"
 
 import { makeLocationNode } from "./effect/app-node"
 import path from "path"
+import nodeFs from "fs"
 import { type ParseError, parse } from "jsonc-parser"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { Permission } from "@opencode-ai/schema/permission"
@@ -25,6 +26,38 @@ import { ConfigToolOutput } from "./config/tool-output"
 import { ConfigWatcher } from "./config/watcher"
 import { ConfigV1 } from "./v1/config/config"
 import { ConfigMigrateV1 } from "./v1/config/migrate"
+
+function simulationLog(type: string, data?: unknown) {
+  if (!process.env.OPENCODE_SIMULATION) return
+  try {
+    const file = process.env.OPENCODE_SIMULATION_LOG || "/tmp/opencode-simulation.log"
+    nodeFs.mkdirSync(path.dirname(file), { recursive: true })
+    nodeFs.appendFileSync(file, JSON.stringify({ time: new Date().toISOString(), pid: process.pid, type, data }) + "\n")
+  } catch {
+    return
+  }
+}
+
+function asRecord(input: unknown): Record<string, unknown> | undefined {
+  return typeof input === "object" && input !== null && !Array.isArray(input) ? (input as Record<string, unknown>) : undefined
+}
+
+function configShape(input: unknown) {
+  const record = asRecord(input)
+  const providers = asRecord(record?.providers)
+  return {
+    keys: Object.keys(record ?? {}).sort(),
+    model: typeof record?.model === "string" ? record.model : undefined,
+    default_agent: typeof record?.default_agent === "string" ? record.default_agent : undefined,
+    providers: Object.keys(providers ?? {}).sort(),
+    providerModels: Object.fromEntries(
+      Object.entries(providers ?? {}).map(([id, provider]) => [
+        id,
+        Object.keys(asRecord(asRecord(provider)?.models) ?? {}).sort(),
+      ]),
+    ),
+  }
+}
 
 export class Info extends Schema.Class<Info>("Config.Info")({
   $schema: Schema.optional(Schema.String).annotate({
@@ -146,18 +179,28 @@ const layer = Layer.effect(
 
     const loadFile = Effect.fnUntraced(function* (filepath: string) {
       const text = yield* fs.readFileStringSafe(filepath)
+      simulationLog("config.file.read", { filepath, found: text !== undefined, bytes: text?.length })
       if (!text) return
 
       const errors: ParseError[] = []
       const input: unknown = parse(text, errors, { allowTrailingComma: true })
-      if (errors.length) return
+      if (errors.length) {
+        simulationLog("config.file.parse.error", {
+          filepath,
+          errors: errors.map((error) => ({ error: error.error, offset: error.offset, length: error.length })),
+        })
+        return
+      }
 
-      const info = Option.getOrUndefined(
-        ConfigMigrateV1.isV1(input)
-          ? decodeV1Info(input).pipe(Option.map(ConfigMigrateV1.migrate), Option.flatMap(decodeInfo))
-          : decodeInfo(input),
-      )
-      if (!info) return
+      const decoded = ConfigMigrateV1.isV1(input)
+        ? decodeV1Info(input).pipe(Option.map(ConfigMigrateV1.migrate), Option.flatMap(decodeInfo))
+        : decodeInfo(input)
+      const info = Option.getOrUndefined(decoded)
+      if (!info) {
+        simulationLog("config.file.decode.error", { filepath, shape: configShape(input) })
+        return
+      }
+      simulationLog("config.file.loaded", { filepath, v1: ConfigMigrateV1.isV1(input), shape: configShape(info) })
       return new Document({ type: "document", path: filepath, info })
     })
 
@@ -172,6 +215,12 @@ const layer = Layer.effect(
 
     const globalDirectory = AbsolutePath.make(global.config)
     const locationIsGlobal = path.resolve(location.directory) === path.resolve(global.config)
+    simulationLog("config.service.start", {
+      global: global.config,
+      location: location.directory,
+      project: location.project.directory,
+      locationIsGlobal,
+    })
     // Read configuration once when this location opens. Later calls reuse these
     // values until the location is reopened.
     const discovered = locationIsGlobal
@@ -183,6 +232,7 @@ const layer = Layer.effect(
             stop: location.project.directory,
           })
           .pipe(Effect.orDie)
+    simulationLog("config.discovered", { discovered })
     const directories = [
       globalDirectory,
       ...discovered
@@ -201,6 +251,11 @@ const layer = Layer.effect(
     // Apply general settings first and more specific settings last:
     // global config, project files, then `.opencode` files.
     const configs = [...(supplementary[0] ?? []), ...direct, ...supplementary.slice(1).flat()]
+    simulationLog("config.entries", {
+      entries: configs.map((entry) =>
+        entry.type === "document" ? { type: entry.type, path: entry.path, shape: configShape(entry.info) } : entry,
+      ),
+    })
     // Rules use the opposite order so a user-global rule can override a
     // repository rule. Statement order inside each file stays unchanged.
     yield* policy.load(

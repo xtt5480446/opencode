@@ -1,6 +1,7 @@
 import type { OpenCodeClient } from "@opencode-ai/client/promise"
 import type { OpencodeClient, V2Event } from "@opencode-ai/sdk/v2"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
+import { SimulationEventStream } from "@opencode-ai/simulation/frontend/event-stream"
 import { onCleanup, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
@@ -46,7 +47,9 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       void (async () => {
         let attempt = 0
         while (!abort.signal.aborted && !controller.signal.aborted) {
+          await SimulationEventStream.beforeConnect(controller.signal)
           const connection = new AbortController()
+          const detachSimulation = SimulationEventStream.attach(connection)
           const cancel = () => connection.abort(controller.signal.reason)
           const timeout = setTimeout(
             () => connection.abort(new Error("Timed out connecting to server")),
@@ -81,6 +84,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
           })()
             .catch((error) => error)
             .finally(() => {
+              detachSimulation()
               clearTimeout(timeout)
               controller.signal.removeEventListener("abort", cancel)
             })

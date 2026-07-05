@@ -1,4 +1,5 @@
 import { Effect, Queue } from "effect"
+import { SimulationLog } from "../log"
 
 /**
  * Pending driver-answered LLM exchanges.
@@ -59,6 +60,7 @@ export const open = (input: { readonly url: string; readonly body: unknown }) =>
     const queue = yield* Queue.unbounded<Chunk>()
     const exchange: Exchange = { id, url: input.url, body: input.body, queue }
     state.exchanges.set(id, exchange)
+    SimulationLog.add("llm.open", { id, url: input.url, body: input.body, pending: state.exchanges.size })
     for (const listener of state.listeners) listener({ id, url: input.url, body: input.body })
     return exchange
   })
@@ -68,6 +70,7 @@ export const close = (id: string) =>
   Effect.suspend(() => {
     const exchange = state.exchanges.get(id)
     state.exchanges.delete(id)
+    SimulationLog.add("llm.close", { id, found: exchange !== undefined, pending: state.exchanges.size })
     if (!exchange) return Effect.void
     return Queue.shutdown(exchange.queue).pipe(Effect.asVoid)
   })
@@ -77,7 +80,17 @@ export const push = (id: string, chunks: readonly Chunk[]) =>
   Effect.gen(function* () {
     const exchange = state.exchanges.get(id)
     if (!exchange) return yield* Effect.fail(new ExchangeNotFoundError(id))
+    SimulationLog.add("llm.push", { id, chunks })
     yield* Queue.offerAll(exchange.queue, chunks)
+  })
+
+/** Abruptly ends the provider body without a finish chunk or SSE sentinel. */
+export const disconnect = (id: string) =>
+  Effect.gen(function* () {
+    const exchange = state.exchanges.get(id)
+    if (!exchange) return yield* Effect.fail(new ExchangeNotFoundError(id))
+    SimulationLog.add("llm.disconnect", { id })
+    yield* Queue.shutdown(exchange.queue)
   })
 
 /**
@@ -87,9 +100,11 @@ export const push = (id: string, chunks: readonly Chunk[]) =>
  */
 export function subscribe(listener: (exchange: OpenedExchange) => void) {
   state.listeners.add(listener)
+  SimulationLog.add("llm.subscribe", { listeners: state.listeners.size, pending: state.exchanges.size })
   for (const exchange of pending()) listener(exchange)
   return () => {
     state.listeners.delete(listener)
+    SimulationLog.add("llm.unsubscribe", { listeners: state.listeners.size, pending: state.exchanges.size })
   }
 }
 

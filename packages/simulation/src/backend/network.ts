@@ -2,6 +2,7 @@ import { Effect, Layer } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { HttpClientError, TransportError } from "effect/unstable/http/HttpClientError"
 import type { HttpClientRequest } from "effect/unstable/http"
+import { SimulationLog } from "../log"
 
 /**
  * Simulated network.
@@ -40,9 +41,11 @@ const LOG_LIMIT = 1000
 
 export function register(route: Route) {
   state.routes.push(route)
+  SimulationLog.add("network.register", { routes: state.routes.length })
   return () => {
     const index = state.routes.indexOf(route)
     if (index >= 0) state.routes.splice(index, 1)
+    SimulationLog.add("network.unregister", { routes: state.routes.length })
   }
 }
 
@@ -69,6 +72,7 @@ export function log(): readonly LogEntry[] {
 function record(entry: LogEntry) {
   state.log.push(entry)
   if (state.log.length > LOG_LIMIT) state.log.splice(0, state.log.length - LOG_LIMIT)
+  SimulationLog.add("network.request", entry)
 }
 
 export const layer = Layer.sync(HttpClient.HttpClient)(() =>

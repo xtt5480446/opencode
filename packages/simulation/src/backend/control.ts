@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { SimulationProtocol } from "../protocol"
 import { SimulationLLMExchange } from "./llm-exchange"
 import { SimulationNetwork } from "./network"
+import { SimulationLog } from "../log"
 
 /**
  * Backend-hosted simulation control WebSocket.
@@ -17,6 +18,7 @@ import { SimulationNetwork } from "./network"
  *                              as `llm.request` notifications
  * - `llm.chunk`   { id, items }   append response items to an exchange
  * - `llm.finish`  { id, reason? } finish an exchange
+ * - `llm.disconnect` { id } abruptly terminate an exchange without a finish
  * - `llm.pending`                 list open exchanges
  * - `network.log`                 simulated network request log
  */
@@ -30,7 +32,13 @@ function parseRequest(input: string | Buffer) {
   return SimulationProtocol.JsonRpc.decodeRequest(JSON.parse(typeof input === "string" ? input : input.toString()))
 }
 
+function configuredPort() {
+  const port = Number(process.env.OPENCODE_SIMULATION_BACKEND_PORT)
+  return Number.isInteger(port) && port > 0 ? port : undefined
+}
+
 async function handle(socket: ControlSocket, request: SimulationProtocol.JsonRpc.Request): Promise<unknown> {
+  SimulationLog.add("backend.control.request", { method: request.method, id: request.id })
   switch (request.method) {
     case "llm.attach": {
       socket.data.unsubscribe?.()
@@ -52,6 +60,11 @@ async function handle(socket: ControlSocket, request: SimulationProtocol.JsonRpc
     case "llm.finish": {
       const params = await SimulationProtocol.Backend.decodeFinishParams(request.params)
       await Effect.runPromise(SimulationLLMExchange.push(params.id, [{ type: "finish", reason: params.reason }]))
+      return { ok: true }
+    }
+    case "llm.disconnect": {
+      const params = await SimulationProtocol.Backend.decodeDisconnectParams(request.params)
+      await Effect.runPromise(SimulationLLMExchange.disconnect(params.id))
       return { ok: true }
     }
     case "llm.pending":
@@ -83,6 +96,10 @@ function serve(port = DefaultPort, attempts = MaxPortAttempts): Bun.Server<{ uns
             const response = SimulationProtocol.JsonRpc.success(request.id, result)
             if (response) socket.send(JSON.stringify(response))
           } catch (error) {
+            SimulationLog.add("backend.control.error", {
+              method: request?.method,
+              message: error instanceof Error ? error.message : String(error),
+            })
             socket.send(JSON.stringify(SimulationProtocol.JsonRpc.failure(request?.id, error)))
           }
         },
@@ -97,12 +114,15 @@ function serve(port = DefaultPort, attempts = MaxPortAttempts): Bun.Server<{ uns
 }
 
 export function start() {
-  const server = serve()
+  const port = configuredPort()
+  const server = serve(port ?? DefaultPort, port === undefined ? MaxPortAttempts : 1)
   const url = `ws://${server.hostname}:${server.port}`
+  SimulationLog.add("backend.control.start", { url })
   process.stderr.write(`opencode simulation backend control websocket: ${url}\n`)
   return {
     url,
     stop: () => {
+      SimulationLog.add("backend.control.stop", { url })
       server.stop(true)
     },
   }
