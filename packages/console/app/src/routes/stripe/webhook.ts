@@ -1,7 +1,7 @@
 import type { Stripe } from "stripe"
 import { Billing } from "@opencode-ai/console-core/billing.js"
 import type { APIEvent } from "@solidjs/start/server"
-import { and, Database, eq, sql } from "@opencode-ai/console-core/drizzle/index.js"
+import { and, Database, eq, isNull, sql } from "@opencode-ai/console-core/drizzle/index.js"
 import { BillingTable, LiteTable, PaymentTable } from "@opencode-ai/console-core/schema/billing.sql.js"
 import { Identifier } from "@opencode-ai/console-core/identifier.js"
 import { centsToMicroCents } from "@opencode-ai/console-core/util/price.js"
@@ -350,21 +350,32 @@ export async function POST(input: APIEvent) {
           .then((rows) => rows[0]),
       )
       if (!payment) throw new Error("Payment not found")
+      const amountRefunded = Math.min(centsToMicroCents(body.data.object.amount_refunded), payment.amount)
+      if (!amountRefunded) throw new Error("Refund amount not found")
 
       await Database.transaction(async (tx) => {
-        await tx
+        // Payment rows record one refund transition. Claim it atomically so Stripe webhook retries
+        // cannot deduct the refunded credits more than once.
+        const claimed = await tx
           .update(PaymentTable)
           .set({
             timeRefunded: new Date(body.created * 1000),
           })
-          .where(and(eq(PaymentTable.paymentID, paymentIntentID), eq(PaymentTable.workspaceID, workspaceID)))
+          .where(
+            and(
+              eq(PaymentTable.paymentID, paymentIntentID),
+              eq(PaymentTable.workspaceID, workspaceID),
+              isNull(PaymentTable.timeRefunded),
+            ),
+          )
+        if (claimed.rowsAffected === 0) return
 
         // deduct balance only for top up
         if (!payment.enrichment?.type) {
           await tx
             .update(BillingTable)
             .set({
-              balance: sql`${BillingTable.balance} - ${payment.amount}`,
+              balance: sql`GREATEST(0, ${BillingTable.balance} - ${amountRefunded})`,
             })
             .where(eq(BillingTable.workspaceID, workspaceID))
         }
