@@ -907,7 +907,7 @@ test("tracks global forms by location", async () => {
       created: 0,
       location: other,
       type: "form.created",
-      data: { form: { id: "frm_global", sessionID: "global", mode: "form", fields: [] } },
+      data: { form: { id: "frm_other", sessionID: "global", mode: "form", fields: [] } },
     })
 
     await wait(() => data.session.form.list("global", other)?.length === 1)
@@ -918,7 +918,7 @@ test("tracks global forms by location", async () => {
       created: 1,
       location: { directory },
       type: "form.created",
-      data: { form: { id: "frm_global", sessionID: "global", mode: "form", fields: [] } },
+      data: { form: { id: "frm_default", sessionID: "global", mode: "form", fields: [] } },
     })
     await wait(() => data.session.form.list("global", { directory })?.length === 1)
 
@@ -927,10 +927,10 @@ test("tracks global forms by location", async () => {
       created: 2,
       location: other,
       type: "form.replied",
-      data: { id: "frm_global", sessionID: "global", answer: {} },
+      data: { id: "frm_other", sessionID: "global", answer: {} },
     })
     await wait(() => data.session.form.list("global", other)?.length === 0)
-    expect(data.session.form.list("global", { directory })?.map((form) => form.id)).toEqual(["frm_global"])
+    expect(data.session.form.list("global", { directory })?.map((form) => form.id)).toEqual(["frm_default"])
   } finally {
     app.renderer.destroy()
   }

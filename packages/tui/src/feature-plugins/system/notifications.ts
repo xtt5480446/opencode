@@ -26,13 +26,6 @@ function sessionErrorMessage(error: SessionError) {
   return "Session error"
 }
 
-function formKey(
-  event: Extract<V2Event, { type: "form.created" | "form.replied" | "form.cancelled" }>,
-  id: string,
-) {
-  return JSON.stringify([event.location?.directory, event.location?.workspaceID, id])
-}
-
 const tui: TuiPlugin = async (api) => {
   const active = new Set<string>()
   const errored = new Set<string>()
@@ -41,18 +34,17 @@ const tui: TuiPlugin = async (api) => {
   const permissions = new Set<string>()
 
   api.event.on("form.created", (event) => {
-    const key = formKey(event, event.data.form.id)
-    if (forms.has(key)) return
-    forms.add(key)
+    if (forms.has(event.data.form.id)) return
+    forms.add(event.data.form.id)
     notify(api, event.data.form.sessionID, "Input needs response", "question")
   })
 
   api.event.on("form.replied", (event) => {
-    forms.delete(formKey(event, event.data.id))
+    forms.delete(event.data.id)
   })
 
   api.event.on("form.cancelled", (event) => {
-    forms.delete(formKey(event, event.data.id))
+    forms.delete(event.data.id)
   })
 
   api.event.on("question.asked", (event) => {
