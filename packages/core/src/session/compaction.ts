@@ -84,23 +84,18 @@ const estimate = (value: unknown) => Token.estimate(JSON.stringify(value))
 
 const textContext = (request: LLMRequest) => ({
   system: request.system,
-  // TODO: Replace blanket attachment exclusion with model-aware media and file token accounting.
-  messages: request.messages
-    // Text attachments are lowered into dedicated marked messages; the original prompt is emitted separately.
-    .filter((message) => message.metadata?.attachment === undefined)
-    .map((message) => ({
-      id: message.id,
-      role: message.role,
-      content: message.content.flatMap((part) => {
-        if (part.type === "media") return []
-        if (part.type !== "tool-result" || part.result.type !== "content") return [part]
-        return [
-          { ...part, result: { ...part.result, value: part.result.value.filter((item) => item.type === "text") } },
-        ]
-      }),
-      metadata: message.metadata,
-      native: message.native,
-    })),
+  // TODO: Replace media exclusion with model-aware attachment token accounting.
+  messages: request.messages.map((message) => ({
+    id: message.id,
+    role: message.role,
+    content: message.content.flatMap((part) => {
+      if (part.type === "media") return []
+      if (part.type !== "tool-result" || part.result.type !== "content") return [part]
+      return [{ ...part, result: { ...part.result, value: part.result.value.filter((item) => item.type === "text") } }]
+    }),
+    metadata: message.metadata,
+    native: message.native,
+  })),
   tools: request.tools,
 })
 

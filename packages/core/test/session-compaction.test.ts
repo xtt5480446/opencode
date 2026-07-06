@@ -72,7 +72,7 @@ test("compaction describes tool media without embedding base64", () => {
   expect(serialized).not.toContain(base64)
 })
 
-it.effect("does not count file attachments as text context", () =>
+it.effect("does not count image attachments as text context", () =>
   Effect.gen(function* () {
     requests = []
     const compaction = yield* SessionCompaction.Service
@@ -83,12 +83,6 @@ it.effect("does not count file attachments as text context", () =>
       mime: "image/png",
       source: { type: "inline" },
       name: "screenshot.png",
-    })
-    const document = FileAttachment.make({
-      data: Base64.make(Buffer.alloc(64 * 1024, "a").toString("base64")),
-      mime: "text/plain",
-      source: { type: "inline" },
-      name: "notes.txt",
     })
     const inputModel = Model.make({
       id: "media-model",
@@ -110,7 +104,7 @@ it.effect("does not count file attachments as text context", () =>
         id: SessionMessage.ID.create(),
         type: "user",
         text: "Inspect this image",
-        files: [document, image],
+        files: [image],
         time: { created: DateTime.makeUnsafe(1) },
       }),
     ]
@@ -124,10 +118,6 @@ it.effect("does not count file attachments as text context", () =>
       mediaType: "image/png",
       data,
       filename: "screenshot.png",
-    })
-    expect(request.messages[1]?.content[0]).toMatchObject({
-      type: "text",
-      text: expect.stringContaining("Attached file: notes.txt"),
     })
 
     expect(
