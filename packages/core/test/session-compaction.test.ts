@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { LLM, LLMClient, LLMEvent, Message, Model, type LLMRequest } from "@opencode-ai/llm"
+import { LLM, LLMClient, LLMEvent, Model, type LLMRequest } from "@opencode-ai/llm"
 import { OpenAIChat } from "@opencode-ai/llm/protocols"
 import { Base64, FileAttachment } from "@opencode-ai/schema/prompt"
 import { Config } from "@opencode-ai/core/config"
@@ -13,12 +13,15 @@ import { SessionCompaction } from "@opencode-ai/core/session/compaction"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { toLLMMessages } from "@opencode-ai/core/session/runner/to-llm-message"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { DateTime, Effect, Layer, Stream } from "effect"
 import { asc, eq } from "drizzle-orm"
@@ -69,22 +72,32 @@ test("compaction describes tool media without embedding base64", () => {
   expect(serialized).not.toContain(base64)
 })
 
-it.effect("does not count media base64 as text context", () =>
+it.effect("does not count file attachments as text context", () =>
   Effect.gen(function* () {
     requests = []
     const compaction = yield* SessionCompaction.Service
     const text = "context ".repeat(4_000)
     const data = Base64.make(Buffer.alloc(64 * 1024).toString("base64"))
-    const file = FileAttachment.make({
+    const image = FileAttachment.make({
       data,
       mime: "image/png",
       source: { type: "inline" },
       name: "screenshot.png",
     })
+    const document = FileAttachment.make({
+      data: Base64.make(Buffer.alloc(64 * 1024, "a").toString("base64")),
+      mime: "text/plain",
+      source: { type: "inline" },
+      name: "notes.txt",
+    })
     const inputModel = Model.make({
       id: "media-model",
       provider: "test",
       route: OpenAIChat.route.with({ limits: { context: 30_000, output: 1_000 } }),
+    })
+    const inputModelRef = ModelV2.Ref.make({
+      id: ModelV2.ID.make(inputModel.id),
+      providerID: ProviderV2.ID.make(inputModel.provider),
     })
     const messages = [
       SessionMessage.User.make({
@@ -97,25 +110,31 @@ it.effect("does not count media base64 as text context", () =>
         id: SessionMessage.ID.create(),
         type: "user",
         text: "Inspect this image",
-        files: [file],
+        files: [document, image],
         time: { created: DateTime.makeUnsafe(1) },
       }),
     ]
+    const request = LLM.request({
+      model: inputModel,
+      messages: toLLMMessages(messages, inputModelRef),
+    })
+
+    expect(request.messages.flatMap((message) => message.content)).toContainEqual({
+      type: "media",
+      mediaType: "image/png",
+      data,
+      filename: "screenshot.png",
+    })
+    expect(request.messages[1]?.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("Attached file: notes.txt"),
+    })
 
     expect(
       yield* compaction.compactIfNeeded({
         sessionID: SessionV2.ID.make("ses_media_compaction"),
         messages,
-        request: LLM.request({
-          model: inputModel,
-          messages: [
-            Message.user(text),
-            Message.user([
-              { type: "text", text: "Inspect this image" },
-              { type: "media", mediaType: "image/png", data, filename: "screenshot.png" },
-            ]),
-          ],
-        }),
+        request,
       }),
     ).toBe(false)
     expect(requests).toHaveLength(0)

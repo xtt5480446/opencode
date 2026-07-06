@@ -80,17 +80,28 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionCompaction") {}
 
-const estimate = (value: unknown) =>
-  Token.estimate(
-    JSON.stringify(value, (_key, item: unknown) => {
-      if (typeof item !== "object" || item === null || !("type" in item)) return item
-      // Providers account for native media separately; its base64 encoding is not prompt text.
-      if (item.type === "media" && "data" in item) return { ...item, data: "[media bytes]" }
-      if (item.type === "file" && "uri" in item && typeof item.uri === "string" && item.uri.startsWith("data:"))
-        return { ...item, uri: item.uri.slice(0, item.uri.indexOf(",") + 1) + "[media bytes]" }
-      return item
-    }),
-  )
+const estimate = (value: unknown) => Token.estimate(JSON.stringify(value))
+
+const textContext = (request: LLMRequest) => ({
+  system: request.system,
+  // TODO: Replace blanket attachment exclusion with model-aware media and file token accounting.
+  messages: request.messages
+    .filter((message) => message.metadata?.attachment === undefined)
+    .map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content.flatMap((part) => {
+        if (part.type === "media") return []
+        if (part.type !== "tool-result" || part.result.type !== "content") return [part]
+        return [
+          { ...part, result: { ...part.result, value: part.result.value.filter((item) => item.type === "text") } },
+        ]
+      }),
+      metadata: message.metadata,
+      native: message.native,
+    })),
+  tools: request.tools,
+})
 
 const truncate = (value: string) =>
   value.length <= TOOL_OUTPUT_MAX_CHARS ? value : `${value.slice(0, TOOL_OUTPUT_MAX_CHARS)}\n[truncated]`
@@ -289,11 +300,7 @@ const make = (dependencies: Dependencies) => {
     const context = input.request.model.route.defaults.limits?.context
     if (context === undefined || context <= 0) return false
     const output = input.request.generation?.maxTokens ?? input.request.model.route.defaults.limits?.output ?? 0
-    if (
-      estimate({ system: input.request.system, messages: input.request.messages, tools: input.request.tools }) <=
-      context - Math.max(output, config.buffer)
-    )
-      return false
+    if (estimate(textContext(input.request)) <= context - Math.max(output, config.buffer)) return false
     return yield* compactAfterOverflow(input)
   })
   return {
