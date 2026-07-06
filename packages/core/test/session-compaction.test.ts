@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
-import { LLMClient, LLMEvent, Model, type LLMRequest } from "@opencode-ai/llm"
+import { LLM, LLMClient, LLMEvent, Message, Model, type LLMRequest } from "@opencode-ai/llm"
 import { OpenAIChat } from "@opencode-ai/llm/protocols"
+import { Base64, FileAttachment } from "@opencode-ai/schema/prompt"
 import { Config } from "@opencode-ai/core/config"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -67,6 +68,59 @@ test("compaction describes tool media without embedding base64", () => {
   expect(serialized).toBe("Image read successfully\n[Attached image/png: pixel.png]")
   expect(serialized).not.toContain(base64)
 })
+
+it.effect("does not count media base64 as text context", () =>
+  Effect.gen(function* () {
+    requests = []
+    const compaction = yield* SessionCompaction.Service
+    const text = "context ".repeat(4_000)
+    const data = Base64.make(Buffer.alloc(64 * 1024).toString("base64"))
+    const file = FileAttachment.make({
+      data,
+      mime: "image/png",
+      source: { type: "inline" },
+      name: "screenshot.png",
+    })
+    const inputModel = Model.make({
+      id: "media-model",
+      provider: "test",
+      route: OpenAIChat.route.with({ limits: { context: 30_000, output: 1_000 } }),
+    })
+    const messages = [
+      SessionMessage.User.make({
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text,
+        time: { created: DateTime.makeUnsafe(0) },
+      }),
+      SessionMessage.User.make({
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "Inspect this image",
+        files: [file],
+        time: { created: DateTime.makeUnsafe(1) },
+      }),
+    ]
+
+    expect(
+      yield* compaction.compactIfNeeded({
+        sessionID: SessionV2.ID.make("ses_media_compaction"),
+        messages,
+        request: LLM.request({
+          model: inputModel,
+          messages: [
+            Message.user(text),
+            Message.user([
+              { type: "text", text: "Inspect this image" },
+              { type: "media", mediaType: "image/png", data, filename: "screenshot.png" },
+            ]),
+          ],
+        }),
+      }),
+    ).toBe(false)
+    expect(requests).toHaveLength(0)
+  }),
+)
 
 it.effect("manual compaction summarizes short context instead of no-op", () =>
   Effect.gen(function* () {

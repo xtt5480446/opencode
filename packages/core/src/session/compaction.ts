@@ -80,7 +80,17 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionCompaction") {}
 
-const estimate = (value: unknown) => Token.estimate(JSON.stringify(value))
+const estimate = (value: unknown) =>
+  Token.estimate(
+    JSON.stringify(value, (_key, item: unknown) => {
+      if (typeof item !== "object" || item === null || !("type" in item)) return item
+      // Providers account for native media separately; its base64 encoding is not prompt text.
+      if (item.type === "media" && "data" in item) return { ...item, data: "[media bytes]" }
+      if (item.type === "file" && "uri" in item && typeof item.uri === "string" && item.uri.startsWith("data:"))
+        return { ...item, uri: item.uri.slice(0, item.uri.indexOf(",") + 1) + "[media bytes]" }
+      return item
+    }),
+  )
 
 const truncate = (value: string) =>
   value.length <= TOOL_OUTPUT_MAX_CHARS ? value : `${value.slice(0, TOOL_OUTPUT_MAX_CHARS)}\n[truncated]`
