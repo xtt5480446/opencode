@@ -655,7 +655,9 @@ describe("CodeMode public contract", () => {
     for (const missing of ["Modules/imports", "classes", "generators", "fetch"]) {
       expect(instructions).toContain(missing)
     }
-    expect(instructions).toContain("Promises support await, then/catch/finally")
+    expect(instructions).toContain("selected standard-library methods, and awaited tool calls")
+    expect(instructions).toContain("Use await with try/catch")
+    expect(instructions).not.toContain("promise chaining are unavailable")
     expect(instructions).toContain("URL, URLSearchParams, and URI encoding helpers")
     expect(instructions).not.toContain("host globals")
     expect(instructions).toContain("Use Code Mode tools for external operations")

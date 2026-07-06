@@ -184,7 +184,6 @@ it.effect("advertises MCP output schemas to Code Mode", () =>
     const execute = (yield* toolDefinitions(registry)).find((tool) => tool.name === "execute")
 
     expect(execute?.description).toContain("tools.demo.search(input: {}): Promise<{\n  ok: boolean,\n}>")
-    expect(execute?.description).toContain("Promises support await, then/catch/finally")
     expect(execute?.description).not.toContain("promise chaining are unavailable")
   }),
 )
