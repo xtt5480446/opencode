@@ -115,19 +115,12 @@ inside CodeMode.
 
 The runtime currently provides eager, run-once promises for tool calls and async functions; `await`;
 `then`/`catch`/`finally`; and chainable `all`/`allSettled`/`race`/`resolve`/`reject`. `Promise.all` rejects promptly while
-siblings continue, and `Promise.race` leaves losers running as JavaScript does. Tracked work remains supervised, at most
-eight tool calls run concurrently, and successful execution drains unfinished work before closing.
+siblings continue, and `Promise.race` leaves losers running as JavaScript does. Tracked work remains supervised in one
+execution scope, at most eight tool calls run concurrently, and ordinary success or failure drains unfinished work before
+closing. Timeout and external interruption cancel immediately instead.
 
 ### Confirmed defects
 
-- [ ] Keep nested fire-and-forget work alive until the execution drain. A tool call started but not returned inside an
-      async function or promise handler is currently a child of that short-lived fiber and may be interrupted when the
-      parent settles even though the promise remains globally tracked.
-- [ ] Track immediate rejected promises. `Promise.reject(value)` does not enter `pendingSettlements`, so abandoning it
-      produces no unhandled-rejection diagnostic.
-- [ ] Drain handled work after ordinary program failure, then preserve the original failure. Today pending work drains
-      only after success, so a rejecting race winner or a later program throw interrupts race losers and `Promise.all`
-      siblings. Timeout and external interruption should still cancel immediately rather than drain.
 - [ ] Make every `await` continuation asynchronous. Awaiting a plain or already-settled value currently resumes in the
       same scheduling turn and can reorder state mutation relative to JavaScript.
 - [ ] Return rejected promises for invalid `Promise.all`/`allSettled`/`race` inputs instead of throwing during the call.

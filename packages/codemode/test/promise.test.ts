@@ -212,6 +212,22 @@ describe("first-class promise values", () => {
     expect(diagnostic.suggestions?.join(" ")).toContain("Await promises")
   })
 
+  test("an unhandled rejection does not stop later work from draining", async () => {
+    const trace = makeTrace()
+    const diagnostic = await error(
+      `
+        tools.host.fail({})
+        tools.host.sleepy({ id: 1, ms: 30 })
+        return "done"
+      `,
+      { trace },
+    )
+    expect(diagnostic.kind).toBe("ToolFailure")
+    expect(diagnostic.message).toContain("Unhandled rejection from an un-awaited promise")
+    expect(trace.completed).toBe(1)
+    expect(trace.interrupted).toBe(0)
+  })
+
   test("a never-awaited failing async function surfaces as an unhandled promise rejection", async () => {
     const diagnostic = await error(`
       const fail = async () => { throw new Error("boom") }
@@ -234,6 +250,58 @@ describe("first-class promise values", () => {
     `)
     expect(diagnostic.kind).toBe("ToolFailure")
     expect(diagnostic.message).toContain("Lookup refused")
+  })
+
+  test("keeps unreturned calls alive after their async function settles", async () => {
+    const trace = makeTrace()
+    expect(
+      await value(
+        `
+          const start = async () => {
+            tools.host.sleepy({ id: 1, ms: 30 })
+            return "started"
+          }
+          await start()
+          return "done"
+        `,
+        { trace },
+      ),
+    ).toBe("done")
+    expect(trace.completed).toBe(1)
+    expect(trace.interrupted).toBe(0)
+  })
+
+  test("keeps unreturned calls alive after their promise handler settles", async () => {
+    const trace = makeTrace()
+    expect(
+      await value(
+        `
+          await Promise.resolve().then(() => {
+            tools.host.sleepy({ id: 1, ms: 30 })
+          })
+          return "done"
+        `,
+        { trace },
+      ),
+    ).toBe("done")
+    expect(trace.completed).toBe(1)
+    expect(trace.interrupted).toBe(0)
+  })
+
+  test("drains pending work after program failure and preserves the original failure", async () => {
+    const trace = makeTrace()
+    const diagnostic = await error(
+      `
+        tools.host.fail({})
+        tools.host.sleepy({ id: 1, ms: 30 })
+        throw new Error("original")
+      `,
+      { trace },
+    )
+    expect(diagnostic.kind).toBe("ExecutionFailure")
+    expect(diagnostic.message).toBe("Uncaught: original")
+    expect(trace.completed).toBe(1)
+    expect(trace.interrupted).toBe(0)
   })
 })
 
@@ -450,6 +518,18 @@ describe("Promise.race", () => {
     ).toBe("Lookup refused")
   })
 
+  test("a rejecting winner still drains its slow loser", async () => {
+    const trace = makeTrace()
+    const diagnostic = await error(
+      `return await Promise.race([tools.host.fail({}), tools.host.sleepy({ id: 1, ms: 30 })])`,
+      { trace },
+    )
+    expect(diagnostic.kind).toBe("ToolFailure")
+    expect(diagnostic.message).toBe("Lookup refused")
+    expect(trace.completed).toBe(1)
+    expect(trace.interrupted).toBe(0)
+  })
+
   test("a plain value wins over pending promises", async () => {
     const trace = makeTrace()
     expect(
@@ -495,6 +575,16 @@ describe("Promise.resolve / Promise.reject", () => {
       }
     `),
     ).toBe("nope")
+  })
+
+  test("an abandoned rejected promise surfaces as an unhandled rejection", async () => {
+    const diagnostic = await error(`
+      Promise.reject(new Error("boom"))
+      return "done"
+    `)
+    expect(diagnostic.kind).toBe("ExecutionFailure")
+    expect(diagnostic.message).toContain("Unhandled rejection from an un-awaited promise")
+    expect(diagnostic.message).toContain("boom")
   })
 })
 
@@ -548,6 +638,41 @@ describe("timeout interruption of forked calls", () => {
     if (result.ok) return
     expect(result.error.kind).toBe("TimeoutExceeded")
     expect(trace.interrupted).toBe(2)
+  })
+
+  test("interrupts promise fibers concurrently during scope teardown", async () => {
+    const cleanup = { active: 0, overlapped: false }
+    const tool = Tool.make({
+      description: "Wait until interrupted",
+      input: Schema.Struct({}),
+      output: Schema.Never,
+      run: () =>
+        Effect.never.pipe(
+          Effect.onInterrupt(() =>
+            Effect.gen(function* () {
+              cleanup.active += 1
+              yield* Effect.sleep(20)
+              cleanup.overlapped ||= cleanup.active > 1
+              cleanup.active -= 1
+            }),
+          ),
+        ),
+    })
+    const result = await Effect.runPromise(
+      CodeMode.execute({
+        tools: { host: { first: tool, second: tool } },
+        code: `
+          tools.host.first({})
+          tools.host.second({})
+          return await Promise.resolve("waiting")
+        `,
+        limits: { timeoutMs: 50 },
+      }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.kind).toBe("TimeoutExceeded")
+    expect(cleanup.overlapped).toBe(true)
   })
 })
 

@@ -1,5 +1,5 @@
 import { parse } from "acorn"
-import { Cause, Effect, Exit, Fiber, Semaphore } from "effect"
+import { Cause, Effect, Exit, Fiber, Scope, Semaphore } from "effect"
 import { DiagnosticCategory, ModuleKind, ScriptTarget, flattenDiagnosticMessageText, transpileModule } from "typescript"
 import {
   copyIn,
@@ -607,9 +607,12 @@ class Interpreter<R> {
   private readonly toolKeys: (path: ReadonlyArray<string>) => ReadonlyArray<string>
   private readonly logs: Array<string>
   private lastValue: unknown
+  // Every promise fiber belongs to the execution rather than the async function or handler
+  // that happened to create it. The execution scope still interrupts all work on teardown.
+  private readonly promiseScope: Scope.Scope
   // Caps how many eagerly forked tool calls run at once (the parallel-call concurrency cap).
   private readonly callPermits: Semaphore.Semaphore
-  // Fiber-backed promises whose settlement no program construct has observed yet. Successful
+  // Fiber-backed promises whose settlement no program construct has observed yet. Ordinary
   // program completion drains these (like a runtime waiting on in-flight work at exit) and
   // surfaces a never-awaited failure as an unhandled-rejection diagnostic.
   private readonly pendingSettlements: Set<SandboxPromise>
@@ -617,6 +620,7 @@ class Interpreter<R> {
   constructor(
     invokeTool: (path: ReadonlyArray<string>, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>,
     toolKeys: (path: ReadonlyArray<string>) => ReadonlyArray<string>,
+    promiseScope: Scope.Scope,
     logs: Array<string> = [],
     shared?: { callPermits: Semaphore.Semaphore; pendingSettlements: Set<SandboxPromise> },
   ) {
@@ -626,6 +630,7 @@ class Interpreter<R> {
     this.toolKeys = toolKeys
     this.logs = logs
     this.lastValue = undefined
+    this.promiseScope = promiseScope
     this.callPermits = shared?.callPermits ?? Semaphore.makeUnsafe(TOOL_CALL_CONCURRENCY)
     this.pendingSettlements = shared?.pendingSettlements ?? new Set<SandboxPromise>()
     globalScope.set("tools", { mutable: false, value: new ToolReference([]) })
@@ -668,7 +673,7 @@ class Interpreter<R> {
     // top-level declarations (`let undefined = 5`, `const Object = ...`) shadow builtins like
     // JS module scope, instead of colliding with the seeded globals.
     this.pushScope()
-    return Effect.gen(function* () {
+    const evaluate = Effect.gen(function* () {
       self.hoistFunctions(program.body)
       let value: unknown = undefined
       let returned = false
@@ -695,8 +700,18 @@ class Interpreter<R> {
       // resolves before crossing the data boundary - `return tools.ns.tool(...)` works
       // without an explicit await, exactly as in JS.
       if (value instanceof SandboxPromise) value = yield* self.settlePromise(value)
-      yield* self.drainPendingSettlements()
       return value
+    })
+    return Effect.gen(function* () {
+      const result = yield* Effect.exit(evaluate)
+      if (Exit.isFailure(result) && Cause.hasInterruptsOnly(result.cause)) {
+        return yield* Effect.failCause(result.cause)
+      }
+
+      const drained = yield* Effect.exit(self.drainPendingSettlements())
+      if (Exit.isFailure(result)) return yield* Effect.failCause(result.cause)
+      if (Exit.isFailure(drained)) return yield* Effect.failCause(drained.cause)
+      return result.value
     }).pipe(Effect.ensuring(Effect.sync(() => self.popScope())))
   }
 
@@ -707,19 +722,22 @@ class Interpreter<R> {
   private drainPendingSettlements(): Effect.Effect<void, unknown, never> {
     const self = this
     return Effect.gen(function* () {
+      let unhandled: InterpreterRuntimeError | undefined
       while (self.pendingSettlements.size > 0) {
         const promise = self.pendingSettlements.values().next().value
         if (promise === undefined) break
         const exit = yield* self.observePromise(promise)
         if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause) || promise.handled) continue
+        if (unhandled !== undefined) continue
         const failure = normalizeError(Cause.squash(exit.cause))
-        throw new InterpreterRuntimeError(
+        unhandled = new InterpreterRuntimeError(
           `Unhandled rejection from an un-awaited promise: ${failure.message}`,
           undefined,
           failure.kind,
           ["Await promises so failures can be caught and handled."],
         )
       }
+      if (unhandled !== undefined) throw unhandled
     })
   }
 
@@ -735,7 +753,7 @@ class Interpreter<R> {
   }
 
   private createPromise(effect: Effect.Effect<unknown, unknown, R>): Effect.Effect<SandboxPromise, never, R> {
-    return Effect.map(Effect.forkChild(effect, { startImmediately: true }), (fiber) => {
+    return Effect.map(Effect.forkIn(effect, this.promiseScope, { startImmediately: true }), (fiber) => {
       const promise = new SandboxPromise(fiber)
       this.pendingSettlements.add(promise)
       return promise
@@ -2200,7 +2218,11 @@ class Interpreter<R> {
       )
     }
     if (ref.name === "reject") {
-      return Effect.sync(() => new SandboxPromise(undefined, Effect.fail(new ProgramThrow(args[0]))))
+      return Effect.sync(() => {
+        const promise = new SandboxPromise(undefined, Effect.fail(new ProgramThrow(args[0])))
+        this.pendingSettlements.add(promise)
+        return promise
+      })
     }
 
     const items = Array.isArray(args[0]) ? args[0] : spreadItems(args[0])
@@ -2306,7 +2328,7 @@ class Interpreter<R> {
   }
 
   private invokeFunction(fn: CodeModeFunction, args: Array<unknown>): Effect.Effect<unknown, unknown, R> {
-    const invocation = new Interpreter(this.invokeTool, this.toolKeys, this.logs, {
+    const invocation = new Interpreter(this.invokeTool, this.toolKeys, this.promiseScope, this.logs, {
       callPermits: this.callPermits,
       pendingSettlements: this.pendingSettlements,
     })
@@ -3555,18 +3577,21 @@ export const executeWithLimits = <const Tools extends Record<string, unknown>>(
     })
   }
 
-  const operation = Effect.gen(function* () {
-    const program = parseProgram(options.code)
-    const interpreter = new Interpreter<Services<Tools>>(tools.invoke, tools.keys, logs)
-    const value = yield* interpreter.run(program)
-    const result = copyOut(copyIn(value, "Execution result"), true) as DataValue
-    return {
-      ok: true,
-      value: result,
-      ...logged(),
-      toolCalls: tools.calls,
-    } satisfies Result
-  }).pipe((program) => {
+  const operation = Effect.scoped(
+    Effect.gen(function* () {
+      const scope = yield* Effect.acquireRelease(Scope.make("parallel"), (scope, exit) => Scope.close(scope, exit))
+      const program = parseProgram(options.code)
+      const interpreter = new Interpreter<Services<Tools>>(tools.invoke, tools.keys, scope, logs)
+      const value = yield* interpreter.run(program)
+      const result = copyOut(copyIn(value, "Execution result"), true) as DataValue
+      return {
+        ok: true,
+        value: result,
+        ...logged(),
+        toolCalls: tools.calls,
+      } satisfies Result
+    }),
+  ).pipe((program) => {
     const timeoutMs = limits.timeoutMs
     if (timeoutMs === undefined) return program
     return program.pipe(
