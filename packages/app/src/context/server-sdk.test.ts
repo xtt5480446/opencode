@@ -126,6 +126,7 @@ describe("enqueueServerEvent", () => {
 
     enqueue(partUpdated("old"))
     enqueue({
+      id: "event",
       type: "session.deleted",
       properties: { sessionID: "session", info: { id: "session" } },
     } as Event)
