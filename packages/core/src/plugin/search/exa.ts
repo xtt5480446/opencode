@@ -15,13 +15,6 @@ const Args = Schema.Struct({
   contextMaxCharacters: Schema.optional(Schema.Number),
 })
 
-const url = (apiKey: string | undefined) => {
-  if (!apiKey) return endpoint
-  const value = new URL(endpoint)
-  value.searchParams.set("exaApiKey", apiKey)
-  return value.toString()
-}
-
 export const Plugin = define<HttpClient.HttpClient | Scope.Scope>({
   id: "opencode.search.exa",
   effect: Effect.fn("SearchExa.Plugin")(function* (ctx) {
@@ -33,20 +26,17 @@ export const Plugin = define<HttpClient.HttpClient | Scope.Scope>({
       draft.capability.search.update({
         integrationID: "exa",
         capability: { type: "search", connection: "optional" },
-        execute: (input, context) =>
-          SearchMcp.call(
-            http,
-            url(context.credential?.type === "key" ? context.credential.key : undefined),
-            "web_search_exa",
-            Args,
-            {
-              query: input.query,
-              type: input.type ?? "auto",
-              numResults: input.numResults ?? 8,
-              livecrawl: input.livecrawl ?? "fallback",
-              contextMaxCharacters: input.contextMaxCharacters,
-            },
-          ).pipe(Effect.map((text) => ({ text: text ?? "" }))),
+        execute: (input, context) => {
+          const url = new URL(endpoint)
+          if (context.credential?.type === "key") url.searchParams.set("exaApiKey", context.credential.key)
+          return SearchMcp.call(http, url.toString(), "web_search_exa", Args, {
+            query: input.query,
+            type: input.type ?? "auto",
+            numResults: input.numResults ?? 8,
+            livecrawl: input.livecrawl ?? "fallback",
+            contextMaxCharacters: input.contextMaxCharacters,
+          }).pipe(Effect.map((text) => ({ text: text ?? "" })))
+        },
       })
     })
   }),

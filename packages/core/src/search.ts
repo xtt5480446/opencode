@@ -64,12 +64,6 @@ const layer = Layer.effect(
     const onboarding = Semaphore.makeUnsafe(1)
     const decodeOutput = Schema.decodeUnknownEffect(ProviderOutput)
 
-    const available = Effect.fn("Search.available")(function* () {
-      return new Map(
-        (yield* integrations.capability.search.list()).map((provider) => [provider.integrationID, provider]),
-      )
-    })
-
     const requireProvider = (
       providers: Map<Integration.ID, Integration.SearchImplementation>,
       providerID: Integration.ID,
@@ -78,7 +72,7 @@ const layer = Layer.effect(
       return provider ? Effect.succeed(provider) : Effect.fail(new ProviderNotFoundError({ providerID }))
     }
 
-    const configured = Effect.fn("Search.configured")(function* () {
+    const configuredProvider = Effect.fn("Search.configuredProvider")(function* () {
       const providerID = Config.latest(yield* config.entries(), "search")?.provider
       if (providerID) return providerID
       if (process.env.OPENCODE_WEBSEARCH_PROVIDER) {
@@ -115,17 +109,16 @@ const layer = Layer.effect(
               options: Array.from(providers.values())
                 .flatMap((provider) => {
                   const info = infos.get(provider.integrationID)
-                  return info ? [{ provider, info }] : []
+                  if (!info) return []
+                  const disconnected =
+                    provider.capability.connection === "optional" ? "Keyless available" : "Connection required"
+                  return [{ info, description: info.connections.length ? "Connected" : disconnected }]
                 })
                 .toSorted((a, b) => a.info.name.localeCompare(b.info.name))
-                .map(({ provider, info }) => ({
+                .map(({ info, description }) => ({
                   value: info.id,
                   label: info.name,
-                  description: info.connections.length
-                    ? "Connected"
-                    : provider.capability.connection === "optional"
-                      ? "Keyless available"
-                      : "Connection required",
+                  description,
                 })),
             },
           ],
@@ -160,9 +153,11 @@ const layer = Layer.effect(
     })
 
     const select = Effect.fn("Search.select")(function* (input: QueryInput) {
-      const providers = yield* available()
+      const providers = new Map(
+        (yield* integrations.capability.search.list()).map((provider) => [provider.integrationID, provider]),
+      )
       if (input.providerID) return yield* requireProvider(providers, input.providerID)
-      const override = yield* configured()
+      const override = yield* configuredProvider()
       if (override) return yield* requireProvider(providers, override)
       const selected = yield* integrations.capability.search.selected()
       const provider = selected ? providers.get(selected) : undefined
@@ -182,22 +177,22 @@ const layer = Layer.effect(
       )
     })
 
-    const query = Effect.fn("Search.query")(function* (input: QueryInput) {
-      const provider = yield* select(input)
-      const connection = yield* connect(provider, input.sessionID)
-      const credential = connection
-        ? yield* integrations.connection
-            .resolve(connection)
-            .pipe(Effect.mapError((cause) => new RequestError({ providerID: provider.integrationID, cause })))
-        : undefined
-      const output = yield* provider.execute(input, { credential, sessionID: input.sessionID }).pipe(
-        Effect.flatMap(decodeOutput),
-        Effect.mapError((cause) => new RequestError({ providerID: provider.integrationID, cause })),
-      )
-      return new Result({ providerID: provider.integrationID, ...output })
+    return Service.of({
+      query: Effect.fn("Search.query")(function* (input) {
+        const provider = yield* select(input)
+        const connection = yield* connect(provider, input.sessionID)
+        const credential = connection
+          ? yield* integrations.connection
+              .resolve(connection)
+              .pipe(Effect.mapError((cause) => new RequestError({ providerID: provider.integrationID, cause })))
+          : undefined
+        const output = yield* provider.execute(input, { credential, sessionID: input.sessionID }).pipe(
+          Effect.flatMap(decodeOutput),
+          Effect.mapError((cause) => new RequestError({ providerID: provider.integrationID, cause })),
+        )
+        return new Result({ providerID: provider.integrationID, ...output })
+      }),
     })
-
-    return Service.of({ query })
   }),
 )
 
