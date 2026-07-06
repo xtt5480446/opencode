@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test"
-import { LLM, LLMClient, LLMEvent, Message, Model, ToolCallPart, type LLMRequest } from "@opencode-ai/llm"
-import { OpenAIChat } from "@opencode-ai/llm/protocols"
+import {
+  LLM,
+  LLMClient,
+  LLMEvent,
+  Message,
+  Model,
+  ToolCallPart,
+  ToolResultPart,
+  type LLMRequest,
+} from "@opencode-ai/llm"
+import { OpenAIChat, OpenAIResponses } from "@opencode-ai/llm/protocols"
 import { Base64, FileAttachment } from "@opencode-ai/schema/prompt"
 import { Config } from "@opencode-ai/core/config"
 import { Database } from "@opencode-ai/core/database/database"
@@ -87,7 +96,7 @@ it.effect("does not count image attachments as text context", () =>
     const inputModel = Model.make({
       id: "media-model",
       provider: "test",
-      route: OpenAIChat.route.with({ limits: { context: 30_000, output: 1_000 } }),
+      route: OpenAIResponses.route.with({ limits: { context: 30_000, output: 1_000 } }),
     })
     const inputModelRef = ModelV2.Ref.make({
       id: ModelV2.ID.make(inputModel.id),
@@ -110,7 +119,18 @@ it.effect("does not count image attachments as text context", () =>
     ]
     const request = LLM.request({
       model: inputModel,
-      messages: toLLMMessages(messages, inputModelRef),
+      messages: [
+        ...toLLMMessages(messages, inputModelRef),
+        Message.assistant(
+          ToolResultPart.make({
+            id: "image_generation_1",
+            name: "image_generation",
+            result: { type: "image_generation_call", output: Buffer.alloc(64 * 1024).toString("base64") },
+            providerExecuted: true,
+            providerMetadata: { openai: { itemId: "image_generation_1" } },
+          }),
+        ),
+      ],
     })
 
     expect(request.messages.flatMap((message) => message.content)).toContainEqual({

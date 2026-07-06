@@ -80,22 +80,57 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionCompaction") {}
 
-const stringify = (value: unknown) => (typeof value === "string" ? value : (JSON.stringify(value) ?? String(value)))
+const serializeString = (value: unknown) => {
+  try {
+    return String(value)
+  } catch {
+    return "[unserializable]"
+  }
+}
+
+const serializeJson = (value: unknown) => {
+  try {
+    return JSON.stringify(value) ?? serializeString(value)
+  } catch {
+    return serializeString(value)
+  }
+}
+
+const serializeError = (value: unknown) => {
+  try {
+    const prototype =
+      typeof value === "object" && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value)
+    const structured = Array.isArray(value) || prototype === Object.prototype || prototype === null
+    return structured ? serializeJson(value) : serializeString(value)
+  } catch {
+    return serializeString(value)
+  }
+}
 
 const serializeContent = (part: LLMRequest["messages"][number]["content"][number]) => {
   if (part.type === "text" || part.type === "reasoning") return part.text
   if (part.type === "media") return ""
-  if (part.type === "tool-call") return `${part.name}\n${stringify(part.input)}`
+  if (part.type === "tool-call") return `${part.name}\n${serializeJson(part.input)}`
+  // OpenAI replays hosted image generations by item reference; the opaque JSON result contains the image bytes.
+  if (
+    part.providerExecuted &&
+    part.name === "image_generation" &&
+    part.result.type === "json" &&
+    typeof part.providerMetadata?.openai?.itemId === "string"
+  )
+    return part.name
   if (part.result.type === "content")
     return [part.name, ...part.result.value.flatMap((item) => (item.type === "text" ? [item.text] : []))].join("\n")
-  return `${part.name}\n${stringify(part.result.value)}`
+  if (part.result.type === "text") return `${part.name}\n${serializeString(part.result.value)}`
+  if (part.result.type === "error") return `${part.name}\n${serializeError(part.result.value)}`
+  return `${part.name}\n${serializeJson(part.result.value)}`
 }
 
 const estimate = (request: LLMRequest) =>
   Token.estimate(
     [
       ...request.system.map((part) => part.text),
-      JSON.stringify(request.tools),
+      serializeJson(request.tools),
       ...request.messages.flatMap((message) => message.content.map(serializeContent).filter(Boolean)),
     ].join("\n"),
   )
