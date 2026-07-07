@@ -39,6 +39,9 @@ export function host(overrides: Overrides = {}): PluginContext {
       transform: () => Effect.die("unused command.transform"),
       reload: () => Effect.die("unused command.reload"),
     },
+    codemode: overrides.codemode ?? {
+      register: () => Effect.die("unused codemode.register"),
+    },
     event: overrides.event ?? {
       subscribe: () => Stream.empty,
     },

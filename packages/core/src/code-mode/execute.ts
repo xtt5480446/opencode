@@ -3,7 +3,7 @@ export * as ExecuteTool from "./execute"
 import { CodeMode, Tool, toolError } from "@opencode-ai/codemode"
 import { ToolOutput } from "@opencode-ai/llm"
 import { Effect, Ref, Schema } from "effect"
-import { definition, make, settle, type AnyTool } from "./tool"
+import { definition, make, settle, type AnyTool } from "../tool/tool"
 
 const ExecuteFile = Schema.Struct({
   data: Schema.String,
@@ -40,7 +40,11 @@ export interface Registration {
   readonly identity: object
   readonly tool: AnyTool
   readonly name: string
-  readonly group?: string
+  readonly path: readonly [string, ...string[]]
+}
+
+interface CodeModeTools {
+  [name: string]: Tool.Definition<never> | CodeModeTools
 }
 
 export const create = (options: {
@@ -51,33 +55,16 @@ export const create = (options: {
     invoke: (name: string, registration: Registration, input: unknown) => Effect.Effect<unknown, unknown>,
     hooks?: CodeMode.ToolCallHooks,
   ) => {
-    const tools: Record<string, Tool.Definition<never> | Record<string, Tool.Definition<never>>> = {}
-    for (const [name, registration] of options.registrations) {
-      const child = definition(name, registration.tool)
+    const tools: CodeModeTools = Object.create(null)
+    for (const [key, registration] of options.registrations) {
+      const child = definition(registration.name, registration.tool)
       const value = Tool.make({
         description: child.description,
         input: child.inputSchema,
         output: child.outputSchema,
-        run: (input) => invoke(name, registration, input),
+        run: (input) => invoke(key, registration, input),
       })
-      if (registration.group === undefined) {
-        const path = registration.name
-        if (Object.hasOwn(tools, path)) throw new TypeError(`Deferred tool namespace conflict: ${path}`)
-        tools[path] = value
-        continue
-      }
-      const path = registration.name
-      const namespace = registration.group
-      const group = tools[namespace]
-      if (group && Tool.isDefinition(group)) throw new TypeError(`Deferred tool namespace conflict: ${namespace}`)
-      if (group) {
-        if (Object.hasOwn(group, path)) throw new TypeError(`Deferred tool namespace conflict: ${namespace}.${path}`)
-        group[path] = value
-        continue
-      }
-      const entries: Record<string, Tool.Definition<never>> = {}
-      entries[path] = value
-      tools[namespace] = entries
+      addTool(tools, registration.path, value)
     }
     return CodeMode.make<typeof tools>({ tools, ...hooks })
   }
@@ -112,15 +99,15 @@ export const create = (options: {
           ),
         )
         const result = yield* runtime(
-          (name, registration, input) =>
+          (key, registration, input) =>
             Effect.gen(function* () {
               const index = yield* Ref.getAndUpdate(callIndex, (index) => index + 1)
-              const current = options.current(name)
+              const current = options.current(key)
               if (!current || current.identity !== registration.identity)
-                return yield* Effect.fail(toolError(`Stale tool call: ${name}`))
+                return yield* Effect.fail(toolError(`Stale tool call: ${registration.path.join(".")}`))
               const output = yield* settle(
                 current.tool,
-                { type: "tool-call", id: context.toolCallID, name, input },
+                { type: "tool-call", id: context.toolCallID, name: registration.name, input },
                 {
                   sessionID: context.sessionID,
                   agent: context.agent,
@@ -161,6 +148,21 @@ export const create = (options: {
         return { output, toolCalls, files: collected, ...(result.ok ? {} : { error: true as const }) }
       }),
   })
+}
+
+function addTool(tools: CodeModeTools, path: readonly string[], value: Tool.Definition<never>) {
+  const [name, ...rest] = path
+  if (name === undefined) return
+  if (rest.length === 0) {
+    if (Object.hasOwn(tools, name)) throw new TypeError(`Code Mode namespace conflict: ${path.join(".")}`)
+    tools[name] = value
+    return
+  }
+  const current = tools[name]
+  if (Tool.isDefinition(current)) throw new TypeError(`Code Mode namespace conflict: ${path.join(".")}`)
+  const child: CodeModeTools = current ?? Object.create(null)
+  tools[name] = child
+  addTool(child, rest, value)
 }
 
 function displayInput(input: unknown): Record<string, unknown> | undefined {

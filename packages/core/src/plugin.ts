@@ -7,6 +7,7 @@ import { Context, Effect, Exit, Layer, Scope, Semaphore } from "effect"
 import { AgentV2 } from "./agent"
 import { AISDK } from "./aisdk"
 import { Catalog } from "./catalog"
+import { CodeModeV2 } from "./code-mode"
 import { CommandV2 } from "./command"
 import { EventV2 } from "./event"
 import { Integration } from "./integration"
@@ -124,6 +125,7 @@ export const node = makeLocationNode({
     AgentV2.node,
     AISDK.node,
     Catalog.node,
+    CodeModeV2.node,
     CommandV2.node,
     Integration.node,
     Location.node,

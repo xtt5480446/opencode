@@ -1,8 +1,10 @@
 import { describe, expect } from "bun:test"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import { AgentV2 } from "@opencode-ai/core/agent"
+import { CodeModeV2 } from "@opencode-ai/core/code-mode"
 import type { PermissionV2 } from "@opencode-ai/core/permission"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
@@ -28,7 +30,9 @@ const outputStore = Layer.mock(ToolOutputStore.Service, {
     )
   },
 })
-const registryLayer = AppNodeBuilder.build(ToolRegistry.node, [[ToolOutputStore.node, outputStore]])
+const registryLayer = AppNodeBuilder.build(LayerNode.group([ToolRegistry.node, CodeModeV2.node]), [
+  [ToolOutputStore.node, outputStore],
+])
 const it = testEffect(registryLayer)
 const identity = {
   agent: AgentV2.ID.make("build"),
@@ -53,6 +57,30 @@ const make = (permission?: string) => {
 }
 
 describe("ToolRegistry", () => {
+  it.effect("materializes nested Code Mode sources as execute", () =>
+    Effect.gen(function* () {
+      const codeMode = yield* CodeModeV2.Service
+      const service = yield* ToolRegistry.Service
+      yield* codeMode.register((draft) => draft.add(["opencode", "v2", "echo"], make()))
+
+      const definitions = yield* toolDefinitions(service)
+      expect(definitions.map((tool) => tool.name)).toEqual(["execute"])
+      expect(definitions[0]?.description).toContain("tools.opencode.v2.echo")
+      expect(
+        yield* executeTool(service, {
+          sessionID,
+          ...identity,
+          call: {
+            type: "tool-call",
+            id: "call-code-mode",
+            name: "execute",
+            input: { code: 'return await tools.opencode.v2.echo({ text: "hello" })' },
+          },
+        }),
+      ).toEqual({ type: "text", value: '{\n  "text": "hello"\n}' })
+    }),
+  )
+
   it.effect("filters disabled tools with edit aliases and ordered wildcard precedence", () =>
     Effect.gen(function* () {
       const service = yield* ToolRegistry.Service

@@ -5,7 +5,7 @@ import { McpEvent } from "@opencode-ai/schema/mcp-event"
 import { Effect, Exit, type JsonSchema, Layer, Scope, Semaphore, Stream } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { EventV2 } from "../event"
-import { Flag } from "../flag/flag"
+import { CodeModeV2 } from "../code-mode"
 import { MCP } from "../mcp"
 import { PermissionV2 } from "../permission"
 import { Tool } from "./tool"
@@ -21,6 +21,7 @@ export const name = (server: string, tool: string) => `${group(server)}_${tool.r
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const mcp = yield* MCP.Service
+    const codeMode = yield* CodeModeV2.Service
     const tools = yield* Tools.Service
     const events = yield* EventV2.Service
     const permission = yield* PermissionV2.Service
@@ -105,13 +106,14 @@ export const layer = Layer.effectDiscard(
           groups.set(tool.server, group)
         }
         const next = yield* Scope.fork(scope)
-        yield* Effect.forEach(
-          groups,
-          ([group, record]) => tools.register(record, { group, deferred: Flag.CODEMODE_ENABLED }),
-          {
-            discard: true,
-          },
-        ).pipe(Scope.provide(next), Effect.orDie)
+        const register = codeMode.enabled
+          ? codeMode.register((draft) => {
+              for (const [server, record] of groups)
+                for (const [tool, value] of Object.entries(record))
+                  draft.add([group(server), tool.replace(/[^a-zA-Z0-9_-]/g, "_")], value)
+            })
+          : Effect.forEach(groups, ([group, record]) => tools.register(record, { group }), { discard: true })
+        yield* register.pipe(Scope.provide(next), Effect.orDie)
         if (current) yield* Scope.close(current, Exit.void)
         current = next
       }),
@@ -128,5 +130,5 @@ export const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "mcp-tools",
   layer,
-  deps: [ToolRegistry.toolsNode, MCP.node, EventV2.node, PermissionV2.node],
+  deps: [CodeModeV2.node, ToolRegistry.toolsNode, MCP.node, EventV2.node, PermissionV2.node],
 })

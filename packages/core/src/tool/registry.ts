@@ -3,13 +3,12 @@ export * as ToolRegistry from "./registry"
 import { ToolOutput, type ToolCall, type ToolDefinition, type ToolResultValue } from "@opencode-ai/llm"
 import { Context, Effect, Layer, Scope } from "effect"
 import type { AgentV2 } from "../agent"
-import { Flag } from "../flag/flag"
+import { CodeModeV2 } from "../code-mode"
 import { PermissionV2 } from "../permission"
 import { SessionMessage } from "../session/message"
 import { SessionSchema } from "../session/schema"
 import { ToolOutputStore } from "../tool-output-store"
 import { Wildcard } from "../util/wildcard"
-import { ExecuteTool } from "./execute"
 import { definition, permission, registrationEntries, RegistrationError, settle, type AnyTool } from "./tool"
 import { Tools } from "./tools"
 import { ToolHooks } from "./hooks"
@@ -55,14 +54,12 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 const registryLayer = Layer.effect(
   Service,
   Effect.gen(function* () {
+    const codeMode = yield* CodeModeV2.Service
     const resources = yield* ToolOutputStore.Service
     const toolHooks = yield* ToolHooks.Service
     type Registration = {
       readonly identity: object
       readonly tool: AnyTool
-      readonly name: string
-      readonly group?: string
-      readonly deferred: boolean
     }
     const local = new Map<string, Array<{ readonly token: object; readonly registration: Registration }>>()
 
@@ -150,7 +147,7 @@ const registryLayer = Layer.effect(
       register: Effect.fn("ToolRegistry.register")(function* (tools, options) {
         const entries = registrationEntries(tools, options?.group)
         if (entries.length === 0) return
-        const reserved = options?.deferred ? undefined : entries.find((entry) => entry.key === "execute")
+        const reserved = entries.find((entry) => entry.key === "execute")
         if (reserved)
           return yield* Effect.fail(
             new RegistrationError({ name: reserved.key, message: 'Tool name "execute" is reserved for CodeMode' }),
@@ -166,9 +163,6 @@ const registryLayer = Layer.effect(
                   registration: {
                     identity: {},
                     tool: entry.tool,
-                    name: entry.name,
-                    group: entry.group,
-                    deferred: options?.deferred ?? false,
                   },
                 },
               ])
@@ -195,30 +189,18 @@ const registryLayer = Layer.effect(
         const usePatch = input.model.provider.toLowerCase() === "openai" || input.model.id.toLowerCase().includes("gpt")
         for (const [name, registration] of registrations) {
           const wrongEditTool = name === "apply_patch" ? !usePatch : (name === "edit" || name === "write") && usePatch
-          if (
-            wrongEditTool ||
-            (registration.deferred && !Flag.CODEMODE_ENABLED) ||
-            whollyDisabled(permission(registration.tool, name), input.permissions ?? [])
-          )
+          if (wrongEditTool || whollyDisabled(permission(registration.tool, name), input.permissions ?? []))
             registrations.delete(name)
         }
-        const direct = new Map(Array.from(registrations).filter(([, registration]) => !registration.deferred))
-        const deferred = new Map(Array.from(registrations).filter(([, registration]) => registration.deferred))
-        const execute =
-          deferred.size > 0 && !whollyDisabled("execute", input.permissions ?? [])
-            ? ExecuteTool.create({
-                registrations: deferred,
-                current: (name) => local.get(name)?.at(-1)?.registration,
-              })
-            : undefined
+        const execute = yield* codeMode.materialize({ permissions: input.permissions })
         return {
           definitions: [
-            ...Array.from(direct, ([name, registration]) => definition(name, registration.tool)),
+            ...Array.from(registrations, ([name, registration]) => definition(name, registration.tool)),
             ...(execute ? [definition("execute", execute)] : []),
           ],
           settle: (input) => {
             if (input.call.name === "execute" && execute) return settleTool(input, execute)
-            const registration = direct.get(input.call.name)
+            const registration = registrations.get(input.call.name)
             if (registration) return settleWith(input, registration.identity)
             return Effect.succeed({
               result: { type: "error", value: `Unknown tool: ${input.call.name}` },
@@ -244,11 +226,11 @@ function whollyDisabled(action: string, rules: PermissionV2.Ruleset) {
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [ToolOutputStore.node, ToolHooks.node],
+  deps: [CodeModeV2.node, ToolOutputStore.node, ToolHooks.node],
 })
 
 export const toolsNode = makeLocationNode({
   service: Tools.Service,
   layer,
-  deps: [ToolOutputStore.node, ToolHooks.node],
+  deps: [CodeModeV2.node, ToolOutputStore.node, ToolHooks.node],
 })

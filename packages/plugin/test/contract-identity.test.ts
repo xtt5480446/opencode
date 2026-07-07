@@ -27,6 +27,7 @@ test.each([
   expect(entrypoint.Skill).toBe(Skill)
   expect(Object.keys(entrypoint).sort()).toEqual([
     "Agent",
+    ...(name === "effect" ? ["CodeMode"] : []),
     "Command",
     "Connection",
     "Credential",

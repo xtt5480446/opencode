@@ -1,7 +1,7 @@
 export * as McpGuidance from "./guidance"
 
 import { makeLocationNode } from "../effect/app-node"
-import { Flag } from "../flag/flag"
+import { CodeModeV2 } from "../code-mode"
 import { Context, Effect, Layer, Schema } from "effect"
 import { AgentV2 } from "../agent"
 import { PermissionV2 } from "../permission"
@@ -15,10 +15,10 @@ const Summary = Schema.Struct({
 })
 type Summary = typeof Summary.Type
 
-const entries = (servers: ReadonlyArray<Summary>) =>
+const entries = (servers: ReadonlyArray<Summary>, codeMode: boolean) =>
   servers.flatMap((server) => [
     `  <server name="${server.server}">`,
-    ...(Flag.CODEMODE_ENABLED
+    ...(codeMode
       ? [
           `    Use tools from this server through \`execute\` under \`tools[${JSON.stringify(McpTool.group(server.server))}]\`.`,
         ]
@@ -27,10 +27,10 @@ const entries = (servers: ReadonlyArray<Summary>) =>
     "  </server>",
   ])
 
-const render = (servers: ReadonlyArray<Summary>) =>
-  ["<mcp_instructions>", ...entries(servers), "</mcp_instructions>"].join("\n")
+const render = (servers: ReadonlyArray<Summary>, codeMode: boolean) =>
+  ["<mcp_instructions>", ...entries(servers, codeMode), "</mcp_instructions>"].join("\n")
 
-const update = (previous: ReadonlyArray<Summary>, current: ReadonlyArray<Summary>) => {
+const update = (previous: ReadonlyArray<Summary>, current: ReadonlyArray<Summary>, codeMode: boolean) => {
   const diff = Instructions.diffByKey(
     previous,
     current,
@@ -41,12 +41,15 @@ const update = (previous: ReadonlyArray<Summary>, current: ReadonlyArray<Summary
   if (diff.changed.length > 0 || (diff.added.length === 0 && diff.removed.length === 0))
     return [
       "The available MCP server instructions have changed. This list supersedes the previous one.",
-      render(current),
+      render(current, codeMode),
     ].join("\n")
   return [
     ...(diff.added.length === 0
       ? []
-      : ["New MCP server instructions are available in addition to those previously listed:", ...entries(diff.added)]),
+      : [
+          "New MCP server instructions are available in addition to those previously listed:",
+          ...entries(diff.added, codeMode),
+        ]),
     ...(diff.removed.length === 0
       ? []
       : [
@@ -64,13 +67,14 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
+    const codeMode = yield* CodeModeV2.Service
     const mcp = yield* MCP.Service
 
     return Service.of({
       load: Effect.fn("McpGuidance.load")(function* (selection) {
         const agent = selection.info
         if (!agent) return Instructions.empty
-        if (Flag.CODEMODE_ENABLED && PermissionV2.evaluate("execute", "*", agent.permissions).effect === "deny")
+        if (codeMode.enabled && PermissionV2.evaluate("execute", "*", agent.permissions).effect === "deny")
           return Instructions.empty
         const [instructions, tools] = yield* Effect.all([mcp.instructions(), mcp.tools()], {
           concurrency: "unbounded",
@@ -80,7 +84,7 @@ export const layer = Layer.effect(
           .filter((item) => {
             const owned = tools.filter((tool) => tool.server === item.server)
             return (
-              (!Flag.CODEMODE_ENABLED && owned.length === 0) ||
+              (!codeMode.enabled && owned.length === 0) ||
               owned.some(
                 (tool) =>
                   PermissionV2.evaluate(McpTool.name(tool.server, tool.name), "*", agent.permissions).effect !== "deny",
@@ -93,8 +97,8 @@ export const layer = Layer.effect(
           key: Instructions.Key.make("core/mcp-guidance"),
           codec: Schema.toCodecJson(Schema.Array(Summary)),
           load: Effect.succeed(visible),
-          baseline: render,
-          update,
+          baseline: (servers) => render(servers, codeMode.enabled),
+          update: (previous, current) => update(previous, current, codeMode.enabled),
           removed: () => "MCP server instructions are no longer available.",
         })
       }),
@@ -102,4 +106,4 @@ export const layer = Layer.effect(
   }),
 )
 
-export const node = makeLocationNode({ service: Service, layer, deps: [MCP.node] })
+export const node = makeLocationNode({ service: Service, layer, deps: [CodeModeV2.node, MCP.node] })

@@ -191,7 +191,7 @@ describe("PluginV2", () => {
     }),
   )
 
-  it.effect("groups tool names and defers registrations from direct exposure", () =>
+  it.effect("registers direct and Code Mode tools through separate plugin domains", () =>
     Effect.gen(function* () {
       const plugins = yield* PluginV2.Service
       const registry = yield* ToolRegistry.Service
@@ -205,13 +205,17 @@ describe("PluginV2", () => {
       const plugin = define({
         id: "grouped-tools",
         effect: (ctx) =>
-          ctx.tool
-            .transform((draft) => {
-              draft.add("plain", tool("Plain"))
-              draft.add("look/up", tool("Lookup"), { group: "context 7" })
-              draft.add("search", tool("Search"), { group: "context 7", deferred: true })
-            })
-            .pipe(Effect.orDie),
+          Effect.gen(function* () {
+            yield* ctx.tool
+              .transform((draft) => {
+                draft.add("plain", tool("Plain"))
+                draft.add("look/up", tool("Lookup"), { group: "context 7" })
+              })
+              .pipe(Effect.orDie)
+            yield* ctx.codemode
+              .register((draft) => draft.add(["context_7", "search"], tool("Search")))
+              .pipe(Effect.orDie)
+          }),
       })
 
       yield* plugins.activate([{ plugin }])
@@ -221,6 +225,9 @@ describe("PluginV2", () => {
         "context_7_look_up",
         "execute",
       ])
+
+      yield* plugins.activate([])
+      expect((yield* registry.materialize({ model: testModel })).definitions).toEqual([])
     }),
   )
 

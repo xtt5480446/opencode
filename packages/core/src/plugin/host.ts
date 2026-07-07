@@ -6,6 +6,7 @@ import { Effect, Schema, Stream } from "effect"
 import { AgentV2 } from "../agent"
 import { AISDK } from "../aisdk"
 import { Catalog } from "../catalog"
+import { CodeModeV2 } from "../code-mode"
 import { CommandV2 } from "../command"
 import { Credential } from "../credential"
 import { EventV2 } from "../event"
@@ -28,6 +29,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: PluginV2.Int
   const agents = yield* AgentV2.Service
   const aisdk = yield* AISDK.Service
   const catalog = yield* Catalog.Service
+  const codeMode = yield* CodeModeV2.Service
   const commands = yield* CommandV2.Service
   const events = yield* EventV2.Service
   const integration = yield* Integration.Service
@@ -157,6 +159,9 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: PluginV2.Int
         commands.transform((draft) => {
           callback(draft)
         }),
+    },
+    codemode: {
+      register: codeMode.register,
     },
     event: {
       subscribe: () => events.subscribe().pipe(Stream.filter(EventManifest.isServer)),

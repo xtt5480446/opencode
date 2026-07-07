@@ -246,7 +246,6 @@ export interface ToolExecuteAfterEvent {
 
 export interface RegisterOptions {
   readonly group?: string
-  readonly deferred?: boolean
 }
 
 export interface ToolDraft {

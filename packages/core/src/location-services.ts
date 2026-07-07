@@ -2,6 +2,7 @@ import { Effect, Layer, LayerMap } from "effect"
 import { AgentV2 } from "./agent"
 import { AISDK } from "./aisdk"
 import { Catalog } from "./catalog"
+import { CodeModeV2 } from "./code-mode"
 import { CommandV2 } from "./command"
 import { Config } from "./config"
 import { LayerNode } from "./effect/layer-node"
@@ -119,6 +120,7 @@ const locationServiceNodes = [
   MCP.node,
   PermissionV2.node,
   ToolOutputStore.node,
+  CodeModeV2.node,
   ToolRegistry.node,
   ToolRegistry.toolsNode,
   Image.node,
