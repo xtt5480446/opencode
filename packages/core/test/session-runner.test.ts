@@ -62,9 +62,11 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { Location } from "@opencode-ai/core/location"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
+import type { Scope } from "effect/Scope"
 import { TestClock } from "effect/testing"
 import { asc, eq } from "drizzle-orm"
-import { testEffect } from "./lib/effect"
+import { it as effectIt, testEffect } from "./lib/effect"
+import { RunnerScenario } from "./lib/runner-scenario"
 
 const requests: LLMRequest[] = []
 let response: LLMEvent[] = []
@@ -267,9 +269,9 @@ const config = Layer.succeed(
       ]),
   }),
 )
-const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
+const runnerLayerWith = (clientLayer: typeof client) => AppNodeBuilder.build(SessionRunnerLLM.node, [
   [Snapshot.node, Snapshot.noopLayer],
-  [LayerNodePlatform.llmClient, client],
+  [LayerNodePlatform.llmClient, clientLayer],
   [SessionRunnerModel.node, models],
   [InstructionBuiltIns.node, systemContext],
   [InstructionDiscovery.node, instructionContext],
@@ -281,7 +283,7 @@ const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [McpGuidance.node, mcpGuidance],
   [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
 ])
-const execution = Layer.effect(
+const executionWith = (runnerLayer: ReturnType<typeof runnerLayerWith>) => Layer.effect(
   SessionExecution.Service,
   Effect.gen(function* () {
     const sessionRunner = yield* SessionRunner.Service
@@ -297,8 +299,10 @@ const execution = Layer.effect(
     })
   }),
 ).pipe(Layer.provide(runnerLayer))
-const it = testEffect(
-  AppNodeBuilder.build(
+const testLayerWith = (clientLayer: typeof client) => {
+  const runnerLayer = runnerLayerWith(clientLayer)
+  const execution = executionWith(runnerLayer)
+  return AppNodeBuilder.build(
     LayerNode.group([
       Database.node,
       EventV2.node,
@@ -322,7 +326,7 @@ const it = testEffect(
       SessionV2.node,
     ]),
     [
-      [LayerNodePlatform.llmClient, client],
+      [LayerNodePlatform.llmClient, clientLayer],
       [PermissionV2.node, permission],
       [SessionRunnerModel.node, models],
       [InstructionBuiltIns.node, systemContext],
@@ -335,10 +339,26 @@ const it = testEffect(
       [Config.node, config],
       [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
     ],
-  ),
-)
+  )
+}
+const testLayer = testLayerWith(client)
+const it = testEffect(testLayer)
 const sessionID = SessionV2.ID.make("ses_runner_test")
 const otherSessionID = SessionV2.ID.make("ses_runner_other")
+const makeSessionScenario = () =>
+  RunnerScenario.make(() => SessionV2.Service.use((session) => session.resume(sessionID)))
+type SessionScenario = Effect.Success<ReturnType<typeof makeSessionScenario>>
+type TestServices = Layer.Success<typeof testLayer>
+const scenarioIt = <A, E>(
+  name: string,
+  body: (scenario: SessionScenario) => Effect.Effect<A, E, TestServices | Scope>,
+) =>
+  effectIt.effect(name, () =>
+    Effect.gen(function* () {
+      const scenario = yield* makeSessionScenario()
+      return yield* body(scenario).pipe(Effect.provide(testLayerWith(scenario.llm.layer)))
+    }),
+  )
 
 const insertSession = (id: SessionV2.ID) =>
   Effect.gen(function* () {
@@ -725,55 +745,50 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  it.effect("starts a real runner turn after default prompt recording", () =>
+  scenarioIt("starts a real runner turn after default prompt recording", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
-      requests.length = 0
-      responses = undefined
-      streamGate = undefined
-      streamStarted = undefined
-      response = []
 
       const message = yield* session.prompt({
         sessionID,
         prompt: PromptInput.Prompt.make({ text: "Run automatically" }),
       })
-      yield* session.wait(sessionID)
+      yield* scenario.run(function* () {
+        yield* (yield* scenario.llm.next()).respond.events()
+      })
 
-      expect(requests).toHaveLength(1)
+      expect(yield* scenario.llm.requests).toHaveLength(1)
       expect(yield* session.messages({ sessionID })).toMatchObject([
         { id: message.id, type: "user", text: "Run automatically" },
       ])
     }),
   )
 
-  it.effect("streams one request with registry definitions from chronological V2 user history", () =>
+  scenarioIt("streams one request with registry definitions from chronological V2 user history", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
 
-      requests.length = 0
-      responses = undefined
-      streamGate = undefined
-      streamStarted = undefined
-      response = []
-      yield* session.resume(sessionID)
+      yield* scenario.run(function* () {
+        const call = yield* scenario.llm.next()
+        expect(call.request.model).toBe(model)
+        expect(call.request.tools.map((tool) => tool.name)).toEqual(["echo", "defect", "storefail"])
+        expect(call.request.messages.map((message) => ({ role: message.role, content: message.content }))).toEqual([
+          { role: "user", content: [{ type: "text", text: "First" }] },
+          { role: "user", content: [{ type: "text", text: "Second" }] },
+        ])
+        yield* call.respond.events()
+      })
 
-      expect(requests).toHaveLength(1)
-      expect(requests[0]?.model).toBe(model)
-      expect(requests[0]?.tools.map((tool) => tool.name)).toEqual(["echo", "defect", "storefail"])
-      expect(requests[0]?.messages.map((message) => ({ role: message.role, content: message.content }))).toEqual([
-        { role: "user", content: [{ type: "text", text: "First" }] },
-        { role: "user", content: [{ type: "text", text: "Second" }] },
-      ])
+      expect(yield* scenario.llm.requests).toHaveLength(1)
       expect(yield* session.messages({ sessionID })).toHaveLength(2)
     }),
   )
 
-  it.effect("retries the first provider turn after system context becomes available", () =>
+  scenarioIt("retries the first provider turn after system context becomes available", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
@@ -786,13 +801,12 @@ describe("SessionRunnerLLM", () => {
         prompt: PromptInput.Prompt.make({ text: "First" }),
         resume: false,
       })
-      requests.length = 0
 
       const exit = yield* session.resume(sessionID).pipe(Effect.exit)
 
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Instructions.InitializationBlocked)
-      expect(requests).toHaveLength(0)
+      expect(yield* scenario.llm.requests).toHaveLength(0)
       expect(yield* SessionInput.hasPending(db, sessionID, "steer")).toBe(true)
       expect(
         yield* db
@@ -804,53 +818,59 @@ describe("SessionRunnerLLM", () => {
 
       systemUnavailable = false
       yield* session.prompt({ id: messageID, sessionID, prompt: PromptInput.Prompt.make({ text: "First" }) })
-      yield* session.wait(sessionID)
+      yield* scenario.run(function* () {
+        const call = yield* scenario.llm.next()
+        expect(call.request.messages.map((message) => message.role)).toEqual(["user"])
+        yield* call.respond.events()
+      })
 
-      expect(requests).toHaveLength(1)
-      expect(requests[0]?.messages.map((message) => message.role)).toEqual(["user"])
+      expect(yield* scenario.llm.requests).toHaveLength(1)
     }),
   )
 
-  it.effect("interrupts a source Location runner after a Session moves", () =>
+  scenarioIt("interrupts a source Location runner after a Session moves", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
-      requests.length = 0
-      response = []
-      yield* session.resume(sessionID)
 
-      yield* events.publish(SessionEvent.Moved, {
-        sessionID,
-        location: Location.Ref.make({ directory: AbsolutePath.make("/moved") }),
+      const exit = yield* scenario.run(function* () {
+        yield* (yield* scenario.llm.next()).respond.events()
+        yield* session.wait(sessionID)
+
+        yield* events.publish(SessionEvent.Moved, {
+          sessionID,
+          location: Location.Ref.make({ directory: AbsolutePath.make("/moved") }),
+        })
+        expect(
+          yield* db
+            .select()
+            .from(InstructionCheckpointTable)
+            .where(eq(InstructionCheckpointTable.session_id, sessionID))
+            .get(),
+        ).toBeUndefined()
+
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
+        return yield* session.resume(sessionID).pipe(Effect.exit)
       })
-      expect(
-        yield* db
-          .select()
-          .from(InstructionCheckpointTable)
-          .where(eq(InstructionCheckpointTable.session_id, sessionID))
-          .get(),
-      ).toBeUndefined()
-
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
-      const exit = yield* session.resume(sessionID).pipe(Effect.exit)
 
       expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true)
-      expect(requests).toHaveLength(1)
+      expect(yield* scenario.llm.requests).toHaveLength(1)
       expect(yield* SessionInput.hasPending(db, sessionID, "steer")).toBe(true)
     }),
   )
 
-  it.effect("copies the context checkpoint to a fork", () =>
+  scenarioIt("copies the context checkpoint to a fork", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
       const { db } = yield* Database.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
-      response = []
-      yield* session.resume(sessionID)
+      yield* scenario.run(function* () {
+        yield* (yield* scenario.llm.next()).respond.events()
+      })
 
       const forked = yield* session.fork({ sessionID })
 
@@ -872,30 +892,32 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  it.effect("heals an undecodable stored applied record by re-announcing context", () =>
+  scenarioIt("heals an undecodable stored applied record by re-announcing context", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
       const { db } = yield* Database.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
-      response = []
-      yield* session.resume(sessionID)
-      yield* db
-        .update(InstructionCheckpointTable)
-        .set({ snapshot: { invalid: { value: "bad" } } })
-        .where(eq(InstructionCheckpointTable.session_id, sessionID))
-        .run()
-        .pipe(Effect.orDie)
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
-      requests.length = 0
+      yield* scenario.run(function* () {
+        const first = yield* scenario.llm.next()
+        yield* db
+          .update(InstructionCheckpointTable)
+          .set({ snapshot: { invalid: { value: "bad" } } })
+          .where(eq(InstructionCheckpointTable.session_id, sessionID))
+          .run()
+          .pipe(Effect.orDie)
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
+        yield* first.respond.events()
 
-      yield* session.resume(sessionID)
+        const second = yield* scenario.llm.next()
+        // Comparison state was lost, so every source re-announces as new.
+        expect(second.request.system.map((part) => part.text)).toEqual([defaultSystem, "Initial context"])
+        expect(second.request.messages.map((message) => message.role)).toEqual(["user", "system", "user"])
+        expect(second.request.messages.at(1)?.content).toEqual([{ type: "text", text: "Initial context" }])
+        yield* second.respond.events()
+      })
 
-      // Comparison state was lost, so every source re-announces as new.
-      expect(requests).toHaveLength(1)
-      expect(requests[0]?.system.map((part) => part.text)).toEqual([defaultSystem, "Initial context"])
-      expect(requests[0]?.messages.map((message) => message.role)).toEqual(["user", "system", "user"])
-      expect(requests[0]?.messages.at(1)?.content).toEqual([{ type: "text", text: "Initial context" }])
+      expect(yield* scenario.llm.requests).toHaveLength(2)
       const healed = yield* db
         .select({ snapshot: InstructionCheckpointTable.snapshot })
         .from(InstructionCheckpointTable)
@@ -906,25 +928,26 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  it.effect("reuses one durable baseline after the context producer changes", () =>
+  scenarioIt("reuses one durable baseline after the context producer changes", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = []
-      yield* session.resume(sessionID)
-      systemBaseline = "Changed context"
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
-      yield* session.resume(sessionID)
+      yield* scenario.run(function* () {
+        const first = yield* scenario.llm.next()
+        expect(first.request.system.map((part) => part.text)).toEqual([defaultSystem, "Initial context"])
+        systemBaseline = "Changed context"
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
+        yield* first.respond.events()
 
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        [defaultSystem, "Initial context"],
-        [defaultSystem, "Initial context"],
-      ])
-      expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "system", "user"])
-      expect(requests[1]?.messages.at(1)?.content).toEqual([{ type: "text", text: "Changed context" }])
+        const second = yield* scenario.llm.next()
+        expect(second.request.system.map((part) => part.text)).toEqual([defaultSystem, "Initial context"])
+        expect(second.request.messages.map((message) => message.role)).toEqual(["user", "system", "user"])
+        expect(second.request.messages.at(1)?.content).toEqual([{ type: "text", text: "Changed context" }])
+        yield* second.respond.events()
+      })
+
       expect(yield* session.messages({ sessionID })).toHaveLength(3)
       const { db } = yield* Database.Service
       expect(
@@ -940,25 +963,25 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  it.effect("uses the selected model family prompt when the agent does not override it", () =>
+  scenarioIt("uses the selected model family prompt when the agent does not override it", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       currentModel = Model.make({ id: "gpt-5", provider: "openai", route: OpenAIChat.route })
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = fragmentFixture("text", "text-provider-prompt", ["Done"]).completeEvents
-      yield* session.resume(sessionID)
-
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual([
-        expect.stringContaining("You are OpenCode, You and the user share the same workspace"),
-        "Initial context",
-      ])
+      yield* scenario.run(function* () {
+        const call = yield* scenario.llm.next()
+        expect(call.request.system.map((part) => part.text)).toEqual([
+          expect.stringContaining("You are OpenCode, You and the user share the same workspace"),
+          "Initial context",
+        ])
+        yield* call.respond.text("Done", { id: "text-provider-prompt" })
+      })
     }),
   )
 
-  it.effect("uses the selected model family prompt when the agent system override is empty", () =>
+  scenarioIt("uses the selected model family prompt when the agent system override is empty", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       currentModel = Model.make({ id: "gpt-5", provider: "openai", route: OpenAIChat.route })
@@ -972,18 +995,18 @@ describe("SessionRunnerLLM", () => {
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = fragmentFixture("text", "text-empty-agent-system", ["Done"]).completeEvents
-      yield* session.resume(sessionID)
-
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual([
-        expect.stringContaining("You are OpenCode, You and the user share the same workspace"),
-        "Initial context",
-      ])
+      yield* scenario.run(function* () {
+        const call = yield* scenario.llm.next()
+        expect(call.request.system.map((part) => part.text)).toEqual([
+          expect.stringContaining("You are OpenCode, You and the user share the same workspace"),
+          "Initial context",
+        ])
+        yield* call.respond.text("Done", { id: "text-empty-agent-system" })
+      })
     }),
   )
 
-  it.effect("includes the effective default agent system before durable context", () =>
+  scenarioIt("includes the effective default agent system before durable context", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const agent = yield* AgentV2.Service
@@ -996,15 +1019,15 @@ describe("SessionRunnerLLM", () => {
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = fragmentFixture("text", "text-build", ["Done"]).completeEvents
-      yield* session.resume(sessionID)
-
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Build agent instructions", "Initial context"])
+      yield* scenario.run(function* () {
+        const call = yield* scenario.llm.next()
+        expect(call.request.system.map((part) => part.text)).toEqual(["Build agent instructions", "Initial context"])
+        yield* call.respond.text("Done", { id: "text-build" })
+      })
     }),
   )
 
-  it.effect("uses the configured default agent system for omitted-agent sessions", () =>
+  scenarioIt("uses the configured default agent system for omitted-agent sessions", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const agent = yield* AgentV2.Service
@@ -1022,16 +1045,17 @@ describe("SessionRunnerLLM", () => {
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = fragmentFixture("text", "text-reviewer", ["Done"]).completeEvents
-      yield* session.resume(sessionID)
+      yield* scenario.run(function* () {
+        const call = yield* scenario.llm.next()
+        expect(call.request.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context"])
+        yield* call.respond.text("Done", { id: "text-reviewer" })
+      })
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context"])
       expect((yield* session.messages({ sessionID }))[0]).toMatchObject({ type: "assistant", agent: "reviewer" })
     }),
   )
 
-  it.effect("uses only the agent prompt and durable baseline as system parts", () =>
+  scenarioIt("uses only the agent prompt and durable baseline as system parts", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const agent = yield* AgentV2.Service
@@ -1044,15 +1068,15 @@ describe("SessionRunnerLLM", () => {
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = fragmentFixture("text", "text-no-system", ["Done"]).completeEvents
-      yield* session.resume(sessionID)
-
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Build agent instructions", "Initial context"])
+      yield* scenario.run(function* () {
+        const call = yield* scenario.llm.next()
+        expect(call.request.system.map((part) => part.text)).toEqual(["Build agent instructions", "Initial context"])
+        yield* call.respond.text("Done", { id: "text-no-system" })
+      })
     }),
   )
 
-  it.effect("uses an explicitly selected non-build agent system", () =>
+  scenarioIt("uses an explicitly selected non-build agent system", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const { db } = yield* Database.Service
@@ -1072,16 +1096,17 @@ describe("SessionRunnerLLM", () => {
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = fragmentFixture("text", "text-selected", ["Done"]).completeEvents
-      yield* session.resume(sessionID)
+      yield* scenario.run(function* () {
+        const call = yield* scenario.llm.next()
+        expect(call.request.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context"])
+        yield* call.respond.text("Done", { id: "text-selected" })
+      })
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context"])
       expect((yield* session.messages({ sessionID }))[0]).toMatchObject({ type: "assistant", agent: "reviewer" })
     }),
   )
 
-  it.effect("updates selected-agent skill guidance after an agent switch", () =>
+  scenarioIt("updates selected-agent skill guidance after an agent switch", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
@@ -1089,26 +1114,32 @@ describe("SessionRunnerLLM", () => {
       skillBaselines.set(AgentV2.ID.make("build"), "Build skills")
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = []
-      yield* session.resume(sessionID)
-      skillBaselines.set(AgentV2.ID.make("reviewer"), "Reviewer skills")
-      yield* events.publish(SessionEvent.AgentSelected, {
-        sessionID,
-        agent: "reviewer",
-      })
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
-      yield* session.resume(sessionID)
+      yield* scenario.run(function* () {
+        const first = yield* scenario.llm.next()
+        expect(first.request.system.map((part) => part.text)).toEqual([
+          defaultSystem,
+          "Initial context\n\nBuild skills",
+        ])
+        skillBaselines.set(AgentV2.ID.make("reviewer"), "Reviewer skills")
+        yield* events.publish(SessionEvent.AgentSelected, {
+          sessionID,
+          agent: "reviewer",
+        })
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
+        yield* first.respond.events()
 
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        [defaultSystem, "Initial context\n\nBuild skills"],
-        [defaultSystem, "Initial context\n\nBuild skills"],
-      ])
-      expect(systemTexts(requests[1]!)).toContainEqual(expect.stringContaining("Reviewer skills"))
+        const second = yield* scenario.llm.next()
+        expect(second.request.system.map((part) => part.text)).toEqual([
+          defaultSystem,
+          "Initial context\n\nBuild skills",
+        ])
+        expect(systemTexts(second.request)).toContainEqual(expect.stringContaining("Reviewer skills"))
+        yield* second.respond.events()
+      })
     }),
   )
 
-  it.effect("keeps the sampled agent when selection changes during observation", () =>
+  scenarioIt("keeps the sampled agent when selection changes during observation", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
@@ -1128,17 +1159,18 @@ describe("SessionRunnerLLM", () => {
       })
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = []
-      yield* session.resume(sessionID)
-
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        [defaultSystem, "Initial context\n\nBuild skills"],
-      ])
+      yield* scenario.run(function* () {
+        const call = yield* scenario.llm.next()
+        expect(call.request.system.map((part) => part.text)).toEqual([
+          defaultSystem,
+          "Initial context\n\nBuild skills",
+        ])
+        yield* call.respond.events()
+      })
     }),
   )
 
-  it.effect("keeps the sampled model when selection changes during model resolution", () =>
+  scenarioIt("keeps the sampled model when selection changes during model resolution", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
@@ -1156,38 +1188,40 @@ describe("SessionRunnerLLM", () => {
       })
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = []
-      yield* session.resume(sessionID)
-      expect(requests.map((request) => request.model)).toEqual([model])
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        [defaultSystem, "Initial context"],
-      ])
+      yield* scenario.run(function* () {
+        const call = yield* scenario.llm.next()
+        expect(call.request.model).toBe(model)
+        expect(call.request.system.map((part) => part.text)).toEqual([defaultSystem, "Initial context"])
+        yield* call.respond.events()
+      })
     }),
   )
 
-  it.effect("admits removed context as a chronological System message", () =>
+  scenarioIt("admits removed context as a chronological System message", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = []
-      yield* session.resume(sessionID)
-      systemRemoved = true
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
-      yield* session.resume(sessionID)
+      yield* scenario.run(function* () {
+        const first = yield* scenario.llm.next()
+        systemRemoved = true
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
+        yield* first.respond.events()
 
-      expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "system", "user"])
-      expect(requests[1]?.messages.at(1)?.content).toEqual([
-        { type: "text", text: "System context source removed: test/context" },
-      ])
+        const second = yield* scenario.llm.next()
+        expect(second.request.messages.map((message) => message.role)).toEqual(["user", "system", "user"])
+        expect(second.request.messages.at(1)?.content).toEqual([
+          { type: "text", text: "System context source removed: test/context" },
+        ])
+        yield* second.respond.events()
+      })
+
       expect(yield* session.messages({ sessionID })).toHaveLength(3)
     }),
   )
 
-  it.effect("renders API context entries through the belief lifecycle", () =>
+  scenarioIt("renders API context entries through the belief lifecycle", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
@@ -1195,120 +1229,136 @@ describe("SessionRunnerLLM", () => {
       yield* contextEntries.put({ sessionID, key: "deploy-target", value: "production" })
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = []
-      yield* session.resume(sessionID)
+      yield* scenario.run(function* () {
+        const first = yield* scenario.llm.next()
+        // String values render verbatim inside the tagged block at baseline.
+        expect(first.request.system.map((part) => part.text)).toEqual([
+          defaultSystem,
+          ["Initial context", "", '<context key="deploy-target">', "production", "</context>"].join("\n"),
+        ])
 
-      // String values render verbatim inside the tagged block at baseline.
-      expect(requests[0]?.system.map((part) => part.text)).toEqual([
-        defaultSystem,
-        ["Initial context", "", '<context key="deploy-target">', "production", "</context>"].join("\n"),
-      ])
+        // Non-string JSON pretty-prints; the change narrates as a System update.
+        yield* contextEntries.put({ sessionID, key: "deploy-target", value: { region: "us-east-1" } })
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
+        yield* first.respond.events()
 
-      // Non-string JSON pretty-prints; the change narrates as a System update.
-      yield* contextEntries.put({ sessionID, key: "deploy-target", value: { region: "us-east-1" } })
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
-      yield* session.resume(sessionID)
+        const second = yield* scenario.llm.next()
+        expect(second.request.messages.map((message) => message.role)).toEqual(["user", "system", "user"])
+        expect(second.request.messages.at(1)?.content).toEqual([
+          {
+            type: "text",
+            text: [
+              'The context under "deploy-target" changed and supersedes the previous value:',
+              '<context key="deploy-target">',
+              "{",
+              '  "region": "us-east-1"',
+              "}",
+              "</context>",
+            ].join("\n"),
+          },
+        ])
+        expect(yield* contextEntries.list(sessionID)).toEqual([
+          { key: "deploy-target", value: { region: "us-east-1" } },
+        ])
 
-      expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "system", "user"])
-      expect(requests[1]?.messages.at(1)?.content).toEqual([
-        {
-          type: "text",
-          text: [
-            'The context under "deploy-target" changed and supersedes the previous value:',
-            '<context key="deploy-target">',
-            "{",
-            '  "region": "us-east-1"',
-            "}",
-            "</context>",
-          ].join("\n"),
-        },
-      ])
-      expect(yield* contextEntries.list(sessionID)).toEqual([{ key: "deploy-target", value: { region: "us-east-1" } }])
+        // Deleting the row announces removal through the stored removal text.
+        yield* contextEntries.remove({ sessionID, key: "deploy-target" })
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Third" }), resume: false })
+        yield* second.respond.events()
 
-      // Deleting the row announces removal through the stored removal text.
-      yield* contextEntries.remove({ sessionID, key: "deploy-target" })
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Third" }), resume: false })
-      yield* session.resume(sessionID)
+        const third = yield* scenario.llm.next()
+        expect(third.request.messages.map((message) => message.role)).toEqual([
+          "user",
+          "system",
+          "user",
+          "system",
+          "user",
+        ])
+        expect(third.request.messages.at(-2)?.content).toEqual([
+          { type: "text", text: 'The context under "deploy-target" no longer applies. Disregard it.' },
+        ])
+        yield* third.respond.events()
+      })
 
-      expect(requests[2]?.messages.map((message) => message.role)).toEqual(["user", "system", "user", "system", "user"])
-      expect(requests[2]?.messages.at(-2)?.content).toEqual([
-        { type: "text", text: 'The context under "deploy-target" no longer applies. Disregard it.' },
-      ])
       expect(yield* contextEntries.list(sessionID)).toEqual([])
     }),
   )
 
-  it.effect("keeps the baseline and chronological System updates after a model switch", () =>
+  scenarioIt("keeps the baseline and chronological System updates after a model switch", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
       const events = yield* EventV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = []
-      yield* session.resume(sessionID)
-      systemBaseline = "Changed context"
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
-      yield* session.resume(sessionID)
-      yield* events.publish(SessionEvent.ModelSelected, {
-        sessionID,
-        model: { id: ModelV2.ID.make("replacement"), providerID: ProviderV2.ID.make("fake") },
-      })
-      systemBaseline = "Replacement context"
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Third" }), resume: false })
-      yield* session.resume(sessionID)
+      yield* scenario.run(function* () {
+        const first = yield* scenario.llm.next()
+        expect(first.request.system.map((part) => part.text)).toEqual([defaultSystem, "Initial context"])
+        systemBaseline = "Changed context"
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
+        yield* first.respond.events()
 
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        [defaultSystem, "Initial context"],
-        [defaultSystem, "Initial context"],
-        [defaultSystem, "Initial context"],
-      ])
-      expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "system", "user"])
-      expect(requests[2]?.messages.filter((message) => message.role === "system")).toHaveLength(2)
-      expect((yield* session.context(sessionID)).map((message) => message.type)).toEqual([
-        "user",
-        "system",
-        "user",
-        "model-switched",
-        "system",
-        "user",
-      ])
-      yield* replaySessionProjection(sessionID)
-      expect(yield* session.messages({ sessionID })).toHaveLength(6)
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Fourth" }), resume: false })
-      yield* session.resume(sessionID)
+        const second = yield* scenario.llm.next()
+        expect(second.request.system.map((part) => part.text)).toEqual([defaultSystem, "Initial context"])
+        expect(second.request.messages.map((message) => message.role)).toEqual(["user", "system", "user"])
+        yield* events.publish(SessionEvent.ModelSelected, {
+          sessionID,
+          model: { id: ModelV2.ID.make("replacement"), providerID: ProviderV2.ID.make("fake") },
+        })
+        systemBaseline = "Replacement context"
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Third" }), resume: false })
+        yield* second.respond.events()
+
+        const third = yield* scenario.llm.next()
+        expect(third.request.system.map((part) => part.text)).toEqual([defaultSystem, "Initial context"])
+        expect(third.request.messages.filter((message) => message.role === "system")).toHaveLength(2)
+        expect((yield* session.context(sessionID)).map((message) => message.type)).toEqual([
+          "user",
+          "system",
+          "user",
+          "model-switched",
+          "system",
+          "user",
+        ])
+        yield* replaySessionProjection(sessionID)
+        expect(yield* session.messages({ sessionID })).toHaveLength(6)
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Fourth" }), resume: false })
+        yield* third.respond.events()
+
+        yield* (yield* scenario.llm.next()).respond.events()
+      })
     }),
   )
 
-  it.effect("preserves the baseline while context is temporarily unavailable", () =>
+  scenarioIt("preserves the baseline while context is temporarily unavailable", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
       const events = yield* EventV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "First" }), resume: false })
 
-      requests.length = 0
-      response = []
-      yield* session.resume(sessionID)
-      yield* events.publish(SessionEvent.ModelSelected, {
-        sessionID,
-        model: { id: ModelV2.ID.make("replacement"), providerID: ProviderV2.ID.make("fake") },
-      })
-      systemUnavailable = true
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
-      yield* session.resume(sessionID)
-      systemUnavailable = false
-      systemBaseline = "Replacement context"
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Third" }), resume: false })
-      yield* session.resume(sessionID)
+      yield* scenario.run(function* () {
+        const first = yield* scenario.llm.next()
+        expect(first.request.system.map((part) => part.text)).toEqual([defaultSystem, "Initial context"])
+        yield* events.publish(SessionEvent.ModelSelected, {
+          sessionID,
+          model: { id: ModelV2.ID.make("replacement"), providerID: ProviderV2.ID.make("fake") },
+        })
+        systemUnavailable = true
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Second" }), resume: false })
+        yield* first.respond.events()
 
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        [defaultSystem, "Initial context"],
-        [defaultSystem, "Initial context"],
-        [defaultSystem, "Initial context"],
-      ])
+        const second = yield* scenario.llm.next()
+        expect(second.request.system.map((part) => part.text)).toEqual([defaultSystem, "Initial context"])
+        systemUnavailable = false
+        systemBaseline = "Replacement context"
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Third" }), resume: false })
+        yield* second.respond.events()
+
+        const third = yield* scenario.llm.next()
+        expect(third.request.system.map((part) => part.text)).toEqual([defaultSystem, "Initial context"])
+        yield* third.respond.events()
+      })
     }),
   )
 
@@ -1763,38 +1813,24 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  it.effect("continues with reloaded history after durably settling one local tool call", () =>
+  scenarioIt("continues with reloaded history after durably settling one local tool call", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Echo this" }), resume: false })
 
-      requests.length = 0
       authorizations.length = 0
       executions.length = 0
-      streamGate = undefined
-      streamStarted = undefined
-      responses = [
-        [
-          LLMEvent.stepStart({ index: 0 }),
-          LLMEvent.toolCall({ id: "call-echo", name: "echo", input: { text: "hello" } }),
-          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
-          LLMEvent.finish({ reason: "tool-calls" }),
-        ],
-        [
-          LLMEvent.stepStart({ index: 0 }),
-          LLMEvent.textStart({ id: "text-final" }),
-          LLMEvent.textDelta({ id: "text-final", text: "Done" }),
-          LLMEvent.textEnd({ id: "text-final" }),
-          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
-          LLMEvent.finish({ reason: "stop" }),
-        ],
-      ]
+      yield* scenario.run(function* () {
+        const first = yield* scenario.llm.next()
+        yield* first.respond.toolCall("echo", { text: "hello" }, { id: "call-echo" })
 
-      yield* session.resume(sessionID)
+        const second = yield* scenario.llm.next()
+        expect(second.request.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
+        yield* second.respond.text("Done", { id: "text-final" })
+      })
 
-      expect(requests).toHaveLength(2)
-      expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
+      expect(yield* scenario.llm.requests).toHaveLength(2)
       expect(authorizations).toMatchObject([{ sessionID, toolCallID: "call-echo" }])
       expect(executions).toEqual(["hello"])
       const context = yield* session.context(sessionID)
@@ -2181,40 +2217,24 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  it.effect("steers an active provider turn with newly recorded prompts", () =>
+  scenarioIt("steers an active provider turn with newly recorded prompts", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Start working" }), resume: false })
 
-      requests.length = 0
-      responses = [
-        [
-          LLMEvent.stepStart({ index: 0 }),
-          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
-          LLMEvent.finish({ reason: "stop" }),
-        ],
-        [
-          LLMEvent.stepStart({ index: 0 }),
-          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
-          LLMEvent.finish({ reason: "stop" }),
-        ],
-      ]
-      streamGate = yield* Deferred.make<void>()
-      streamStarted = yield* Deferred.make<void>()
+      yield* scenario.run(function* () {
+        const first = yield* scenario.llm.next()
+        expect(userTexts(first.request)).toEqual(["Start working"])
+        yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Change direction" }) })
+        yield* first.respond.stop()
 
-      const first = yield* session.resume(sessionID).pipe(Effect.forkChild)
-      yield* Deferred.await(streamStarted)
-      yield* session.prompt({ sessionID, prompt: PromptInput.Prompt.make({ text: "Change direction" }) })
-      yield* Deferred.succeed(streamGate, undefined)
-      yield* Fiber.join(first)
-      streamGate = undefined
-      streamStarted = undefined
-      yield* Effect.yieldNow
+        const second = yield* scenario.llm.next()
+        expect(userTexts(second.request)).toEqual(["Start working", "Change direction"])
+        yield* second.respond.stop()
+      })
 
-      expect(requests).toHaveLength(2)
-      expect(userTexts(requests[0]!)).toEqual(["Start working"])
-      expect(userTexts(requests[1]!)).toEqual(["Start working", "Change direction"])
+      expect(yield* scenario.llm.requests).toHaveLength(2)
       expect((yield* session.context(sessionID)).map((message) => message.type)).toEqual([
         "user",
         "assistant",
@@ -3759,7 +3779,7 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  it.effect("projects raw provider stream failures as terminal assistant step failures", () =>
+  scenarioIt("projects raw provider stream failures as terminal assistant step failures", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
@@ -3769,9 +3789,14 @@ describe("SessionRunnerLLM", () => {
         resume: false,
       })
       const failure = invalidRequest()
-      responseStream = Stream.fail(failure)
 
-      expect(yield* session.resume(sessionID).pipe(Effect.flip)).toBe(failure)
+      expect(
+        yield* scenario
+          .run(function* () {
+            yield* (yield* scenario.llm.next()).respond.fail(failure)
+          })
+          .pipe(Effect.flip),
+      ).toBe(failure)
       yield* replaySessionProjection(sessionID)
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "user", text: "Fail raw stream durably" },
