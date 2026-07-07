@@ -54,6 +54,7 @@
     "@opencode-ai/client": "workspace:*",
     "@opencode-ai/core": "workspace:*",
     "@opencode-ai/plugin": "workspace:*",
+    "@opencode-ai/schema": "workspace:*",
     "@opencode-ai/sdk": "workspace:*",
     "@opencode-ai/simulation": "workspace:*",
     "@opencode-ai/ui": "workspace:*",

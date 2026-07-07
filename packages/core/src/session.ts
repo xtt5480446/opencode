@@ -11,6 +11,7 @@ import { Location } from "./location"
 import { SessionMessage } from "./session/message"
 import { Base64, FileAttachment, Prompt } from "@opencode-ai/schema/prompt"
 import { PromptInput } from "@opencode-ai/schema/prompt-input"
+import { Mcp } from "@opencode-ai/schema/mcp"
 import { EventV2 } from "./event"
 import { Database } from "./database/database"
 import { SessionProjector } from "./session/projector"
@@ -45,6 +46,7 @@ import { Shell } from "./shell"
 import { Shell as ShellSchema } from "@opencode-ai/schema/shell"
 import { KeyedMutex } from "./effect/keyed-mutex"
 import { fileURLToPath } from "url"
+import { MCP } from "./mcp/index"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
@@ -273,6 +275,7 @@ const layer = Layer.effect(
     const scope = yield* Scope.Scope
     const activeShells = new Set<SessionSchema.ID>()
     const shellLocks = KeyedMutex.makeUnsafe<SessionSchema.ID>()
+    const promptLocks = KeyedMutex.makeUnsafe<SessionMessage.ID>()
     const decodeMessage = Schema.decodeUnknownEffect(SessionMessage.Message)
     const isDurableSessionEvent = Schema.is(SessionEvent.Durable)
     const decode = (row: typeof SessionMessageTable.$inferSelect) =>
@@ -475,40 +478,48 @@ const layer = Layer.effect(
               EventV2.isSynced(item) || isDurableSessionEvent(item),
           ),
         ),
-      prompt: Effect.fn("V2Session.prompt")((input) =>
-        Effect.uninterruptible(
-          Effect.gen(function* () {
-            const session = yield* result.get(input.sessionID)
-            // A staged revert must be committed before admitting new input so the prompt
-            // continues from the reverted boundary rather than stale post-boundary history.
-            if (session.revert)
-              yield* SessionRevert.commit(session).pipe(Effect.provideService(EventV2.Service, events))
-            const prompt = yield* resolvePrompt(input.prompt).pipe(Effect.provideService(FSUtil.Service, fs))
-            const messageID = input.id ?? SessionMessage.ID.create()
-            const delivery = input.delivery ?? "steer"
-            const expected = { sessionID: input.sessionID, messageID, prompt, delivery }
-            const admitted = yield* SessionInput.admit(db, events, {
-              id: messageID,
-              sessionID: input.sessionID,
-              prompt,
-              delivery,
-            }).pipe(
-              Effect.catchDefect((defect) =>
-                defect instanceof SessionInput.LifecycleConflict
-                  ? new PromptConflictError({ sessionID: input.sessionID, messageID })
-                  : Effect.die(defect),
-              ),
-            )
-            if (!SessionInput.equivalent(admitted, expected))
-              return yield* new PromptConflictError({ sessionID: input.sessionID, messageID })
-            if (input.resume !== false) {
-              if (activeShells.has(admitted.sessionID)) return admitted
-              yield* execution.wake(admitted.sessionID)
-            }
-            return admitted
-          }),
-        ),
-      ),
+      prompt: Effect.fn("V2Session.prompt")((input) => {
+        const admit = Effect.gen(function* () {
+          const session = yield* result.get(input.sessionID)
+          // A staged revert must be committed before admitting new input so the prompt
+          // continues from the reverted boundary rather than stale post-boundary history.
+          if (session.revert)
+            yield* SessionRevert.commit(session).pipe(Effect.provideService(EventV2.Service, events))
+          const messageID = input.id ?? SessionMessage.ID.create()
+          const delivery = input.delivery ?? "steer"
+          const recorded = input.id === undefined ? undefined : yield* SessionInput.find(db, input.id)
+          const readMcpResource = (resource: Mcp.ResourceReference) =>
+            Effect.gen(function* () {
+              const mcp = yield* MCP.Service
+              return yield* mcp.readResource(resource)
+            }).pipe(Effect.provide(locations.get(session.location)))
+          const prompt =
+            recorded?.type === "prompt" && matchesResolvedMcpPrompt(recorded.prompt, input.prompt)
+              ? recorded.prompt
+              : yield* resolvePrompt(input.prompt, fs, readMcpResource)
+          const expected = { sessionID: input.sessionID, messageID, prompt, delivery }
+          const admitted = yield* SessionInput.admit(db, events, {
+            id: messageID,
+            sessionID: input.sessionID,
+            prompt,
+            delivery,
+          }).pipe(
+            Effect.catchDefect((defect) =>
+              defect instanceof SessionInput.LifecycleConflict
+                ? new PromptConflictError({ sessionID: input.sessionID, messageID })
+                : Effect.die(defect),
+            ),
+          )
+          if (!SessionInput.equivalent(admitted, expected))
+            return yield* new PromptConflictError({ sessionID: input.sessionID, messageID })
+          if (input.resume !== false) {
+            if (activeShells.has(admitted.sessionID)) return admitted
+            yield* execution.wake(admitted.sessionID)
+          }
+          return admitted
+        })
+        return Effect.uninterruptible(input.id === undefined ? admit : promptLocks.withLock(input.id)(admit))
+      }),
       command: Effect.fn("V2Session.command")(function* (input) {
         const session = yield* result.get(input.sessionID)
         const commands = yield* CommandV2.Service.pipe(Effect.provide(locations.get(session.location)))
@@ -742,20 +753,75 @@ function synthesizeTerminalShellInfo(started: ShellSchema.Info): ShellSchema.Inf
   }
 }
 
-const resolvePrompt = Effect.fn("V2Session.resolvePrompt")(function* (input: PromptInput.Prompt) {
-  const fs = yield* FSUtil.Service
+const resolvePrompt = Effect.fn("V2Session.resolvePrompt")(function* (
+  input: PromptInput.Prompt,
+  fs: FSUtil.Interface,
+  readMcpResource: (
+    input: Mcp.ResourceReference,
+  ) => Effect.Effect<MCP.ResourceContent | undefined, MCP.NotFoundError>,
+) {
   const files = input.files
-    ? yield* Effect.forEach(input.files, (file) => materializeAttachment(fs, file), { concurrency: 8 })
+    ? (yield* Effect.forEach(input.files, (file) => materializeAttachment(fs, readMcpResource, file), {
+        concurrency: 8,
+      })).flat()
     : undefined
   return Prompt.make({ text: input.text, agents: input.agents, files })
 })
 
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+const MAX_MCP_ATTACHMENT_PARTS = 100
 
 const materializeAttachment = Effect.fn("V2Session.materializeAttachment")(function* (
   fs: FSUtil.Interface,
+  readMcpResource: (
+    input: Mcp.ResourceReference,
+  ) => Effect.Effect<MCP.ResourceContent | undefined, MCP.NotFoundError>,
   input: PromptInput.FileAttachment,
 ) {
+  const reference = Mcp.parseResourceUri(input.uri)
+  if (reference) {
+    const resource = yield* readMcpResource(reference).pipe(
+      Effect.mapError(
+        (error) => new AttachmentError({ uri: input.uri, message: `Unable to read MCP resource: ${error.message}` }),
+      ),
+    )
+    if (!resource || resource.contents.length === 0)
+      return yield* new AttachmentError({ uri: input.uri, message: `Unable to read MCP resource: ${reference.uri}` })
+    if (
+      resource.contents.length > MAX_MCP_ATTACHMENT_PARTS ||
+      resource.contents.reduce(
+        (total, part) => total + (part.type === "text" ? Buffer.byteLength(part.text) : base64ByteLength(part.blob)),
+        0,
+      ) > MAX_ATTACHMENT_BYTES
+    )
+      return yield* new AttachmentError({
+        uri: input.uri,
+        message: `MCP resource exceeds attachment limits: ${reference.uri}`,
+      })
+    return yield* Effect.forEach(resource.contents, (part, index) =>
+      Effect.gen(function* () {
+        const bytes = part.type === "text" ? Buffer.from(part.text) : yield* decodeMcpBlob(input.uri, part.blob)
+        return yield* createAttachment(
+          index === 0
+            ? input
+            : {
+                ...input,
+                name: `${input.name ?? part.uri}-${index + 1}`,
+                mention: undefined,
+              },
+          {
+            bytes,
+            source: { type: "uri", uri: input.uri },
+            start: undefined,
+            end: undefined,
+            name: undefined,
+            mime: part.type === "text" ? "text/plain" : undefined,
+          },
+        )
+      }),
+    )
+  }
+
   const resolved = input.uri.startsWith("data:")
     ? {
         bytes: yield* decodeDataURL(input.uri),
@@ -766,6 +832,20 @@ const materializeAttachment = Effect.fn("V2Session.materializeAttachment")(funct
         mime: undefined,
       }
     : yield* readFileAttachment(fs, input.uri)
+  return [yield* createAttachment(input, resolved)]
+})
+
+const createAttachment = Effect.fnUntraced(function* (
+  input: PromptInput.FileAttachment,
+  resolved: {
+    readonly bytes: Uint8Array
+    readonly source: { readonly type: "inline" } | { readonly type: "uri"; readonly uri: string }
+    readonly start: number | undefined
+    readonly end: number | undefined
+    readonly name: string | undefined
+    readonly mime: string | undefined
+  },
+) {
   if (resolved.bytes.byteLength > MAX_ATTACHMENT_BYTES)
     return yield* new AttachmentError({
       uri: input.uri,
@@ -792,6 +872,45 @@ const materializeAttachment = Effect.fn("V2Session.materializeAttachment")(funct
     mention: input.mention,
   })
 })
+
+function decodeMcpBlob(uri: string, blob: string) {
+  return Effect.try({
+    try: () => {
+      const bytes = Buffer.from(blob, "base64")
+      if (bytes.toString("base64") !== blob) throw new Error("Non-canonical base64")
+      return bytes
+    },
+    catch: () => new AttachmentError({ uri, message: `MCP resource returned invalid base64 content: ${uri}` }),
+  })
+}
+
+function base64ByteLength(value: string) {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0
+  return Math.floor(value.length * 0.75) - padding
+}
+
+function matchesResolvedMcpPrompt(resolved: Prompt, input: PromptInput.Prompt) {
+  if (resolved.text !== input.text || JSON.stringify(resolved.agents ?? []) !== JSON.stringify(input.agents ?? []))
+    return false
+  const files = input.files ?? []
+  if (files.length === 0 || files.some((file) => Mcp.parseResourceUri(file.uri) === undefined)) return false
+  const uris = files.map((file) => file.uri)
+  if (new Set(uris).size !== uris.length) return false
+  const resolvedFiles = resolved.files ?? []
+  const sources = resolvedFiles.flatMap((file) => (file.source.type === "uri" ? [file.source.uri] : []))
+  if (sources.length !== resolvedFiles.length) return false
+  if (JSON.stringify(sources.filter((uri, index) => index === 0 || uri !== sources[index - 1])) !== JSON.stringify(uris))
+    return false
+  return files.every((file) => {
+    const first = resolvedFiles.find((resolved) => resolved.source.type === "uri" && resolved.source.uri === file.uri)
+    if (!first) return false
+    return (
+      first.name === file.name &&
+      first.description === file.description &&
+      JSON.stringify(first.mention) === JSON.stringify(file.mention)
+    )
+  })
+}
 
 const readFileAttachment = Effect.fn("V2Session.readFileAttachment")(function* (fs: FSUtil.Interface, uri: string) {
   const url = yield* Effect.try({

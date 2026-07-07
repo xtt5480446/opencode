@@ -21,6 +21,7 @@ import type {
   SkillV2Info,
   V2Event,
 } from "@opencode-ai/sdk/v2"
+import type { ServerMcpCatalogOutput } from "@opencode-ai/client/promise"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import { useSDK } from "./sdk"
@@ -37,6 +38,7 @@ type LocationData = {
   command?: CommandV2Info[]
   integration?: IntegrationInfo[]
   mcp?: McpServer[]
+  mcpResource?: ServerMcpCatalogOutput["data"]
   model?: ModelV2Info[]
   provider?: ProviderV2Info[]
   reference?: ReferenceInfo[]
@@ -113,6 +115,8 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
     let connectionGeneration = 0
     let statusChanges: Set<string> | undefined
     let bootstrapping: Promise<void> | undefined
+    const pendingMcpResourceRefresh = new Map<string, LocationRef>()
+    const mcpResourceRefreshes = new Map<string, Promise<void>>()
 
     function setSessionStatus(sessionID: string, status: DataSessionStatus) {
       statusChanges?.add(sessionID)
@@ -757,6 +761,15 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           if (bootstrapping) break
           void result.location.mcp.refresh(event.location)
           break
+        case "mcp.resources.changed": {
+          const location = event.location ?? defaultLocation()
+          if (bootstrapping || mcpResourceRefreshes.has(locationKey(location))) {
+            pendingMcpResourceRefresh.set(locationKey(location), location)
+            break
+          }
+          void result.location.mcp.resource.refresh(location)
+          break
+        }
       }
     }
 
@@ -942,6 +955,32 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             const key = locationKey(result.data.location)
             setStore("location", key, { ...store.location[key], mcp: result.data.data })
           },
+          resource: {
+            catalog(location?: LocationRef) {
+              return store.location[locationKey(location ?? defaultLocation())]?.mcpResource
+            },
+            refresh(ref?: LocationRef) {
+              const location = ref ?? defaultLocation()
+              const key = locationKey(location)
+              const active = mcpResourceRefreshes.get(key)
+              if (active) return active
+              const refresh = sdk.api["server.mcp"]
+                .catalog({ location: locationQuery(location) })
+                .then((result) => {
+                  const key = locationKey(result.location)
+                  setStore("location", key, { ...store.location[key], mcpResource: mutable(result.data) })
+                })
+                .finally(() => {
+                  mcpResourceRefreshes.delete(key)
+                  const pending = pendingMcpResourceRefresh.get(key)
+                  if (!pending || bootstrapping) return
+                  pendingMcpResourceRefresh.delete(key)
+                  void result.location.mcp.resource.refresh(pending)
+                })
+              mcpResourceRefreshes.set(key, refresh)
+              return refresh
+            },
+          },
         },
         model: {
           list(location?: LocationRef) {
@@ -1010,6 +1049,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         result.location.agent.refresh(),
         result.location.integration.refresh(),
         result.location.mcp.refresh(),
+        result.location.mcp.resource.refresh(),
         result.location.model.refresh(),
         result.location.provider.refresh(),
         result.location.reference.refresh(),
@@ -1023,6 +1063,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         })
         .finally(() => {
           bootstrapping = undefined
+          for (const [key, location] of pendingMcpResourceRefresh) {
+            if (mcpResourceRefreshes.has(key)) continue
+            pendingMcpResourceRefresh.delete(key)
+            void result.location.mcp.resource.refresh(location)
+          }
         })
       return bootstrapping
     }

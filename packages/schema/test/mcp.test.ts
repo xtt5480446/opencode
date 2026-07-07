@@ -3,6 +3,16 @@ import { Schema } from "effect"
 import { Mcp } from "../src/mcp.js"
 
 describe("Mcp resources", () => {
+  test("round trips canonical resource attachment URIs", () => {
+    const reference = { server: "Docs & Search", uri: "docs://guide/chapter?q=one two" }
+    const uri = Mcp.resourceUri(reference)
+
+    expect(uri).toBe("mcp://resource?server=Docs+%26+Search&uri=docs%3A%2F%2Fguide%2Fchapter%3Fq%3Done+two")
+    expect(Mcp.parseResourceUri(uri)).toEqual(reference)
+    expect(Mcp.parseResourceUri(`${uri}&extra=true`)).toBeUndefined()
+    expect(Mcp.parseResourceUri("docs://guide")).toBeUndefined()
+  })
+
   test("decodes resource catalogs and omits absent metadata", () => {
     const value = Schema.decodeUnknownSync(Mcp.ResourceCatalog)({
       resources: [{ server: "docs", name: "Readme", uri: "docs://readme" }],

@@ -24,6 +24,8 @@ import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionInput } from "@opencode-ai/core/session/input"
 import { SessionInputTable, SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
+import { MCP } from "@opencode-ai/core/mcp/index"
+import { Mcp } from "@opencode-ai/schema/mcp"
 import { testEffect } from "./lib/effect"
 
 const executionCalls: SessionV2.ID[] = []
@@ -49,20 +51,62 @@ const execution = Layer.succeed(
     awaitIdle: () => Effect.void,
   }),
 )
+let mcpResourcesAvailable = true
+let mcpResourceReads = 0
+const mcp = Layer.succeed(
+  MCP.Service,
+  MCP.Service.of({
+    servers: () => Effect.succeed([]),
+    tools: () => Effect.succeed([]),
+    callTool: () => Effect.die("unused mcp.callTool"),
+    instructions: () => Effect.succeed([]),
+    prompts: () => Effect.succeed([]),
+    prompt: () => Effect.succeed(undefined),
+    resourceCatalog: () => Effect.succeed(MCP.ResourceCatalog.make({ resources: [], templates: [] })),
+    readResource: (input) =>
+      Effect.sync(() => {
+        mcpResourceReads++
+        if (!mcpResourcesAvailable || input.server !== "docs") return undefined
+        if (input.uri === "docs://many")
+          return MCP.ResourceContent.make({
+            server: "docs",
+            uri: input.uri,
+            contents: Array.from({ length: 101 }, (_, index) => ({
+              type: "text" as const,
+              uri: `docs://many/${index}`,
+              text: "",
+            })),
+          })
+        if (input.uri !== "docs://readme") return undefined
+        return MCP.ResourceContent.make({
+          server: "docs",
+          uri: input.uri,
+          contents: [
+            { type: "text", uri: input.uri, text: '{"title":"Readme"}', mimeType: "application/json" },
+            { type: "blob", uri: "docs://logo", blob: "iVBORw0KGgo=", mimeType: "application/octet-stream" },
+          ],
+        })
+      }),
+  }),
+)
 const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([Database.node, EventV2.node, SessionProjector.node, SessionStore.node, SessionV2.node]),
-    [[SessionExecution.node, execution]],
+    [
+      [SessionExecution.node, execution],
+      [MCP.node, mcp],
+    ],
   ),
 )
 const sessionID = SessionV2.ID.make("ses_prompt_test")
 const messageID = SessionMessage.ID.create()
+const directory = AbsolutePath.make(process.cwd())
 
 const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service
   yield* db
     .insert(ProjectTable)
-    .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+    .values({ id: Project.ID.global, worktree: directory, sandboxes: [] })
     .onConflictDoNothing()
     .run()
     .pipe(Effect.orDie)
@@ -72,7 +116,7 @@ const setup = Effect.gen(function* () {
       id: sessionID,
       project_id: Project.ID.global,
       slug: "test",
-      directory: "/project",
+      directory,
       title: "test",
       version: "test",
     })
@@ -340,6 +384,135 @@ describe("SessionV2.prompt", () => {
       ])
       const stored = yield* admitted(message.id)
       expect(stored?.type === "prompt" ? stored.prompt.files : undefined).toEqual(message.prompt.files)
+    }),
+  )
+
+  it.effect("materializes MCP resource content before admission", () =>
+    Effect.gen(function* () {
+      yield* setup
+      mcpResourcesAvailable = true
+      const session = yield* SessionV2.Service
+      const uri = Mcp.resourceUri({ server: "docs", uri: "docs://readme" })
+
+      const message = yield* session.prompt({
+        sessionID,
+        prompt: {
+          text: "Inspect @Readme",
+          files: [
+            {
+              uri,
+              name: "Readme",
+              description: "Project documentation",
+              mention: { start: 8, end: 15, text: "@Readme" },
+            },
+          ],
+        },
+        resume: false,
+      })
+
+      expect(message.prompt.files).toEqual([
+        {
+          data: Buffer.from('{"title":"Readme"}').toString("base64"),
+          mime: "text/plain",
+          source: { type: "uri", uri },
+          name: "Readme",
+          description: "Project documentation",
+          mention: { start: 8, end: 15, text: "@Readme" },
+        },
+        {
+          data: "iVBORw0KGgo=",
+          mime: "image/png",
+          source: { type: "uri", uri },
+          name: "Readme-2",
+          description: "Project documentation",
+        },
+      ])
+      const stored = yield* admitted(message.id)
+      expect(stored?.type === "prompt" ? stored.prompt.files : undefined).toEqual(message.prompt.files)
+    }),
+  )
+
+  it.effect("rejects unavailable MCP resource attachments", () =>
+    Effect.gen(function* () {
+      yield* setup
+      mcpResourcesAvailable = true
+      const session = yield* SessionV2.Service
+      const uri = Mcp.resourceUri({ server: "docs", uri: "docs://missing" })
+
+      const error = yield* session
+        .prompt({ sessionID, prompt: { text: "Inspect this", files: [{ uri }] }, resume: false })
+        .pipe(Effect.flip)
+
+      expect(error).toMatchObject({
+        _tag: "Session.AttachmentError",
+        uri,
+        message: "Unable to read MCP resource: docs://missing",
+      })
+    }),
+  )
+
+  it.effect("reuses durable MCP content for exact prompt retries", () =>
+    Effect.gen(function* () {
+      yield* setup
+      mcpResourcesAvailable = true
+      mcpResourceReads = 0
+      const session = yield* SessionV2.Service
+      const uri = Mcp.resourceUri({ server: "docs", uri: "docs://readme" })
+      const input = {
+        id: messageID,
+        sessionID,
+        prompt: PromptInput.Prompt.make({ text: "Inspect this", files: [{ uri }] }),
+        resume: false as const,
+      }
+
+      const first = yield* session.prompt(input)
+      mcpResourcesAvailable = false
+      const retried = yield* session.prompt(input)
+
+      expect(retried).toEqual(first)
+      expect(mcpResourceReads).toBe(1)
+    }),
+  )
+
+  it.effect("coalesces concurrent MCP prompt retries before reading content", () =>
+    Effect.gen(function* () {
+      yield* setup
+      mcpResourcesAvailable = true
+      mcpResourceReads = 0
+      const session = yield* SessionV2.Service
+      const input = {
+        id: messageID,
+        sessionID,
+        prompt: PromptInput.Prompt.make({
+          text: "Inspect this",
+          files: [{ uri: Mcp.resourceUri({ server: "docs", uri: "docs://readme" }), name: "Readme" }],
+        }),
+        resume: false as const,
+      }
+
+      const messages = yield* Effect.all([session.prompt(input), session.prompt(input)], { concurrency: "unbounded" })
+
+      expect(messages[1]).toEqual(messages[0])
+      expect(mcpResourceReads).toBe(1)
+    }),
+  )
+
+  it.effect("rejects MCP resources with too many content parts", () =>
+    Effect.gen(function* () {
+      yield* setup
+      mcpResourcesAvailable = true
+      const session = yield* SessionV2.Service
+      const uri = Mcp.resourceUri({ server: "docs", uri: "docs://many" })
+
+      const error = yield* session
+        .prompt({ sessionID, prompt: { text: "Inspect this", files: [{ uri }] }, resume: false })
+        .pipe(Effect.flip)
+
+      expect(error).toMatchObject({
+        _tag: "Session.AttachmentError",
+        uri,
+        message: "MCP resource exceeds attachment limits: docs://many",
+      })
     }),
   )
 
@@ -648,7 +821,7 @@ describe("SessionV2.prompt", () => {
           id: other,
           project_id: Project.ID.global,
           slug: "other",
-          directory: "/project",
+          directory,
           title: "other",
           version: "test",
         })

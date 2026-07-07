@@ -3,7 +3,7 @@ import { pathToFileURL } from "bun"
 import fuzzysort from "fuzzysort"
 import path from "path"
 import { firstBy } from "remeda"
-import { createMemo, createResource, createEffect, onMount, onCleanup, Index, Show, createSignal } from "solid-js"
+import { createMemo, createResource, createEffect, onMount, onCleanup, Index, Show, createSignal, on } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useEditorContext } from "../../context/editor"
 import { useProject } from "../../context/project"
@@ -23,6 +23,7 @@ import { useFrecency } from "../../prompt/frecency"
 import { useBindings, useCommandSlashes, useOpencodeModeStack } from "../../keymap"
 import { displayCharAt, mentionTriggerIndex } from "../../prompt/display"
 import type { FileSystemEntry } from "@opencode-ai/sdk/v2"
+import { Mcp } from "@opencode-ai/schema/mcp"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -103,6 +104,12 @@ export function Autocomplete(props: {
     visible: false as AutocompleteRef["visible"],
     input: "keyboard" as "keyboard" | "mouse",
   })
+
+  createEffect(
+    on(location, (location) => {
+      void data.location.mcp.resource.refresh(location).catch(() => undefined)
+    }),
+  )
 
   const [positionTick, setPositionTick] = createSignal(0)
 
@@ -363,7 +370,7 @@ export function Autocomplete(props: {
     const options: AutocompleteOption[] = []
     const width = props.anchor().width - 4
 
-    for (const res of Object.values(sync.data.mcp_resource)) {
+    for (const res of data.location.mcp.resource.catalog(location())?.resources ?? []) {
       options.push({
         display: Locale.truncateMiddle(res.name, width),
         // Match the name only; matching the URI caused unrelated fuzzy hits.
@@ -373,7 +380,7 @@ export function Autocomplete(props: {
           insertPart(res.name, {
             type: "file",
             value: {
-              uri: res.uri,
+              uri: Mcp.resourceUri({ server: res.server, uri: res.uri }),
               name: res.name,
               description: res.description,
               mention: { start: 0, end: 0, text: "" },
