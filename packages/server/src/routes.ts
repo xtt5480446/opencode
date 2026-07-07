@@ -70,7 +70,7 @@ function makeRoutes<AuthError, AuthServices>(
     [PluginRuntime.providerNode, PluginRuntime.providerNodeWithCell(pluginRuntimeCell)],
     ...(sdkPlugins ? [[SdkPlugins.node, SdkPlugins.layerWithStore(sdkPlugins)] as const] : []),
   ]
-  const serviceLayer = simulateEnabled() || driveEnabled()
+  const serviceLayer = simulateEnabled()
     ? Layer.unwrap(
         Effect.gen(function* () {
           const { simulationReplacements, startDriveServer } = yield* Effect.promise(() =>
