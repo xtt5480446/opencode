@@ -112,19 +112,12 @@ test("refreshes MCP resource catalogs after change events", async () => {
   const events = createEventStream()
   let resources = [{ server: "docs", name: "Readme", uri: "docs://readme" }]
   let requests = 0
-  let release: (() => void) | undefined
   const calls = createFetch((url) => {
     if (url.pathname !== "/api/mcp/resource") return
     requests++
-    const data = { resources, templates: [] }
-    if (requests === 3)
-      return new Promise<Response>((resolve) => {
-        release = () =>
-          resolve(json({ location: { directory, project: { id: "proj_test", directory } }, data }))
-      })
     return json({
       location: { directory, project: { id: "proj_test", directory } },
-      data,
+      data: { resources, templates: [] },
     })
   }, events)
   let data!: ReturnType<typeof useData>
@@ -158,19 +151,6 @@ test("refreshes MCP resource catalogs after change events", async () => {
       data: { server: "docs" },
     })
     await wait(() => requests === 2 && data.location.mcp.resource.catalog()?.resources[0]?.name === "Guide")
-
-    const refresh = data.location.mcp.resource.refresh()
-    await wait(() => requests === 3)
-    resources = [{ server: "docs", name: "Reference", uri: "docs://reference" }]
-    emitEvent(events, {
-      id: "evt_mcp_resources_during_refresh",
-      created: 2,
-      type: "mcp.resources.changed",
-      data: { server: "docs" },
-    })
-    release?.()
-    await refresh
-    await wait(() => requests === 4 && data.location.mcp.resource.catalog()?.resources[0]?.name === "Reference")
   } finally {
     app.renderer.destroy()
   }

@@ -115,8 +115,6 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
     let connectionGeneration = 0
     let statusChanges: Set<string> | undefined
     let bootstrapping: Promise<void> | undefined
-    const pendingMcpResourceRefresh = new Map<string, LocationRef>()
-    const mcpResourceRefreshes = new Map<string, Promise<void>>()
 
     function setSessionStatus(sessionID: string, status: DataSessionStatus) {
       statusChanges?.add(sessionID)
@@ -767,15 +765,10 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           if (bootstrapping) break
           void result.location.mcp.refresh(event.location)
           break
-        case "mcp.resources.changed": {
-          const location = event.location ?? defaultLocation()
-          if (bootstrapping || mcpResourceRefreshes.has(locationKey(location))) {
-            pendingMcpResourceRefresh.set(locationKey(location), location)
-            break
-          }
-          void result.location.mcp.resource.refresh(location)
+        case "mcp.resources.changed":
+          if (bootstrapping) break
+          void result.location.mcp.resource.refresh(event.location)
           break
-        }
       }
     }
 
@@ -965,26 +958,12 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             catalog(location?: LocationRef) {
               return store.location[locationKey(location ?? defaultLocation())]?.mcpResource
             },
-            refresh(ref?: LocationRef) {
-              const location = ref ?? defaultLocation()
-              const key = locationKey(location)
-              const active = mcpResourceRefreshes.get(key)
-              if (active) return active
-              const refresh = sdk.api["server.mcp"]
-                .catalog({ location: locationQuery(location) })
-                .then((result) => {
-                  const key = locationKey(result.location)
-                  setStore("location", key, { ...store.location[key], mcpResource: mutable(result.data) })
-                })
-                .finally(() => {
-                  mcpResourceRefreshes.delete(key)
-                  const pending = pendingMcpResourceRefresh.get(key)
-                  if (!pending || bootstrapping) return
-                  pendingMcpResourceRefresh.delete(key)
-                  void result.location.mcp.resource.refresh(pending)
-                })
-              mcpResourceRefreshes.set(key, refresh)
-              return refresh
+            async refresh(ref?: LocationRef) {
+              const result = await sdk.api["server.mcp"].catalog({
+                location: locationQuery(ref ?? defaultLocation()),
+              })
+              const key = locationKey(result.location)
+              setStore("location", key, { ...store.location[key], mcpResource: mutable(result.data) })
             },
           },
         },
@@ -1069,11 +1048,6 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         })
         .finally(() => {
           bootstrapping = undefined
-          for (const [key, location] of pendingMcpResourceRefresh) {
-            if (mcpResourceRefreshes.has(key)) continue
-            pendingMcpResourceRefresh.delete(key)
-            void result.location.mcp.resource.refresh(location)
-          }
         })
       return bootstrapping
     }
