@@ -50,13 +50,13 @@ export interface CodeModeTools {
 export const create = (options: {
   readonly registrations: ReadonlyMap<string, Registration>
   readonly current: (name: string) => Registration | undefined
-  readonly tools?: CodeModeTools
+  readonly tools: CodeModeTools
 }) => {
   const runtime = (
     invoke: (name: string, registration: Registration, input: unknown) => Effect.Effect<unknown, unknown>,
     hooks?: CodeMode.ToolCallHooks,
   ) => {
-    const tools: CodeModeTools = Object.assign(Object.create(null), options.tools)
+    const tools = cloneTools(options.tools)
     for (const [name, registration] of options.registrations) {
       const child = definition(name, registration.tool)
       const value = Tool.make({
@@ -166,6 +166,15 @@ export const create = (options: {
         return { output, toolCalls, files: collected, ...(result.ok ? {} : { error: true as const }) }
       }),
   })
+}
+
+function cloneTools(tools: CodeModeTools): CodeModeTools {
+  return Object.assign(
+    Object.create(null),
+    Object.fromEntries(
+      Object.entries(tools).map(([name, value]) => [name, Tool.isDefinition(value) ? value : cloneTools(value)]),
+    ),
+  )
 }
 
 function displayInput(input: unknown): Record<string, unknown> | undefined {

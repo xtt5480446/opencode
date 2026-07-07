@@ -813,6 +813,7 @@
       "version": "1.17.14",
       "dependencies": {
         "@effect/platform-node": "catalog:",
+        "@opencode-ai/codemode": "workspace:*",
         "@opencode-ai/core": "workspace:*",
         "@opencode-ai/protocol": "workspace:*",
         "@opencode-ai/simulation": "workspace:*",

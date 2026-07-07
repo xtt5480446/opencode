@@ -17,10 +17,8 @@ import { SessionExecutionLocal } from "@opencode-ai/core/session/execution/local
 import { PluginRuntime } from "@opencode-ai/core/plugin/runtime"
 import { SdkPlugins } from "@opencode-ai/core/plugin/sdk"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
-import { ToolRegistry } from "@opencode-ai/core/tool/registry"
-import { OpenAPI, Tool } from "@opencode-ai/codemode"
-import { HttpClient, HttpRouter, HttpServer } from "effect/unstable/http"
-import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi"
+import { HttpRouter, HttpServer } from "effect/unstable/http"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Effect, Layer, Option } from "effect"
 import { Api } from "./api"
 import { ServerAuth } from "./auth"
@@ -49,46 +47,36 @@ const applicationServices = LayerNode.group([
   LocationServiceMap.node,
 ])
 
-export function createRoutes(password?: string, codeModeClient?: Layer.Layer<HttpClient.HttpClient>) {
+export function createRoutes(password?: string, replacements: LayerNode.Replacements = []) {
   return makeRoutes(
     password
       ? ServerAuth.Config.configLayer({ username: "opencode", password: Option.some(password) })
       : ServerAuth.Config.layer,
     undefined,
-    codeModeClient
-      ? {
-          opencode: openCodeTools(
-            OpenAPI.fromSpec({
-              spec: { ...OpenApi.fromApi(Api) },
-              baseUrl: "http://opencode.local",
-              headers: ServerAuth.headers({ username: "opencode", password }),
-            }).tools,
-            codeModeClient,
-          ),
-        }
-      : undefined,
+    replacements,
   )
 }
 
-export function createEmbeddedRoutes(sdkPlugins?: SdkPlugins.Store) {
-  return makeRoutes(ServerAuth.Config.configLayer({ username: "opencode", password: Option.none() }), sdkPlugins)
+export function createEmbeddedRoutes(sdkPlugins?: SdkPlugins.Store, replacements: LayerNode.Replacements = []) {
+  return makeRoutes(
+    ServerAuth.Config.configLayer({ username: "opencode", password: Option.none() }),
+    sdkPlugins,
+    replacements,
+  )
 }
 
 function makeRoutes<AuthError, AuthServices>(
   auth: Layer.Layer<ServerAuth.Config, AuthError, AuthServices>,
   sdkPlugins?: SdkPlugins.Store,
-  codeModeTools?: ToolRegistry.CodeModeTools,
+  hostReplacements: LayerNode.Replacements = [],
 ) {
   const pluginRuntimeCell = PluginRuntime.makeCell()
-  const codeMode = codeModeTools ? ToolRegistry.nodes(codeModeTools) : undefined
   const replacements: LayerNode.Replacements = [
     [SessionExecution.node, SessionExecutionLocal.node],
     [PluginRuntime.node, PluginRuntime.layerWithCell(pluginRuntimeCell)],
     [PluginRuntime.providerNode, PluginRuntime.providerNodeWithCell(pluginRuntimeCell)],
     ...(sdkPlugins ? [[SdkPlugins.node, SdkPlugins.layerWithStore(sdkPlugins)] as const] : []),
-    ...(codeMode
-      ? [[ToolRegistry.node, codeMode.node] as const, [ToolRegistry.toolsNode, codeMode.toolsNode] as const]
-      : []),
+    ...hostReplacements,
   ]
   const serviceLayer = simulateEnabled()
     ? Layer.unwrap(
@@ -115,22 +103,6 @@ function makeRoutes<AuthError, AuthServices>(
     Layer.provide(auth),
     Layer.provide(serviceLayer),
     Layer.provide(Observability.layer),
-  )
-}
-
-function openCodeTools(tools: OpenAPI.Tools, client: Layer.Layer<HttpClient.HttpClient>): ToolRegistry.CodeModeTools {
-  return Object.fromEntries(
-    Object.entries(tools).map(([name, value]) => [
-      name,
-      Tool.isDefinition<HttpClient.HttpClient>(value)
-        ? Tool.make({
-            description: value.description,
-            input: value.input,
-            output: value.output,
-            run: (input) => value.run(input).pipe(Effect.provide(client)),
-          })
-        : openCodeTools(value, client),
-    ]),
   )
 }
 

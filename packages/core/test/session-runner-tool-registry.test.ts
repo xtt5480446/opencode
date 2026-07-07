@@ -30,7 +30,7 @@ const outputStore = Layer.mock(ToolOutputStore.Service, {
 })
 const registryLayer = AppNodeBuilder.build(ToolRegistry.node, [[ToolOutputStore.node, outputStore]])
 const it = testEffect(registryLayer)
-const codeModeNodes = ToolRegistry.nodes({
+const codeModeTools: ToolRegistry.CodeModeTools = {
   opencode: {
     v2: {
       health: {
@@ -44,8 +44,13 @@ const codeModeNodes = ToolRegistry.nodes({
       },
     },
   },
-})
-const codeModeIt = testEffect(AppNodeBuilder.build(codeModeNodes.node, [[ToolOutputStore.node, outputStore]]))
+}
+const codeModeIt = testEffect(
+  AppNodeBuilder.build(ToolRegistry.node, [
+    [ToolOutputStore.node, outputStore],
+    ToolRegistry.codeModeReplacement(codeModeTools),
+  ]),
+)
 const identity = {
   agent: AgentV2.ID.make("build"),
   assistantMessageID: SessionMessage.ID.make("msg_registry"),
@@ -88,6 +93,28 @@ describe("ToolRegistry", () => {
           },
         }),
       ).toEqual({ type: "text", value: '{\n  "healthy": true\n}' })
+    }),
+  )
+
+  codeModeIt.effect("keeps host Code Mode trees immutable while merging deferred tools", () =>
+    Effect.gen(function* () {
+      const service = yield* ToolRegistry.Service
+      yield* service.register({ echo: make() }, { group: "opencode", deferred: true })
+
+      expect((yield* toolDefinitions(service))[0]?.description).toContain("tools.opencode.echo")
+      expect((yield* toolDefinitions(service))[0]?.description).toContain("tools.opencode.echo")
+      expect(
+        yield* executeTool(service, {
+          sessionID,
+          ...identity,
+          call: {
+            type: "tool-call",
+            id: "call-opencode-echo",
+            name: "execute",
+            input: { code: 'return await tools.opencode.echo({ text: "hello" })' },
+          },
+        }),
+      ).toEqual({ type: "text", value: '{\n  "text": "hello"\n}' })
     }),
   )
 
