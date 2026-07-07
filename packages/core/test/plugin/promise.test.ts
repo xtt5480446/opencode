@@ -103,17 +103,23 @@ describe("fromPromise", () => {
       const promisePlugin = define({
         id: "promise-search",
         setup: async (ctx) => {
-          await ctx.integration.transform((draft) => {
-            draft.capability.search.update({
-              integrationID: "promise-search",
-              capability: { type: "search", connection: "optional" },
+          await ctx.integration.register({
+            id: "promise-search",
+            name: "Promise Search",
+            methods: [{ type: "env", names: ["PROMISE_SEARCH_KEY"] }],
+            search: {
+              connection: "optional",
               execute: async (input) => ({ text: `promise: ${input.query}` }),
-            })
+            },
           })
         },
       })
 
       yield* PluginPromise.fromPromise(promisePlugin).effect(host)
+      expect(yield* integrations.get(Integration.ID.make("promise-search"))).toMatchObject({
+        name: "Promise Search",
+        methods: [{ type: "env", names: ["PROMISE_SEARCH_KEY"] }],
+      })
       const provider = yield* integrations.capability.search.get(Integration.ID.make("promise-search"))
       if (!provider) return yield* Effect.die("Expected promise search provider")
       expect(yield* provider.execute({ query: "effect" }, {})).toEqual({ text: "promise: effect" })

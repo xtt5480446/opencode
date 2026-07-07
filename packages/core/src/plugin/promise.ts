@@ -1,7 +1,7 @@
 export * as PluginPromise from "./promise"
 
 import { define } from "@opencode-ai/plugin/v2/effect"
-import type { Plugin, PluginContext } from "@opencode-ai/plugin/v2/promise"
+import type { IntegrationDefinition, Plugin, PluginContext } from "@opencode-ai/plugin/v2/promise"
 import { Effect, Scope, Stream } from "effect"
 
 type HostRegistration = { readonly dispose: Effect.Effect<void> }
@@ -85,36 +85,8 @@ export function fromPromise(plugin: Plugin) {
             attemptStatus: (input) => run(host.integration.attemptStatus(input)),
             attemptComplete: (input) => run(host.integration.attemptComplete(input)),
             attemptCancel: (input) => run(host.integration.attemptCancel(input)),
-            transform: (callback) =>
-              register(
-                host.integration.transform((draft) => {
-                  callback({
-                    ...draft,
-                    capability: {
-                      search: {
-                        list: () =>
-                          draft.capability.search.list().map((provider) => ({
-                            integrationID: provider.integrationID,
-                            capability: provider.capability,
-                            execute: (input, execution) =>
-                              Effect.runPromiseWith(context)(provider.execute(input, execution)),
-                          })),
-                        update: (input) =>
-                          draft.capability.search.update({
-                            integrationID: input.integrationID,
-                            capability: input.capability,
-                            execute: (query, execution) =>
-                              Effect.tryPromise({
-                                try: (signal) => input.execute(query, { ...execution, signal }),
-                                catch: (cause) => cause,
-                              }),
-                          }),
-                        remove: draft.capability.search.remove,
-                      },
-                    },
-                  })
-                }),
-              ),
+            register: (definition) => register(host.integration.register(adaptIntegration(definition))),
+            transform: transform(host.integration),
             reload: () => run(host.integration.reload()),
             connection: {
               active: (id) => Effect.runPromiseWith(context)(host.integration.connection.active(id)),
@@ -146,4 +118,55 @@ export function fromPromise(plugin: Plugin) {
         yield* Effect.promise(() => Promise.resolve(plugin.setup(context2)))
       }),
   })
+}
+
+function adaptIntegration(definition: IntegrationDefinition) {
+  const { methods, search, ...info } = definition
+  return {
+    ...info,
+    methods: methods?.map((method) => {
+      if (method.type !== "oauth") return method
+      const { authorize, refresh, ...info } = method
+      return {
+        ...info,
+        authorize: (inputs: Parameters<typeof authorize>[0]) =>
+          Effect.tryPromise({ try: () => authorize(inputs), catch: (cause) => cause }).pipe(
+            Effect.map((authorization) => {
+              if (authorization.mode === "auto") {
+                return {
+                  ...authorization,
+                  callback: Effect.tryPromise({ try: () => authorization.callback, catch: (cause) => cause }),
+                }
+              }
+              return {
+                ...authorization,
+                callback: (code: string) =>
+                  Effect.tryPromise({ try: () => authorization.callback(code), catch: (cause) => cause }),
+              }
+            }),
+          ),
+        ...(refresh
+          ? {
+              refresh: (credential: Parameters<typeof refresh>[0]) =>
+                Effect.tryPromise({ try: () => refresh(credential), catch: (cause) => cause }),
+            }
+          : {}),
+      }
+    }),
+    ...(search
+      ? {
+          search: {
+            connection: search.connection,
+            execute: (
+              input: Parameters<typeof search.execute>[0],
+              execution: Omit<Parameters<typeof search.execute>[1], "signal">,
+            ) =>
+              Effect.tryPromise({
+                try: (signal) => search.execute(input, { ...execution, signal }),
+                catch: (cause) => cause,
+              }),
+          },
+        }
+      : {}),
+  }
 }

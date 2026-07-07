@@ -20,6 +20,29 @@ beforeEach(() => {
 const it = searchIntegrationTest
 
 describe("built-in search integrations", () => {
+  it.effect("registers and disposes an atomic search integration", () =>
+    Effect.gen(function* () {
+      const integrations = yield* Integration.Service
+      const registration = yield* integrationHost(integrations).register({
+        id: "test-search",
+        name: "Test Search",
+        methods: [{ type: "key", label: "API key" }],
+        search: {
+          connection: "required",
+          execute: (input) => Effect.succeed({ text: input.query }),
+        },
+      })
+
+      expect(yield* integrations.get(Integration.ID.make("test-search"))).toMatchObject({
+        name: "Test Search",
+        methods: [{ type: "key", label: "API key" }],
+        capabilities: [{ type: "search", connection: "required" }],
+      })
+      yield* registration.dispose
+      expect(yield* integrations.get(Integration.ID.make("test-search"))).toBeUndefined()
+    }),
+  )
+
   it.effect("registers Exa and maps search hints to its MCP tool", () =>
     Effect.gen(function* () {
       const integrations = yield* Integration.Service
@@ -105,5 +128,4 @@ describe("built-in search integrations", () => {
       expect(JSON.stringify(output)).not.toContain("parallel-secret")
     }),
   )
-
 })

@@ -266,14 +266,13 @@ it.live("embedded client exposes integration-backed search", () =>
       yield* opencode.plugin({
         id: `embedded-search-${crypto.randomUUID()}`,
         effect: (ctx) =>
-          ctx.integration.transform((draft) => {
-            draft.update(providerID, (integration) => (integration.name = "Embedded search"))
-            draft.capability.search.update({
-              integrationID: providerID,
-              capability: { type: "search", connection: "optional" },
-              execute: (input) =>
-                Effect.succeed({ text: `Found ${input.query}`, metadata: { source: "embedded" } }),
-            })
+          ctx.integration.register({
+            id: providerID,
+            name: "Embedded search",
+            search: {
+              connection: "optional",
+              execute: (input) => Effect.succeed({ text: `Found ${input.query}`, metadata: { source: "embedded" } }),
+            },
           }),
       })
 

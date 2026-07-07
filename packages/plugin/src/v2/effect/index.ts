@@ -8,9 +8,12 @@ export type { CommandDraft, CommandHooks } from "./command.js"
 export type { EventHooks } from "./event.js"
 export type {
   IntegrationDraft,
+  IntegrationDefinition,
   IntegrationHooks,
+  IntegrationMethodDefinition,
   IntegrationMethodRegistration,
-  IntegrationSearchCapabilityRegistration,
+  IntegrationOAuthMethodDefinition,
+  IntegrationSearchDefinition,
 } from "./integration.js"
 export type { ReferenceDraft, ReferenceHooks } from "./reference.js"
 export type { SkillDraft, SkillHooks } from "./skill.js"

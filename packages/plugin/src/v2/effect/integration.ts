@@ -12,7 +12,7 @@ import type {
 import type { IntegrationApi } from "@opencode-ai/client/effect/api"
 import type { Search } from "@opencode-ai/schema/search"
 import type { Effect, Scope } from "effect"
-import type { TransformHook } from "./registration.js"
+import type { Registration, TransformHook } from "./registration.js"
 
 export type IntegrationOAuthAuthorization = {
   readonly url: string
@@ -45,16 +45,27 @@ export type IntegrationMethodRegistration =
       readonly method: IntegrationEnvMethod
     }
 
-export interface IntegrationSearchCapabilityRegistration {
-  readonly integrationID: string
-  readonly capability: {
-    readonly type: "search"
-    readonly connection: "optional" | "required"
-  }
+export type IntegrationOAuthMethodDefinition = IntegrationOAuthMethod & {
+  readonly authorize: (inputs: IntegrationInputs) => Effect.Effect<IntegrationOAuthAuthorization, unknown, Scope.Scope>
+  readonly refresh?: (credential: CredentialOAuth) => Effect.Effect<CredentialOAuth, unknown>
+  readonly credentialLabel?: (credential: CredentialOAuth) => string | undefined
+}
+
+export type IntegrationMethodDefinition = IntegrationOAuthMethodDefinition | IntegrationKeyMethod | IntegrationEnvMethod
+
+export interface IntegrationSearchDefinition {
+  readonly connection: "optional" | "required"
   readonly execute: (
     input: Search.Input,
     context: { readonly credential?: CredentialValue; readonly sessionID?: string },
   ) => Effect.Effect<Search.ProviderOutput, unknown>
+}
+
+export interface IntegrationDefinition {
+  readonly id: string
+  readonly name: string
+  readonly methods?: readonly IntegrationMethodDefinition[]
+  readonly search?: IntegrationSearchDefinition
 }
 
 export interface IntegrationDraft {
@@ -67,16 +78,10 @@ export interface IntegrationDraft {
     update(input: IntegrationMethodRegistration): void
     remove(integrationID: string, method: IntegrationMethod): void
   }
-  readonly capability: {
-    readonly search: {
-      list(): readonly IntegrationSearchCapabilityRegistration[]
-      update(input: IntegrationSearchCapabilityRegistration): void
-      remove(integrationID: string): void
-    }
-  }
 }
 
 export interface IntegrationHooks extends IntegrationApi<unknown> {
+  readonly register: (definition: IntegrationDefinition) => Effect.Effect<Registration, never, Scope.Scope>
   readonly transform: TransformHook<IntegrationDraft>
   readonly reload: () => Effect.Effect<void>
   readonly connection: {

@@ -19,13 +19,15 @@ export const Plugin = define<HttpClient.HttpClient | Scope.Scope>({
   id: "opencode.search.exa",
   effect: Effect.fn("SearchExa.Plugin")(function* (ctx) {
     const http = yield* HttpClient.HttpClient
-    yield* ctx.integration.transform((draft) => {
-      draft.update("exa", (integration) => (integration.name = "Exa"))
-      draft.method.update({ integrationID: "exa", method: { type: "key", label: "API key (optional)" } })
-      draft.method.update({ integrationID: "exa", method: { type: "env", names: ["EXA_API_KEY"] } })
-      draft.capability.search.update({
-        integrationID: "exa",
-        capability: { type: "search", connection: "optional" },
+    yield* ctx.integration.register({
+      id: "exa",
+      name: "Exa",
+      methods: [
+        { type: "key", label: "API key (optional)" },
+        { type: "env", names: ["EXA_API_KEY"] },
+      ],
+      search: {
+        connection: "optional",
         execute: (input, context) => {
           const url = new URL(endpoint)
           if (context.credential?.type === "key") url.searchParams.set("exaApiKey", context.credential.key)
@@ -37,7 +39,7 @@ export const Plugin = define<HttpClient.HttpClient | Scope.Scope>({
             contextMaxCharacters: input.contextMaxCharacters,
           }).pipe(Effect.map((text) => ({ text: text ?? "" })))
         },
-      })
+      },
     })
   }),
 })

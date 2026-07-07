@@ -18,13 +18,15 @@ export const Plugin = define<HttpClient.HttpClient | Scope.Scope>({
   id: "opencode.search.parallel",
   effect: Effect.fn("SearchParallel.Plugin")(function* (ctx) {
     const http = yield* HttpClient.HttpClient
-    yield* ctx.integration.transform((draft) => {
-      draft.update("parallel", (integration) => (integration.name = "Parallel"))
-      draft.method.update({ integrationID: "parallel", method: { type: "key", label: "API key (optional)" } })
-      draft.method.update({ integrationID: "parallel", method: { type: "env", names: ["PARALLEL_API_KEY"] } })
-      draft.capability.search.update({
-        integrationID: "parallel",
-        capability: { type: "search", connection: "optional" },
+    yield* ctx.integration.register({
+      id: "parallel",
+      name: "Parallel",
+      methods: [
+        { type: "key", label: "API key (optional)" },
+        { type: "env", names: ["PARALLEL_API_KEY"] },
+      ],
+      search: {
+        connection: "optional",
         execute: (input, context) =>
           SearchMcp.call(
             http,
@@ -41,7 +43,7 @@ export const Plugin = define<HttpClient.HttpClient | Scope.Scope>({
               ...(context.credential?.type === "key" ? { Authorization: `Bearer ${context.credential.key}` } : {}),
             },
           ).pipe(Effect.map((text) => ({ text: text ?? "" }))),
-      })
+      },
     })
   }),
 })
