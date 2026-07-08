@@ -136,7 +136,12 @@ export const layer = Layer.effect(
             title: input.title,
             ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
           }
-          const form = makeInfo(input, base)
+          const form: Info =
+            input.mode === "form"
+              ? { ...base, mode: "form", fields: input.fields }
+              : input.mode === "url"
+                ? { ...base, mode: "url", url: input.url }
+                : { ...base, mode: "integration", integrationID: input.integrationID }
           const entry: Entry = {
             form,
             state: { status: "pending" },
@@ -244,17 +249,6 @@ function validateAnswer(form: Info, answer: Answer) {
     if (!active) return `Form field is not active: ${field.key}`
     const invalid = validateField(field, value)
     if (invalid) return invalid
-  }
-}
-
-function makeInfo(input: CreateInput, base: Omit<Info, "mode" | "fields" | "url" | "integrationID">): Info {
-  switch (input.mode) {
-    case "form":
-      return { ...base, mode: "form", fields: input.fields }
-    case "url":
-      return { ...base, mode: "url", url: input.url }
-    case "integration":
-      return { ...base, mode: "integration", integrationID: input.integrationID }
   }
 }
 
