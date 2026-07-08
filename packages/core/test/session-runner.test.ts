@@ -39,7 +39,10 @@ import {
   ATTR_OPENCODE_SESSION_INPUT_COUNT,
   ATTR_OPENCODE_SESSION_INPUT_DELIVERY,
   ATTR_OPENCODE_SESSION_PARENT_ID,
+  ATTR_OPENCODE_TOOL_OUTCOME,
+  EVENT_OPENCODE_COMPACTION_FAILED,
   EVENT_OPENCODE_COMPACTION_COMPLETED,
+  EVENT_OPENCODE_COMPACTION_STARTED,
   EVENT_OPENCODE_RETRY_SCHEDULED,
   EVENT_OPENCODE_RETRY_STOPPED,
   EVENT_OPENCODE_SESSION_INPUT_PROMOTED,
@@ -809,6 +812,7 @@ describe("SessionRunnerLLM", () => {
           [ATTR_GEN_AI_CONVERSATION_ID, sessionID],
         ]),
       )
+      expect(tool?.attributes.get(ATTR_OPENCODE_TOOL_OUTCOME)).toBe("completed")
       expect(ancestorNames(tool).some((name) => name.startsWith("invoke_agent"))).toBeTrue()
       expect(ancestorNames(tool)).not.toContain("SessionRunner.attemptStep")
       expect(ancestorNames(tool)).not.toContain("chat fake-model")
@@ -904,6 +908,7 @@ describe("SessionRunnerLLM", () => {
       expect(tools[0]?.attributes.get(ATTR_OPENCODE_AGENT_STEP_TRIGGER)).toBe("input")
       expect(tools[1]?.attributes.get(ATTR_OPENCODE_AGENT_STEP_INDEX)).toBe(2)
       expect(tools[1]?.attributes.get(ATTR_OPENCODE_AGENT_STEP_TRIGGER)).toBe("tool_result")
+      expect(spans.filter((span) => span.name === "invoke_agent build")).toHaveLength(1)
     }),
   )
 
@@ -926,6 +931,9 @@ describe("SessionRunnerLLM", () => {
 
       const tool = spans.find((span) => span.name === "execute_tool echo")
       expect(tool?.attributes.get(ATTR_ERROR_TYPE)).toBe("tool.execution")
+      expect(tool?.attributes.get(ATTR_OPENCODE_ERROR_SOURCE)).toBe("tool")
+      expect(tool?.attributes.get(ATTR_OPENCODE_ERROR_STAGE)).toBe("execution")
+      expect(tool?.attributes.get(ATTR_OPENCODE_TOOL_OUTCOME)).toBe("error")
       expect(tool?.status._tag === "Ended" && tool.status.exit._tag).toBe("Failure")
       requests.length = 0
       spans.length = 0
@@ -1587,6 +1595,10 @@ describe("SessionRunnerLLM", () => {
         status: "completed",
         summary: "durable summary",
       })
+      const turn = spans.find((span) => span.name === "invoke_agent build")
+      expect(turn?.events.map(([name]) => name)).toEqual(
+        expect.arrayContaining([EVENT_OPENCODE_COMPACTION_STARTED, EVENT_OPENCODE_COMPACTION_COMPLETED]),
+      )
     }),
   )
 
@@ -1627,6 +1639,10 @@ describe("SessionRunnerLLM", () => {
           (type) => type === EventV2.versionedType(SessionEvent.Compaction.Failed.type, 1),
         ),
       ).toHaveLength(1)
+      const turn = spans.find((span) => span.name === "invoke_agent build")
+      expect(turn?.events.map(([name]) => name)).toEqual(
+        expect.arrayContaining([EVENT_OPENCODE_COMPACTION_STARTED, EVENT_OPENCODE_COMPACTION_FAILED]),
+      )
     }),
   )
 
@@ -1650,6 +1666,10 @@ describe("SessionRunnerLLM", () => {
           (type) => type === EventV2.versionedType(SessionEvent.Compaction.Failed.type, 1),
         ),
       ).toHaveLength(1)
+      const turn = spans.find((span) => span.name === "invoke_agent build")
+      expect(turn?.events.map(([name]) => name)).toEqual(
+        expect.arrayContaining([EVENT_OPENCODE_COMPACTION_STARTED, EVENT_OPENCODE_COMPACTION_FAILED]),
+      )
     }),
   )
 
@@ -1673,6 +1693,10 @@ describe("SessionRunnerLLM", () => {
           (type) => type === EventV2.versionedType(SessionEvent.Compaction.Failed.type, 1),
         ),
       ).toHaveLength(1)
+      const turn = spans.find((span) => span.name === "invoke_agent build")
+      expect(turn?.events.map(([name]) => name)).toEqual(
+        expect.arrayContaining([EVENT_OPENCODE_COMPACTION_STARTED, EVENT_OPENCODE_COMPACTION_FAILED]),
+      )
     }),
   )
 
@@ -2368,6 +2392,7 @@ describe("SessionRunnerLLM", () => {
         "user",
         "assistant",
       ])
+      expect(spans.filter((span) => span.name === "invoke_agent build")).toHaveLength(1)
     }),
   )
 
@@ -2396,6 +2421,9 @@ describe("SessionRunnerLLM", () => {
       expect(userTexts(requests[0]!)).toEqual(["Start working"])
       expect(userTexts(requests[1]!)).toEqual(["Start working"])
       expect(userTexts(requests[2]!)).toEqual(["Start working", "Wait until continuation ends"])
+      const turns = spans.filter((span) => span.name === "invoke_agent build")
+      expect(turns).toHaveLength(2)
+      expect(turns[1]?.links.at(-1)?.span).toBe(turns[0])
     }),
   )
 
@@ -3625,6 +3653,7 @@ describe("SessionRunnerLLM", () => {
       ])
       yield* replaySessionProjection(sessionID)
       expect((yield* session.context(sessionID)).filter((message) => message.type === "assistant")).toHaveLength(1)
+      expect(spans.filter((span) => span.name === "invoke_agent build")).toHaveLength(1)
     }),
   )
 
@@ -3642,6 +3671,14 @@ describe("SessionRunnerLLM", () => {
       yield* TestClock.adjust("1 millis")
       yield* Fiber.join(run)
       expect(requests).toHaveLength(2)
+      expect(
+        spans
+          .find((span) => span.name === "invoke_agent build")
+          ?.events.find(([name]) => name === EVENT_OPENCODE_RETRY_SCHEDULED)?.[2],
+      ).toMatchObject({
+        [ATTR_OPENCODE_RETRY_DELAY_MS]: 5_000,
+        [ATTR_OPENCODE_RETRY_DELAY_SOURCE]: "max(backoff,retry_after)",
+      })
     }),
   )
 
@@ -3721,6 +3758,11 @@ describe("SessionRunnerLLM", () => {
       expect(eventTypes.filter((type) => type === "session.step.started.1")).toHaveLength(2)
       expect(eventTypes.filter((type) => type === "session.retry.scheduled.1")).toHaveLength(1)
       expect((yield* session.context(sessionID)).filter((message) => message.type === "assistant")).toHaveLength(1)
+      expect(
+        spans
+          .find((span) => span.name === "invoke_agent build")
+          ?.events.find(([name]) => name === EVENT_OPENCODE_RETRY_STOPPED)?.[2],
+      ).toMatchObject({ [ATTR_OPENCODE_RETRY_DECISION]: "step_limit" })
     }),
   )
 
@@ -3734,6 +3776,11 @@ describe("SessionRunnerLLM", () => {
       expect(yield* session.resume(sessionID).pipe(Effect.flip)).toBe(failure)
       expect(requests).toHaveLength(1)
       expect(yield* recordedEventTypes(sessionID)).not.toContain("session.retry.scheduled.1")
+      expect(
+        spans
+          .find((span) => span.name === "invoke_agent build")
+          ?.events.find(([name]) => name === EVENT_OPENCODE_RETRY_STOPPED)?.[2],
+      ).toMatchObject({ [ATTR_OPENCODE_RETRY_DECISION]: "non_retryable" })
     }),
   )
 

@@ -714,13 +714,21 @@ const layer = Layer.effect(
       readonly force: boolean
     }) {
       const run = Effect.gen(function* () {
-        yield* AgentTelemetry.stage("compaction", runPendingCompaction(input.sessionID))
-        const hasSteer = yield* AgentTelemetry.stage("input", SessionInput.hasPending(db, input.sessionID, "steer"))
-        const hasQueue = hasSteer
-          ? false
-          : yield* AgentTelemetry.stage("input", SessionInput.hasPending(db, input.sessionID, "queue"))
+        if (yield* SessionInput.pendingCompaction(db, input.sessionID)) {
+          const compactionAgent = yield* agents.select((yield* getSession(input.sessionID)).agent)
+          yield* AgentTelemetry.invoke(
+            {
+              sessionID: input.sessionID,
+              agent: compactionAgent.id,
+              errorType: (cause) => toSessionError(cause).type,
+            },
+            AgentTelemetry.stage("compaction", runPendingCompaction(input.sessionID)),
+          )
+        }
+        const hasSteer = yield* SessionInput.hasPending(db, input.sessionID, "steer")
+        const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
         if (!input.force && !hasSteer && !hasQueue) return
-        yield* AgentTelemetry.stage("tool_recovery", failInterruptedTools(input.sessionID))
+        yield* failInterruptedTools(input.sessionID)
         let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined
         let trigger: AgentTelemetry.ModelCallTrigger = hasSteer || hasQueue ? "input" : "resume"
         let shouldRun = input.force || hasSteer || hasQueue

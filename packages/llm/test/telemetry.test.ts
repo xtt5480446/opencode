@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
-import { Cause, Clock, Effect, References, Stream, Tracer } from "effect"
+import { Cause, Clock, Deferred, Effect, Fiber, References, Stream, Tracer } from "effect"
 import * as TestClock from "effect/testing/TestClock"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient, HttpClientRequest } from "effect/unstable/http"
 import { LLM, LLMEvent, Message, Usage } from "../src"
 import * as OpenAIChat from "../src/protocols/openai-chat"
 import * as OpenAIResponses from "../src/protocols/openai-responses"
@@ -43,6 +43,8 @@ import {
   GEN_AI_OPERATION_NAME_VALUE_CHAT,
 } from "../src/semconv"
 import { RequestIssued, ResponseChunkReceived, stream as instrument } from "../src/telemetry"
+import { LLMHttpTelemetry } from "../src/telemetry/http"
+import { LLMWebSocketTelemetry } from "../src/telemetry/websocket"
 
 const ATTR_AGENT_STEP_INDEX = "test.agent.step.index"
 const ATTR_AGENT_STEP_TRIGGER = "test.agent.step.trigger"
@@ -172,6 +174,7 @@ describe("GenAI telemetry", () => {
       expect(http?.attributes.get(ATTR_HTTP_RESPONSE_STATUS_CODE)).toBe(200)
       expect(http?.attributes.get(ATTR_SERVER_PORT)).toBe(443)
       expect(http?.attributes.get(ATTR_URL_FULL)).toStartWith("https://api.openai.test/")
+      expect(http?.attributes.get(ATTR_URL_FULL)).not.toContain("?")
       expect(http?.attributes.get(ATTR_URL_FULL)).not.toContain("secret-key")
       expect(http?.attributes.get(ATTR_URL_FULL)).not.toContain("short-key")
       expect(http?.attributes.get(ATTR_URL_FULL)).not.toContain("signed-value")
@@ -283,6 +286,98 @@ describe("GenAI telemetry", () => {
       ).pipe(Effect.provideService(Tracer.Tracer, tracer))
 
       expect(spans.map((span) => span.name)).toEqual(["parent"])
+    }),
+  )
+
+  it.effect("requires an explicit model span for transport instrumentation", () =>
+    Effect.gen(function* () {
+      const spans: Tracer.NativeSpan[] = []
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options)
+          spans.push(span)
+          return span
+        },
+      })
+
+      yield* Effect.useSpan("ambient", () =>
+        Effect.all(
+          [
+            LLMHttpTelemetry.stream(HttpClientRequest.post("https://example.test/path"), Stream.empty).pipe(
+              Stream.runDrain,
+            ),
+            LLMWebSocketTelemetry.stream("wss://example.test/path", Stream.empty).pipe(Stream.runDrain),
+          ],
+          { discard: true },
+        ),
+      ).pipe(Effect.provideService(Tracer.Tracer, tracer))
+
+      expect(spans.map((span) => span.name)).toEqual(["ambient"])
+    }),
+  )
+
+  it.effect("does not attribute downstream consumer failures to transports", () =>
+    Effect.gen(function* () {
+      const spans: Tracer.NativeSpan[] = []
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options)
+          spans.push(span)
+          return span
+        },
+      })
+      const model = OpenAIChat.route
+        .with({ endpoint: { baseURL: "https://api.openai.test/v1" } })
+        .model({ id: "consumer-failure-model" })
+      const failure = new Error("consumer failed")
+
+      const error = yield* LLMClient.stream(LLM.request({ model, prompt: "secret" })).pipe(
+        Stream.runForEach(() => Effect.fail(failure)),
+        Effect.provide(fixedResponse(sseEvents(deltaChunk({ role: "assistant", content: "Hello" })))),
+        Effect.flip,
+        Effect.provideService(Tracer.Tracer, tracer),
+      )
+
+      expect(error).toBe(failure)
+      const modelSpan = spans.find((span) => span.name === "chat consumer-failure-model")
+      const httpSpan = spans.find((span) => span.attributes.get(ATTR_HTTP_REQUEST_METHOD) === "POST")
+      expect(modelSpan?.attributes.get(ATTR_ERROR_TYPE)).toBe("incomplete_response")
+      expect(httpSpan?.attributes.has(ATTR_ERROR_TYPE)).toBeFalse()
+      expect(httpSpan?.status._tag === "Ended" && httpSpan.status.exit._tag).toBe("Success")
+    }),
+  )
+
+  it.effect("closes a model span when its stream fiber is interrupted", () =>
+    Effect.gen(function* () {
+      const spans: Tracer.NativeSpan[] = []
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options)
+          spans.push(span)
+          return span
+        },
+      })
+      const started = yield* Deferred.make<void>()
+      const model = OpenAIChat.route
+        .with({ endpoint: { baseURL: "https://api.openai.test/v1" } })
+        .model({ id: "interrupted-model" })
+      const source = Stream.concat(
+        Stream.fromEffect(Deferred.succeed(started, undefined).pipe(Effect.as(LLMEvent.stepStart({ index: 0 })))),
+        Stream.never,
+      )
+
+      yield* Effect.gen(function* () {
+        const fiber = yield* instrument(LLM.request({ model, prompt: "secret" }), source).pipe(
+          Stream.runDrain,
+          Effect.forkChild,
+        )
+        yield* Deferred.await(started)
+        yield* Fiber.interrupt(fiber)
+      }).pipe(Effect.provideService(Tracer.Tracer, tracer))
+
+      const span = spans.find((span) => span.name === "chat interrupted-model")
+      expect(span?.attributes.get(ATTR_ERROR_TYPE)).toBe("canceled")
+      expect(span?.status._tag === "Ended" && span.status.exit._tag).toBe("Failure")
     }),
   )
 

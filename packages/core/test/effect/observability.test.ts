@@ -3,13 +3,18 @@ import { NodeFileSystem } from "@effect/platform-node"
 import {
   ATTR_DEPLOYMENT_ENVIRONMENT_NAME,
   ATTR_ERROR_TYPE,
+  ATTR_GEN_AI_CONVERSATION_ID,
+  ATTR_OPENCODE_ERROR_SOURCE,
+  ATTR_OPENCODE_ERROR_STAGE,
   ATTR_OPENCODE_LINK_TYPE,
   ATTR_OPENCODE_CLIENT,
   ATTR_OPENCODE_RUN,
+  ATTR_OPENCODE_TOOL_OUTCOME,
   ATTR_SERVICE_INSTANCE_ID,
   ATTR_SERVICE_NAMESPACE,
+  ATTR_URL_FULL,
 } from "@opencode-ai/core/observability/semconv"
-import { Cause, Deferred, Effect, Fiber, Layer, Logger, Option, Tracer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Logger, Option, Tracer } from "effect"
 import { ParentSpan, type Span } from "effect/Tracer"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import fs from "fs/promises"
@@ -198,6 +203,38 @@ it.effect("links each agent turn to the previous Session turn", () =>
   }),
 )
 
+it.effect("keeps previous-turn links isolated by Session", () =>
+  Effect.gen(function* () {
+    const spans: Tracer.NativeSpan[] = []
+    const tracer = Tracer.make({
+      span(options) {
+        const span = new Tracer.NativeSpan(options)
+        spans.push(span)
+        return span
+      },
+    })
+    const telemetry = SessionTelemetry.makeExecution<string>()
+    const run = (sessionID: string) =>
+      telemetry
+        .drain(
+          sessionID,
+          AgentTelemetry.invoke({ sessionID, agent: "build", errorType: () => "unknown" }, Effect.void),
+        )
+        .pipe(Effect.provideService(Tracer.Tracer, tracer))
+
+    yield* run("a")
+    yield* run("b")
+    yield* run("a")
+
+    const a = spans.filter((span) => span.attributes.get(ATTR_GEN_AI_CONVERSATION_ID) === "a")
+    const b = spans.filter((span) => span.attributes.get(ATTR_GEN_AI_CONVERSATION_ID) === "b")
+    expect(a).toHaveLength(2)
+    expect(b).toHaveLength(1)
+    expect(a[1]?.links[0]?.span).toBe(a[0])
+    expect(b[0]?.links).toEqual([])
+  }),
+)
+
 it.effect("closes an active agent span when its execution scope is interrupted", () =>
   Effect.gen(function* () {
     const spans: Tracer.NativeSpan[] = []
@@ -240,7 +277,7 @@ it.effect("classifies a tool cause containing interruption as canceled", () =>
       Cause.makeInterruptReason(),
     ])
 
-    yield* ToolTelemetry.execute(
+    const exit = yield* ToolTelemetry.execute(
       { sessionID: "session", agent: "explore", call: { id: "call", name: "read" } },
       Effect.failCause(cause),
       () => "tool.execution",
@@ -248,7 +285,14 @@ it.effect("classifies a tool cause containing interruption as canceled", () =>
 
     const span = spans.find((span) => span.name === "execute_tool read")
     expect(span?.attributes.get(ATTR_ERROR_TYPE)).toBe("canceled")
+    expect(span?.attributes.get(ATTR_OPENCODE_ERROR_SOURCE)).toBe("cancellation")
+    expect(span?.attributes.get(ATTR_OPENCODE_ERROR_STAGE)).toBe("execution")
+    expect(span?.attributes.get(ATTR_OPENCODE_TOOL_OUTCOME)).toBe("canceled")
     expect(span?.status._tag === "Ended" && span.status.exit._tag).toBe("Failure")
+    expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBeTrue()
+    expect(Exit.isFailure(exit) ? Option.getOrUndefined(Cause.findErrorOption(exit.cause)) : undefined).toBeInstanceOf(
+      Error,
+    )
   }),
 )
 
@@ -267,6 +311,36 @@ it.effect("applies HTTP response validation without a parent span", () =>
     ).pipe(Effect.exit)
 
     expect(exit._tag).toBe("Failure")
+  }),
+)
+
+it.effect("omits URL credentials, query, and fragment without changing the request", () =>
+  Effect.gen(function* () {
+    const spans: Tracer.NativeSpan[] = []
+    const tracer = Tracer.make({
+      span(options) {
+        const span = new Tracer.NativeSpan(options)
+        spans.push(span)
+        return span
+      },
+    })
+    const url = "https://user:password@example.test/path?region=us-east-1#fragment"
+    let executedUrl: string | undefined
+    const request = HttpClientRequest.get(url)
+    const http = HttpClient.make((request) => {
+      executedUrl = request.url
+      return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("ok")))
+    })
+
+    yield* HttpTelemetry.use(http, request, Effect.succeed).pipe(
+      Effect.withSpan("execute_tool webfetch"),
+      Effect.provideService(Tracer.Tracer, tracer),
+    )
+
+    expect(executedUrl).toBe(url)
+    expect(spans.find((span) => span.name === "GET")?.attributes.get(ATTR_URL_FULL)).toBe(
+      "https://example.test/path",
+    )
   }),
 )
 

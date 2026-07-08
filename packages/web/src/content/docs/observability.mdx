@@ -72,30 +72,33 @@ The `experimental.openTelemetry` configuration option only controls AI SDK telem
 
 ### Navigate conversations
 
-Each agent turn is a separate trace. Use the Session ID in `gen_ai.conversation.id` to find the full conversation. In Dash0, also filter `gen_ai.operation.name = invoke_agent` to show turn roots, then sort by start time. **Links to** opens the previous turn; **Linked from** opens the next turn. The oldest turn has no `previous_turn` link.
+Each agent turn is exported as a separate trace.
 
-List conversation turns with the Dash0 CLI:
+1. In Dash0, filter by `gen_ai.conversation.id = <session-id>` and `gen_ai.operation.name = invoke_agent`, then sort by start time.
+2. List turn traces with the Dash0 CLI:
 
-```bash
-dash0 spans query \
-  --dataset production \
-  --from now-4h \
-  --filter "gen_ai.conversation.id is <session-id>" \
-  --filter "gen_ai.operation.name is invoke_agent" \
-  --column timestamp \
-  --column "span name" \
-  --column "trace id" \
-  --column "span links"
-```
+   ```bash
+   dash0 spans query \
+     --dataset production \
+     --from now-4h \
+     --filter "gen_ai.conversation.id is <session-id>" \
+     --filter "gen_ai.operation.name is invoke_agent" \
+     --column timestamp \
+     --column "span name" \
+     --column "trace id" \
+     --column "span links"
+   ```
 
-Follow links from the newest turn:
+3. Follow links from the newest turn:
 
-```bash
-dash0 traces get <trace-id> \
-  --dataset production \
-  --from now-4h \
-  --follow-span-links
-```
+   ```bash
+   dash0 traces get <trace-id> \
+     --dataset production \
+     --from now-4h \
+     --follow-span-links
+   ```
+
+4. Use **Links to** for the previous turn and **Linked from** for the next. The oldest observed turn has no `previous_turn` link.
 
 Foreground subagents are child spans in the spawning turn. Background subagents use linked traces with `opencode.link.type=subagent`; turn links use `opencode.link.type=previous_turn`. Links are process-local, so use `gen_ai.conversation.id` across restarts.
 
