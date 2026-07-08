@@ -66,6 +66,7 @@ export namespace EffectFlock {
   )
 
   const decodeMeta = Schema.decodeUnknownSync(LockMetaJson)
+  const decodeMetaOption = Schema.decodeUnknownOption(LockMetaJson)
   const encodeMeta = Schema.encodeSync(LockMetaJson)
 
   // ---------------------------------------------------------------------------
@@ -74,6 +75,7 @@ export namespace EffectFlock {
 
   export interface Interface {
     readonly acquire: (key: string, dir?: string) => Effect.Effect<void, LockError, Scope.Scope>
+    readonly tryAcquire: (key: string, dir?: string) => Effect.Effect<boolean, LockError, Scope.Scope>
     readonly withLock: {
       (key: string, dir?: string): <A, E, R>(body: Effect.Effect<A, E, R>) => Effect.Effect<A, E | LockError, R>
       <A, E, R>(body: Effect.Effect<A, E, R>, key: string, dir?: string): Effect.Effect<A, E | LockError, R>
@@ -149,6 +151,26 @@ export namespace EffectFlock {
 
       const isStale = Effect.fnUntraced(function* (lockDir: string, heartbeatPath: string, metaPath: string) {
         const now = wall()
+
+        const raw = yield* fs.readFileString(metaPath).pipe(
+          Effect.map(Option.some),
+          Effect.catchIf(isPathGone, () => Effect.succeed(Option.none())),
+          Effect.orDie,
+        )
+        const owner = Option.isSome(raw) ? Option.getOrUndefined(decodeMetaOption(raw.value)) : undefined
+        if (owner?.hostname === hostname) {
+          const alive = yield* Effect.try({
+            try: () => {
+              process.kill(owner.pid, 0)
+              return true
+            },
+            catch: (cause) => {
+              const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined
+              return code !== "ESRCH"
+            },
+          }).pipe(Effect.orElseSucceed(() => false))
+          if (!alive) return true
+        }
 
         const hb = yield* safeStat(heartbeatPath)
         if (hb) return now - mtimeMs(hb) > STALE_MS
@@ -243,26 +265,44 @@ export namespace EffectFlock {
             catch: (cause) => new ReleaseError({ detail: "metadata invalid", cause }),
           }).pipe(Effect.orDie)
 
-          if (parsed.token !== handle.token) return yield* Effect.die(new ReleaseError({ detail: "token mismatch" }))
+          if (parsed.token !== handle.token) yield* Effect.die(new ReleaseError({ detail: "token mismatch" }))
 
           yield* forceRemove(handle.lockDir)
         })
 
       // -- build service --
 
-      const acquire = Effect.fn("EffectFlock.acquire")(function* (key: string, dir?: string) {
-        const lockDir = dir ?? lockRoot
-        yield* ensureDir(lockDir)
-
-        const lockfile = path.join(lockDir, Hash.fast(key) + ".lock")
-
-        // acquireRelease: acquire is uninterruptible, release is guaranteed
-        const handle = yield* Effect.acquireRelease(acquireHandle(lockfile, key), (handle) => release(handle))
-
-        // Heartbeat fiber — scoped, so it's interrupted before release runs
+      const heartbeat = Effect.fnUntraced(function* (handle: Handle) {
         yield* fs
           .utimes(handle.heartbeatPath, new Date(), new Date())
           .pipe(Effect.ignore, Effect.repeat(Schedule.spaced(HEARTBEAT_MS)), Effect.forkScoped)
+      })
+
+      const acquire = Effect.fn("EffectFlock.acquire")(function* (key: string, dir?: string) {
+        const lockDir = dir ?? lockRoot
+        yield* ensureDir(lockDir)
+        const handle = yield* Effect.acquireRelease(
+          acquireHandle(path.join(lockDir, Hash.fast(key) + ".lock"), key),
+          (handle) => release(handle),
+        )
+        yield* heartbeat(handle)
+      })
+
+      const tryAcquire = Effect.fn("EffectFlock.tryAcquire")(function* (key: string, dir?: string) {
+        return yield* Effect.uninterruptibleMask(() =>
+          Effect.gen(function* () {
+            const lockDir = dir ?? lockRoot
+            yield* ensureDir(lockDir)
+            const handle = yield* tryAcquireLockDir(path.join(lockDir, Hash.fast(key) + ".lock"), key).pipe(
+              Effect.map(Option.some),
+              Effect.catchTag("NotAcquired", () => Effect.succeed(Option.none())),
+            )
+            if (Option.isNone(handle)) return false
+            yield* Effect.addFinalizer(() => release(handle.value))
+            yield* heartbeat(handle.value)
+            return true
+          }),
+        )
       })
 
       const withLock: Interface["withLock"] = Function.dual(
@@ -276,7 +316,7 @@ export namespace EffectFlock {
           ),
       )
 
-      return Service.of({ acquire, withLock })
+      return Service.of({ acquire, tryAcquire, withLock })
     }),
   )
 

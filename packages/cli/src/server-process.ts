@@ -7,6 +7,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Global } from "@opencode-ai/core/global"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { AppProcess } from "@opencode-ai/core/process"
+import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { start } from "@opencode-ai/server/process"
 import { randomBytes, randomUUID } from "node:crypto"
 import path from "node:path"
@@ -24,10 +25,13 @@ export type Options = {
   readonly port?: number
 }
 
+type ManagedServiceOptions = Service.Options & { readonly file: string }
+
 export const run = Effect.fn("cli.server-process.run")((options: Options) =>
   processEffect(options).pipe(
+    Effect.catchTag("ServiceAlreadyOwned", () => Effect.void),
     Effect.provide(Updater.layer),
-    Effect.provide(AppNodeBuilder.build(LayerNode.group([Global.node, AppProcess.node]))),
+    Effect.provide(AppNodeBuilder.build(LayerNode.group([Global.node, AppProcess.node, EffectFlock.node]))),
     Effect.provide(NodeServices.layer),
   ),
 )
@@ -43,6 +47,17 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
         delete process.env.OPENCODE_SERVER_PASSWORD
       }
       const config = options.mode === "service" ? yield* ServiceConfig.read() : {}
+      const serviceOptions = options.mode === "service" ? yield* ServiceConfig.options() : undefined
+      if (serviceOptions) {
+        const flock = yield* EffectFlock.Service
+        yield* flock.tryAcquire(`opencode-service:${serviceOptions.file}`).pipe(
+          Effect.filterOrFail(
+            (acquired) => acquired,
+            () => ({ _tag: "ServiceAlreadyOwned" }) as const,
+          ),
+          Effect.retry(Schedule.spaced("100 millis").pipe(Schedule.both(Schedule.recurs(20)))),
+        )
+      }
       const password =
         options.mode === "service"
           ? yield* ServiceConfig.password()
@@ -55,7 +70,7 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
         port: Option.fromNullishOr(options.port ?? config.port),
         password,
       }).pipe(Effect.provide(Logger.layer([], { mergeWithExisting: false })))
-      if (options.mode === "service") yield* register(address, password)
+      if (serviceOptions) yield* register(address, password, serviceOptions)
       const url = HttpServer.formatAddress(address)
       console.log(options.mode === "stdio" ? JSON.stringify({ url }) : `server listening on ${url}`)
       if (options.mode === "default" && !environmentPassword) console.log(`server password ${password}`)
@@ -72,9 +87,12 @@ const infoJson = Schema.fromJsonString(Service.Info)
 const encodeInfo = Schema.encodeEffect(infoJson)
 const decodeInfo = Schema.decodeUnknownEffect(infoJson)
 
-const register = Effect.fnUntraced(function* (address: HttpServer.Address, password: string) {
+const register = Effect.fnUntraced(function* (
+  address: HttpServer.Address,
+  password: string,
+  options: ManagedServiceOptions,
+) {
   const fs = yield* FileSystem.FileSystem
-  const options = yield* ServiceConfig.options()
   const id = randomUUID()
   const temp = options.file + "." + id + ".tmp"
   yield* fs.makeDirectory(path.dirname(options.file), { recursive: true })
@@ -98,7 +116,7 @@ const register = Effect.fnUntraced(function* (address: HttpServer.Address, passw
         ? Effect.void
         : Effect.try({ try: () => process.kill(process.pid, "SIGTERM"), catch: (cause) => cause }).pipe(Effect.ignore),
     ),
-    Effect.repeat(Schedule.spaced("10 seconds")),
+    Effect.repeat(Schedule.spaced("1 second")),
     Effect.forkScoped,
   )
   yield* Effect.addFinalizer(() =>

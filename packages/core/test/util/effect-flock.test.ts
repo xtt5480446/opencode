@@ -6,7 +6,6 @@ import os from "os"
 import { Cause, Effect, Exit } from "effect"
 import { testEffect } from "../lib/effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { Global } from "@opencode-ai/core/global"
 import { Hash } from "@opencode-ai/core/util/hash"
@@ -130,6 +129,24 @@ describe("util.effect-flock", () => {
       yield* Effect.scoped(flock.acquire("eflock:acquire", dir))
 
       expect(yield* Effect.promise(() => exists(lockDir))).toBe(false)
+      yield* Effect.promise(() => fs.rm(tmp, { recursive: true, force: true }))
+    }),
+  )
+
+  it.live(
+    "tries once without waiting for an active owner",
+    Effect.gen(function* () {
+      const flock = yield* EffectFlock.Service
+      const tmp = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "eflock-test-")))
+      const dir = path.join(tmp, "locks")
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          expect(yield* flock.tryAcquire("eflock:try", dir)).toBe(true)
+          expect(yield* Effect.scoped(flock.tryAcquire("eflock:try", dir))).toBe(false)
+        }),
+      )
+      expect(yield* Effect.scoped(flock.tryAcquire("eflock:try", dir))).toBe(true)
       yield* Effect.promise(() => fs.rm(tmp, { recursive: true, force: true }))
     }),
   )
@@ -358,7 +375,7 @@ describe("util.effect-flock", () => {
   )
 
   it.live(
-    "recovers after a crashed lock owner",
+    "immediately recovers after a local lock owner crashes",
     () =>
       Effect.promise(async () => {
         const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "eflock-crash-"))
@@ -370,13 +387,6 @@ describe("util.effect-flock", () => {
         try {
           await waitForFile(ready, 5_000)
           await stopWorker(proc)
-
-          // Backdate lock files so they're past STALE_MS (60s)
-          const lockDir = lock(dir, "eflock:crash")
-          const old = new Date(Date.now() - 120_000)
-          await fs.utimes(lockDir, old, old).catch(() => {})
-          await fs.utimes(path.join(lockDir, "heartbeat"), old, old).catch(() => {})
-          await fs.utimes(path.join(lockDir, "meta.json"), old, old).catch(() => {})
 
           const done = path.join(tmp, "done.log")
           const result = await run({ key: "eflock:crash", dir, done, holdMs: 10 })
