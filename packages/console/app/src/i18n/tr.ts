@@ -106,6 +106,10 @@ export const dict = {
   "home.banner.platforms": "macOS, Windows ve Linux'ta",
   "home.banner.downloadNow": "Şimdi indir",
   "home.banner.downloadBetaNow": "Masaüstü betayı şimdi indir",
+  "home.promo.title": "Masaüstü uygulamasında sekmelerle tanışın",
+  "home.promo.body": "Birden fazla oturumda kolayca çalışın.",
+  "home.promo.cta": "Başlamak için masaüstü uygulamasını en son sürüme güncelleyin.",
+  "home.promo.close": "Masaüstü uygulaması duyurusunu kapat",
 
   "home.hero.title": "Açık kaynaklı yapay zeka kodlama ajanı",
   "home.hero.subtitle.a": "Ücretsiz modeller dahil veya herhangi bir sağlayıcıdan herhangi bir modeli bağlayın,",

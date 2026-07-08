@@ -106,6 +106,10 @@ export const dict = {
   "home.banner.platforms": "บน macOS, Windows และ Linux",
   "home.banner.downloadNow": "ดาวน์โหลดตอนนี้",
   "home.banner.downloadBetaNow": "ดาวน์โหลดเบต้าเดสก์ท็อปตอนนี้",
+  "home.promo.title": "ขอแนะนำแท็บสำหรับเดสก์ท็อป",
+  "home.promo.body": "ทำงานข้ามหลายเซสชันได้อย่างง่ายดาย",
+  "home.promo.cta": "อัปเดตแอปเดสก์ท็อปเป็นเวอร์ชันล่าสุดเพื่อเริ่มใช้งาน",
+  "home.promo.close": "ปิดประกาศเกี่ยวกับแอปเดสก์ท็อป",
 
   "home.hero.title": "เอเจนต์เขียนโค้ดด้วย AI แบบโอเพนซอร์ส",
   "home.hero.subtitle.a": "มีโมเดลฟรีรวมอยู่ หรือเชื่อมต่อโมเดลใดก็ได้จากผู้ให้บริการรายใดก็ได้,",

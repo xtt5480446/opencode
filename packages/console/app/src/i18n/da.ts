@@ -106,6 +106,10 @@ export const dict = {
   "home.banner.platforms": "på macOS, Windows og Linux",
   "home.banner.downloadNow": "Download nu",
   "home.banner.downloadBetaNow": "Download desktop-betaen nu",
+  "home.promo.title": "Introduktion af Tabs til Desktop",
+  "home.promo.body": "Arbejd nemt på tværs af flere sessioner.",
+  "home.promo.cta": "Opdater til den nyeste Desktop-app for at komme i gang.",
+  "home.promo.close": "Luk meddelelsen om Desktop-appen",
 
   "home.hero.title": "Den open source AI-kodningsagent",
   "home.hero.subtitle.a": "Gratis modeller inkluderet, eller forbind enhver model fra enhver udbyder,",

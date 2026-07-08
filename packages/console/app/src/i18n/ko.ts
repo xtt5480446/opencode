@@ -106,6 +106,10 @@ export const dict = {
   "home.banner.platforms": "macOS, Windows, Linux 지원",
   "home.banner.downloadNow": "지금 다운로드",
   "home.banner.downloadBetaNow": "데스크톱 베타 다운로드",
+  "home.promo.title": "데스크톱 탭을 소개합니다",
+  "home.promo.body": "여러 세션을 간편하게 오가며 작업하세요.",
+  "home.promo.cta": "최신 데스크톱 앱으로 업데이트하고 시작하세요.",
+  "home.promo.close": "데스크톱 앱 안내 닫기",
 
   "home.hero.title": "오픈 소스 AI 코딩 에이전트",
   "home.hero.subtitle.a": "무료 모델이 포함되어 있으며, 어떤 제공자의 모델이든 연결 가능합니다.",

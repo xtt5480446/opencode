@@ -106,6 +106,10 @@ export const dict = {
   "home.banner.platforms": "su macOS, Windows e Linux",
   "home.banner.downloadNow": "Scarica ora",
   "home.banner.downloadBetaNow": "Scarica ora la beta desktop",
+  "home.promo.title": "Scopri Tabs per Desktop",
+  "home.promo.body": "Lavora facilmente su più sessioni.",
+  "home.promo.cta": "Aggiorna l’app Desktop all’ultima versione per iniziare.",
+  "home.promo.close": "Chiudi l’annuncio dell’app Desktop",
 
   "home.hero.title": "L'agente di coding IA open source",
   "home.hero.subtitle.a": "Modelli gratuiti inclusi o collega qualsiasi modello da qualsiasi provider,",

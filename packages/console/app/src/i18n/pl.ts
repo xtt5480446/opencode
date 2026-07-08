@@ -105,6 +105,10 @@ export const dict = {
   "home.banner.platforms": "na macOS, Windows i Linux",
   "home.banner.downloadNow": "Pobierz teraz",
   "home.banner.downloadBetaNow": "Pobierz betę wersji desktopowej",
+  "home.promo.title": "Przedstawiamy karty w aplikacji desktopowej",
+  "home.promo.body": "Pracuj wygodnie w wielu sesjach.",
+  "home.promo.cta": "Zaktualizuj aplikację desktopową do najnowszej wersji, aby zacząć.",
+  "home.promo.close": "Zamknij ogłoszenie o aplikacji desktopowej",
 
   "home.hero.title": "Open source'owy agent AI do kodowania",
   "home.hero.subtitle.a": "Darmowe modele w zestawie lub podłącz dowolny model od dowolnego dostawcy,",

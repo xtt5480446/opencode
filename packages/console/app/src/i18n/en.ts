@@ -107,6 +107,11 @@ export const dict = {
   "home.banner.downloadNow": "Download now",
   "home.banner.downloadBetaNow": "Download the desktop beta now",
 
+  "home.promo.title": "Introducing Tabs for Desktop",
+  "home.promo.body": "Work across multiple sessions with ease.",
+  "home.promo.cta": "Update to the latest desktop app to get started.",
+  "home.promo.close": "Dismiss desktop app announcement",
+
   "home.hero.title": "The open source AI coding agent",
   "home.hero.subtitle.a": "Free models included or connect any model from any provider,",
   "home.hero.subtitle.b": "including Claude, GPT, Gemini and more.",

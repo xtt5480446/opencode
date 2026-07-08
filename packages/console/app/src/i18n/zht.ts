@@ -107,6 +107,10 @@ export const dict = {
   "home.banner.platforms": "支援 macOS、Windows 與 Linux",
   "home.banner.downloadNow": "立即下載",
   "home.banner.downloadBetaNow": "立即下載桌面 Beta 版",
+  "home.promo.title": "桌面版分頁功能全新推出",
+  "home.promo.body": "輕鬆處理多個工作階段。",
+  "home.promo.cta": "更新至最新版桌面應用程式即可開始使用。",
+  "home.promo.close": "關閉桌面應用程式公告",
 
   "home.hero.title": "開源 AI 編碼代理",
   "home.hero.subtitle.a": "內建免費模型，或連接任意供應商的任意模型，",

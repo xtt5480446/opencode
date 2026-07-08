@@ -106,6 +106,10 @@ export const dict = {
   "home.banner.platforms": "على macOS، Windows، وLinux",
   "home.banner.downloadNow": "حمّل الآن",
   "home.banner.downloadBetaNow": "حمّل النسخة التجريبية لتطبيق سطح المكتب الآن",
+  "home.promo.title": "نقدّم علامات التبويب لتطبيق سطح المكتب",
+  "home.promo.body": "تنقّل بين جلسات متعددة واعمل عليها بسهولة.",
+  "home.promo.cta": "حدّث تطبيق سطح المكتب إلى أحدث إصدار للبدء.",
+  "home.promo.close": "إغلاق إعلان تطبيق سطح المكتب",
 
   "home.hero.title": "وكيل برمجة بالذكاء الاصطناعي مفتوح المصدر",
   "home.hero.subtitle.a": "نماذج مجانية مضمّنة أو اربط أي نموذج من أي مزوّد،",

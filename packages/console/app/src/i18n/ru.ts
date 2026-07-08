@@ -106,6 +106,10 @@ export const dict = {
   "home.banner.platforms": "на macOS, Windows и Linux",
   "home.banner.downloadNow": "Скачать",
   "home.banner.downloadBetaNow": "Скачать бету для десктопа",
+  "home.promo.title": "Представляем вкладки в десктопном приложении",
+  "home.promo.body": "Легко работайте с несколькими сессиями.",
+  "home.promo.cta": "Обновите десктопное приложение до последней версии, чтобы начать.",
+  "home.promo.close": "Закрыть объявление о десктопном приложении",
 
   "home.hero.title": "AI-агент с открытым кодом для программирования",
   "home.hero.subtitle.a": "Бесплатные модели включены, или подключите любую модель от любого провайдера,",

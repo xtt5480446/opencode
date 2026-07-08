@@ -106,6 +106,10 @@ export const dict = {
   "home.banner.platforms": "macOS、Windows、Linux で",
   "home.banner.downloadNow": "今すぐダウンロード",
   "home.banner.downloadBetaNow": "デスクトップベータ版を今すぐダウンロード",
+  "home.promo.title": "デスクトップ版にタブが登場",
+  "home.promo.body": "複数のセッションを簡単に切り替えて作業できます。",
+  "home.promo.cta": "利用するには、デスクトップアプリを最新版にアップデートしてください。",
+  "home.promo.close": "デスクトップアプリのお知らせを閉じる",
 
   "home.hero.title": "オープンソースのAIコーディングエージェント",
   "home.hero.subtitle.a": "無料モデルが含まれています。また、任意のプロバイダーの任意のモデルに接続でき、",
