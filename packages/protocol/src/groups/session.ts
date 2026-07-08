@@ -23,9 +23,9 @@ import {
   UnknownError,
 } from "../errors.js"
 import { Agent } from "@opencode-ai/schema/agent"
+import { Skill } from "@opencode-ai/schema/skill"
 import { Model } from "@opencode-ai/schema/model"
 import { Location } from "@opencode-ai/schema/location"
-import { Revert } from "@opencode-ai/schema/revert"
 import { SessionEvent } from "@opencode-ai/schema/session-event"
 import { EventLog } from "@opencode-ai/schema/event-log"
 
@@ -270,6 +270,25 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
         ),
     )
     .add(
+      HttpApiEndpoint.post("session.move", "/api/session/:sessionID/move", {
+        params: { sessionID: Session.ID },
+        payload: Schema.Struct({
+          destination: Schema.Struct({ directory: AbsolutePath }),
+          moveChanges: Schema.Boolean.pipe(Schema.optional),
+        }),
+        success: HttpApiSchema.NoContent,
+        error: [SessionNotFoundError, InvalidRequestError],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.move",
+            summary: "Move session",
+            description: "Move a session to another project directory, optionally transferring local changes.",
+          }),
+        ),
+    )
+    .add(
       HttpApiEndpoint.post("session.prompt", "/api/session/:sessionID/prompt", {
         params: { sessionID: Session.ID },
         payload: Schema.Struct({
@@ -297,7 +316,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
           id: SessionMessage.ID.pipe(Schema.optional),
           command: Schema.String,
           arguments: Schema.String.pipe(Schema.optional),
-          agent: Schema.String.pipe(Schema.optional),
+          agent: Agent.ID.pipe(Schema.optional),
           model: Model.Ref.pipe(Schema.optional),
           files: PromptInput.Prompt.fields.files,
           agents: PromptInput.Prompt.fields.agents,
@@ -322,7 +341,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
         params: { sessionID: Session.ID },
         payload: Schema.Struct({
           id: SessionMessage.ID.pipe(Schema.optional),
-          skill: Schema.String,
+          skill: Skill.ID,
           resume: Schema.Boolean.pipe(Schema.optional),
         }),
         success: HttpApiSchema.NoContent,
@@ -344,6 +363,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
           text: Schema.String,
           description: Schema.String.pipe(Schema.optional),
           metadata: SessionMessage.Synthetic.fields.metadata,
+          resume: Schema.Boolean.pipe(Schema.optional),
         }),
         success: HttpApiSchema.NoContent,
         error: SessionNotFoundError,
@@ -412,7 +432,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
       HttpApiEndpoint.post("session.revert.stage", "/api/session/:sessionID/revert/stage", {
         params: { sessionID: Session.ID },
         payload: Schema.Struct({ messageID: SessionMessage.ID, files: Schema.Boolean.pipe(Schema.optional) }),
-        success: Schema.Struct({ data: Revert.State }),
+        success: Schema.Struct({ data: Session.Revert }),
         error: [MessageNotFoundError, SessionNotFoundError, SessionBusyError, UnknownError],
       })
         .middleware(sessionLocationMiddleware)
@@ -447,7 +467,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
     .add(
       HttpApiEndpoint.get("session.context", "/api/session/:sessionID/context", {
         params: { sessionID: Session.ID },
-        success: Schema.Struct({ data: Schema.Array(SessionMessage.Message) }),
+        success: Schema.Struct({ data: Schema.Array(SessionMessage.Info) }),
         error: [SessionNotFoundError, UnknownError],
       })
         .middleware(sessionLocationMiddleware)
@@ -563,7 +583,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
     .add(
       HttpApiEndpoint.get("session.message", "/api/session/:sessionID/message/:messageID", {
         params: { sessionID: Session.ID, messageID: SessionMessage.ID },
-        success: Schema.Struct({ data: SessionMessage.Message }),
+        success: Schema.Struct({ data: SessionMessage.Info }),
         error: [SessionNotFoundError, MessageNotFoundError],
       })
         .middleware(sessionLocationMiddleware)

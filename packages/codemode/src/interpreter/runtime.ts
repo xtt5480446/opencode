@@ -535,17 +535,29 @@ const invokeArrayStatic = (name: string, args: Array<unknown>, node: AstNode): u
       if (args[0] instanceof SandboxURLSearchParams) {
         return Array.from(args[0].params.entries(), ([key, value]) => [key, value])
       }
-      const source = boundedData(args[0], "Array.from input")
+      const source = args[0]
+      if (source instanceof SandboxPromise) {
+        throw new InterpreterRuntimeError(
+          "Array.from received an un-awaited Promise; await it before creating the array.",
+          node,
+          "InvalidDataValue",
+        )
+      }
       if (typeof source === "string") return Array.from(source)
       if (Array.isArray(source)) return [...source]
       if (
         source !== null &&
         typeof source === "object" &&
+        (Object.getPrototypeOf(source) === Object.prototype || Object.getPrototypeOf(source) === null) &&
         typeof (source as { length?: unknown }).length === "number"
       ) {
         return Array.from(source as ArrayLike<unknown>)
       }
-      throw new InterpreterRuntimeError("Array.from expects an array, string, Map, Set, or array-like value.", node)
+      throw new InterpreterRuntimeError(
+        "Array.from expects an array, string, Map, Set, or array-like value.",
+        node,
+        "InvalidDataValue",
+      )
     }
     default:
       throw new InterpreterRuntimeError(`Array.${name} is not available in CodeMode.`, node)
@@ -684,13 +696,15 @@ class Interpreter<R> {
     const evaluate = Effect.gen(function* () {
       self.hoistFunctions(program.body)
       let value: unknown = undefined
-      let returned = false
-      for (const statement of program.body) {
+      for (const [index, statement] of program.body.entries()) {
+        if (index === program.body.length - 1 && statement.type === "ExpressionStatement") {
+          value = yield* self.evaluateExpression(getNode(statement, "expression"))
+          break
+        }
         const result = yield* self.evaluateStatement(statement)
 
         if (result.kind === "return") {
           value = result.value
-          returned = true
           break
         }
 
@@ -698,11 +712,7 @@ class Interpreter<R> {
           throw new InterpreterRuntimeError(`Unexpected '${result.kind}' outside of a loop.`, statement)
         }
 
-        if (result.kind === "value") {
-          self.lastValue = result.value
-        }
       }
-      if (!returned) value = self.lastValue
 
       // The program body runs inside an implicit async function, so a returned promise
       // resolves before crossing the data boundary - `return tools.ns.tool(...)` works
@@ -827,7 +837,7 @@ class Interpreter<R> {
   private evaluateStatement(node: AstNode): Effect.Effect<StatementResult, unknown, R> {
     switch (node.type) {
       case "ExpressionStatement":
-        return Effect.map(this.evaluateExpression(getNode(node, "expression")), (value) => ({ kind: "value", value }))
+        return Effect.as(this.evaluateExpression(getNode(node, "expression")), { kind: "none" })
       case "VariableDeclaration":
         return Effect.map(this.evaluateVariableDeclaration(node), () => ({ kind: "none" }))
       case "ReturnStatement": {
@@ -879,11 +889,6 @@ class Interpreter<R> {
       for (const statementValue of body) {
         const statement = asNode(statementValue, "body")
         const result = yield* self.evaluateStatement(statement)
-
-        if (result.kind === "value") {
-          self.lastValue = result.value
-          continue
-        }
 
         if (result.kind !== "none") {
           return result
@@ -976,7 +981,6 @@ class Interpreter<R> {
           const result = yield* self.evaluateStatement(asNode(statementValue, "consequent"))
           if (result.kind === "break") return { kind: "none" } satisfies StatementResult
           if (result.kind === "return" || result.kind === "continue") return result
-          if (result.kind === "value") self.lastValue = result.value
         }
       }
       return { kind: "none" } satisfies StatementResult
@@ -1004,9 +1008,6 @@ class Interpreter<R> {
           return result
         }
 
-        if (result.kind === "value") {
-          self.lastValue = result.value
-        }
       }
 
       return { kind: "none" } satisfies StatementResult
@@ -1034,9 +1035,6 @@ class Interpreter<R> {
           return result
         }
 
-        if (result.kind === "value") {
-          self.lastValue = result.value
-        }
       } while (yield* self.evaluateExpression(testNode))
 
       return { kind: "none" } satisfies StatementResult
@@ -1090,10 +1088,6 @@ class Interpreter<R> {
 
         if (result.kind === "break") {
           return { kind: "none" } satisfies StatementResult
-        }
-
-        if (result.kind === "value") {
-          self.lastValue = result.value
         }
 
         if (iterationScope) {
@@ -1178,10 +1172,6 @@ class Interpreter<R> {
 
         if (result.kind === "break") {
           return { kind: "none" }
-        }
-
-        if (result.kind === "value") {
-          self.lastValue = result.value
         }
 
         if (result.kind === "continue") {
@@ -1271,10 +1261,6 @@ class Interpreter<R> {
 
         if (result.kind === "break") {
           return { kind: "none" }
-        }
-
-        if (result.kind === "value") {
-          self.lastValue = result.value
         }
 
         if (result.kind === "continue") {
@@ -2077,6 +2063,9 @@ class Interpreter<R> {
         if (callable.namespace === "Object" && objectMethodsPreservingIdentity.has(callable.name)) {
           return invokeGlobalMethod(callable, args, node)
         }
+        if (callable.namespace === "Array" && (callable.name === "from" || callable.name === "of")) {
+          return invokeGlobalMethod(callable, args, node)
+        }
         return boundedData(invokeGlobalMethod(callable, args, node), `${callable.namespace}.${callable.name} result`)
       }
       if (callable instanceof CoercionFunction) {
@@ -2409,7 +2398,7 @@ class Interpreter<R> {
 
       if (fn.body.type === "BlockStatement") {
         const result = yield* invocation.evaluateStatement(fn.body)
-        return result.kind === "return" || result.kind === "value" ? result.value : undefined
+        return result.kind === "return" ? result.value : undefined
       }
 
       return yield* invocation.evaluateExpression(fn.body)

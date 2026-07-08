@@ -113,6 +113,7 @@ export type FooterQueuedPrompt = {
 }
 
 export type RunAgent = {
+  id: string
   name: string
   description?: string
   mode: "subagent" | "primary" | "all"
@@ -135,7 +136,6 @@ export type RunInput = {
   files: RunFilePart[]
   initialInput?: string
   thinking: boolean
-  backgroundSubagents: boolean
   demo?: boolean
 }
 

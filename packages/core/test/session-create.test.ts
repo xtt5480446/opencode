@@ -1,6 +1,7 @@
 import { describe, expect } from "bun:test"
 import path from "path"
 import { DateTime, Effect, Layer, Stream } from "effect"
+import { Money } from "@opencode-ai/schema/money"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { asc, eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
@@ -210,7 +211,7 @@ describe("SessionV2.create", () => {
       expect(forked.parentID).toBeUndefined()
       expect(forkContext).toMatchObject([
         { type: "user", text: "First" },
-        { type: "synthetic", text: "parent note", sessionID: forked.id },
+        { type: "synthetic", text: "parent note" },
       ])
       expect(forkContext.map((message) => message.id)).not.toEqual(parentContext.map((message) => message.id))
       expect(history).toHaveLength(1)
@@ -225,9 +226,17 @@ describe("SessionV2.create", () => {
         promotedSeq: 2,
       })
 
-      yield* session.prompt({ sessionID: parent.id, prompt: PromptInput.Prompt.make({ text: "Parent changed" }), resume: false })
+      yield* session.prompt({
+        sessionID: parent.id,
+        prompt: PromptInput.Prompt.make({ text: "Parent changed" }),
+        resume: false,
+      })
       yield* SessionInput.promoteSteers(db, events, parent.id)
-      yield* session.prompt({ sessionID: forked.id, prompt: PromptInput.Prompt.make({ text: "Child continues" }), resume: false })
+      yield* session.prompt({
+        sessionID: forked.id,
+        prompt: PromptInput.Prompt.make({ text: "Child continues" }),
+        resume: false,
+      })
       yield* SessionInput.promoteSteers(db, events, forked.id)
 
       expect((yield* session.context(parent.id)).map((message) => message.type)).toEqual(["user", "synthetic", "user"])
@@ -260,8 +269,25 @@ describe("SessionV2.create", () => {
         resume: false,
       })
       yield* SessionInput.promoteSteers(db, events, parent.id)
+      const assistantMessageID = SessionMessage.ID.create()
+      const model = ModelV2.Ref.make({ id: ModelV2.ID.make("model"), providerID: ProviderV2.ID.make("provider") })
+      yield* events.publish(SessionEvent.Step.Started, {
+        sessionID: parent.id,
+        assistantMessageID,
+        agent: AgentV2.ID.make("build"),
+        model,
+      })
+      yield* events.publish(SessionEvent.Step.Ended, {
+        sessionID: parent.id,
+        assistantMessageID,
+        finish: "stop",
+        cost: Money.USD.make(0.75),
+        tokens: { input: 6, output: 3, reasoning: 1, cache: { read: 2, write: 1 } },
+      })
 
       const forked = yield* session.fork({ sessionID: parent.id, messageID: second.id })
+      const beforeFirst = yield* session.fork({ sessionID: parent.id, messageID: first.id })
+      const complete = yield* session.fork({ sessionID: parent.id })
 
       const context = yield* session.context(forked.id)
       const history = Array.from(yield* Stream.runCollect(logEvents(session, forked.id)))
@@ -269,6 +295,13 @@ describe("SessionV2.create", () => {
       expect(context).toMatchObject([{ text: "First" }])
       expect(context[0]?.id).not.toBe(first.id)
       expect(history[0]).toMatchObject({ data: { from: second.id } })
+      expect(forked).toMatchObject({ cost: 0, tokens: { input: 0, output: 0, reasoning: 0 } })
+      expect(yield* session.context(beforeFirst.id)).toEqual([])
+      expect(beforeFirst).toMatchObject({ cost: 0, tokens: { input: 0, output: 0, reasoning: 0 } })
+      expect(complete).toMatchObject({
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      })
     }),
   )
 
@@ -375,7 +408,11 @@ describe("SessionV2.create", () => {
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
       const created = yield* session.create({ location })
-      yield* session.prompt({ sessionID: created.id, prompt: PromptInput.Prompt.make({ text: "Hello" }), resume: false })
+      yield* session.prompt({
+        sessionID: created.id,
+        prompt: PromptInput.Prompt.make({ text: "Hello" }),
+        resume: false,
+      })
       yield* SessionInput.promoteSteers(db, events, created.id)
 
       expect(
@@ -497,7 +534,7 @@ describe("SessionV2.create", () => {
 
         const messages = yield* session.messages({ sessionID: created.id, order: "asc" })
         const shell = messages.find((message): message is SessionMessage.Shell => message.type === "shell")
-        expect(shell).toMatchObject({ type: "shell", shell: { command: "echo hello", status: "exited", exit: 0 } })
+        expect(shell).toMatchObject({ type: "shell", command: "echo hello", status: "exited", exit: 0 })
         expect(shell?.output?.output).toContain("hello")
         expect(shell?.output?.truncated).toBe(false)
         expect(shell?.time.completed).toBeDefined()
@@ -517,8 +554,8 @@ describe("SessionV2.create", () => {
 
         const messages = yield* session.messages({ sessionID: created.id, order: "asc" })
         const shell = messages.find((message): message is SessionMessage.Shell => message.type === "shell")
-        expect(shell).toMatchObject({ type: "shell", shell: { command: "false", status: "exited" } })
-        expect(shell?.shell.exit).not.toBe(0)
+        expect(shell).toMatchObject({ type: "shell", command: "false", status: "exited" })
+        expect(shell?.exit).not.toBe(0)
         expect(shell?.time.completed).toBeDefined()
       }),
     ),
@@ -529,7 +566,7 @@ describe("SessionV2.create", () => {
       const session = yield* SessionV2.Service
       const created = yield* session.create({ location })
 
-      yield* session.switchAgent({ sessionID: created.id, agent: "plan" })
+      yield* session.switchAgent({ sessionID: created.id, agent: AgentV2.ID.make("plan") })
 
       expect(yield* session.get(created.id)).toMatchObject({ agent: "plan" })
       expect(
@@ -544,7 +581,7 @@ describe("SessionV2.create", () => {
       const missing = SessionV2.ID.make("ses_missing_agent_switch")
 
       expect(
-        yield* session.switchAgent({ sessionID: missing, agent: "plan" }).pipe(
+        yield* session.switchAgent({ sessionID: missing, agent: AgentV2.ID.make("plan") }).pipe(
           Effect.flip,
           Effect.map((error) => error._tag),
         ),

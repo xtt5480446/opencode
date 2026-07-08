@@ -1,6 +1,6 @@
 export * as PluginInternal from "./internal"
 
-import type { Plugin } from "@opencode-ai/plugin/v2/effect"
+import type { Plugin } from "@opencode-ai/plugin/v2/effect/plugin"
 import { Context, Effect, Scope } from "effect"
 import { HttpClient } from "effect/unstable/http"
 import { AgentV2 } from "../agent"
@@ -31,7 +31,7 @@ import { SessionInstructions } from "../session/instructions"
 import { SessionTodo } from "../session/todo"
 import { Shell } from "../shell"
 import { SkillV2 } from "../skill"
-import { ApplyPatchTool } from "../tool/apply-patch"
+import { PatchTool } from "../tool/patch"
 import { EditTool } from "../tool/edit"
 import { GlobTool } from "../tool/glob"
 import { GrepTool } from "../tool/grep"
@@ -127,7 +127,7 @@ const pre = [
   SkillPlugin.Plugin,
   ModelsDevPlugin,
   ...ProviderPlugins,
-  ApplyPatchTool.Plugin,
+  PatchTool.Plugin,
   EditTool.Plugin,
   GlobTool.Plugin,
   GrepTool.Plugin,

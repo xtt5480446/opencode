@@ -1,47 +1,54 @@
 import { SimulationProtocol } from "../protocol"
 import { SimulationActions, type Harness } from "./actions"
-import { SimulationTrace } from "./trace"
 
 export interface Server {
   readonly url: string
   readonly stop: () => void
 }
 
-function actionParam(params: unknown) {
-  return SimulationProtocol.Frontend.decodeActionParams(params).action
-}
-
 function parseRequest(input: string | Buffer) {
-  return SimulationProtocol.JsonRpc.decodeRequest(JSON.parse(typeof input === "string" ? input : input.toString()))
+  return SimulationProtocol.Frontend.decodeRequest(JSON.parse(typeof input === "string" ? input : input.toString()))
 }
 
-async function handle(harness: Harness, request: SimulationProtocol.JsonRpc.Request) {
+async function handle(
+  harness: Harness,
+  request: SimulationProtocol.Frontend.Request,
+  finishRecording?: () => Promise<string>,
+) {
   switch (request.method) {
+    case "ui.screenshot":
+      return SimulationActions.screenshot(harness, request.params?.name)
     case "ui.state": {
-      const result = SimulationActions.state(harness)
-      SimulationTrace.add("ui.state", { elements: result.elements.length, actions: result.actions.length })
-      return result
+      return SimulationActions.state(harness)
     }
-    case "ui.action":
-      return SimulationActions.execute(harness, actionParam(request.params))
-    case "ui.render": {
-      await harness.renderOnce()
-      const result = SimulationActions.state(harness)
-      SimulationTrace.add("ui.render", { elements: result.elements.length, actions: result.actions.length })
-      return result
-    }
-    case "trace.list":
-      return { records: SimulationTrace.list() }
-    case "trace.clear":
-      SimulationTrace.clear()
-      return { cleared: true }
-    case "trace.export":
-      return SimulationTrace.exportTrace()
+    case "ui.recording.finish":
+      if (!finishRecording) throw new Error("UI recording is not available")
+      return finishRecording()
+    case "ui.type":
+      return SimulationActions.execute(harness, { type: "ui.type", text: request.params.text })
+    case "ui.enter":
+      return SimulationActions.execute(harness, { type: "ui.enter" })
+    case "ui.press":
+      return SimulationActions.execute(harness, {
+        type: "ui.press",
+        key: request.params.key,
+        modifiers: request.params.modifiers,
+      })
+    case "ui.arrow":
+      return SimulationActions.execute(harness, { type: "ui.arrow", direction: request.params.direction })
+    case "ui.focus":
+      return SimulationActions.execute(harness, { type: "ui.focus", target: request.params.target })
+    case "ui.click":
+      return SimulationActions.execute(harness, {
+        type: "ui.click",
+        target: request.params.target,
+        x: request.params.x,
+        y: request.params.y,
+      })
   }
-  throw new Error(`Unknown simulation method: ${request.method}`)
 }
 
-export function start(harness: Harness, endpoint: string): Server {
+export function start(harness: Harness, endpoint: string, finishRecording?: () => Promise<string>): Server {
   const url = new URL(endpoint)
   const server = Bun.serve<{ readonly drive: true }>({
     hostname: url.hostname,
@@ -51,17 +58,11 @@ export function start(harness: Harness, endpoint: string): Server {
       return new Response("opencode drive ui websocket", { status: 426 })
     },
     websocket: {
-      open() {
-        SimulationTrace.add("control.connect")
-      },
-      close() {
-        SimulationTrace.add("control.disconnect")
-      },
       async message(socket, message) {
-        let request: SimulationProtocol.JsonRpc.Request | undefined
+        let request: SimulationProtocol.Frontend.Request | undefined
         try {
           request = parseRequest(message)
-          const result = await handle(harness, request)
+          const result = await handle(harness, request, finishRecording)
           const next = SimulationProtocol.JsonRpc.success(request.id, result)
           if (next) socket.send(JSON.stringify(next))
         } catch (error) {
@@ -70,11 +71,9 @@ export function start(harness: Harness, endpoint: string): Server {
       },
     },
   })
-  SimulationTrace.add("control.start", { url: endpoint })
   return {
     url: endpoint,
     stop: () => {
-      SimulationTrace.add("control.stop", { url: endpoint })
       server.stop(true)
     },
   }
