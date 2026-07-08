@@ -2785,7 +2785,7 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  scenarioIt("durably settles local tool failures before continuing", (scenario) =>
+  scenarioIt("durably rejects tools unavailable for the request", (scenario) =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
@@ -2793,10 +2793,9 @@ describe("SessionRunnerLLM", () => {
 
       yield* scenario.run(function* () {
         yield* (yield* scenario.llm.next()).respond.toolCall("missing", {}, { id: "call-missing" })
-        yield* (yield* scenario.llm.next()).respond.text("Recovered", { id: "text-after-error" })
       })
 
-      expect(yield* scenario.llm.requests).toHaveLength(2)
+      expect(yield* scenario.llm.requests).toHaveLength(1)
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "user", text: "Call missing" },
         {
@@ -2805,11 +2804,10 @@ describe("SessionRunnerLLM", () => {
             {
               type: "tool",
               id: "call-missing",
-              state: { status: "error", error: { message: "Unknown tool: missing" } },
+              state: { status: "error", error: { message: "Tool is not available for this request: missing" } },
             },
           ],
         },
-        { type: "assistant", finish: "stop", content: [{ type: "text", text: "Recovered" }] },
       ])
     }),
   )
