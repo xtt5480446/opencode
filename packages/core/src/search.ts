@@ -74,7 +74,8 @@ const layer = Layer.effect(
     const integrations = yield* Integration.Service
     const onboarding = Semaphore.makeUnsafe(1)
     const decodeOutput = Schema.decodeUnknownEffect(ProviderOutput)
-    let pending: Integration.ID | undefined
+    const globalConfigPath = path.resolve(global.config)
+    let pendingProviderID: Integration.ID | undefined
 
     const requireProvider = (
       providers: Map<Integration.ID, Integration.SearchImplementation>,
@@ -84,45 +85,31 @@ const layer = Layer.effect(
       return provider ? Effect.succeed(provider) : Effect.fail(new ProviderNotFoundError({ providerID }))
     }
 
-    const configuredProvider = Effect.fn("Search.configuredProvider")(function* () {
-      const providerID = Config.latest(yield* config.entries(), "search")?.provider
-      if (providerID) return providerID
-      if (process.env.OPENCODE_WEBSEARCH_PROVIDER) {
-        return Integration.ID.make(process.env.OPENCODE_WEBSEARCH_PROVIDER)
-      }
-      if (truthy("OPENCODE_ENABLE_PARALLEL") || truthy("OPENCODE_EXPERIMENTAL_PARALLEL")) {
-        return Integration.ID.make("parallel")
-      }
-      if (truthy("OPENCODE_EXPERIMENTAL") || truthy("OPENCODE_ENABLE_EXA") || truthy("OPENCODE_EXPERIMENTAL_EXA")) {
-        return Integration.ID.make("exa")
-      }
-    })
-
-    const globalProvider = Effect.fn("Search.globalProvider")(function* () {
+    const globalProviderID = Effect.fn("Search.globalProviderID")(function* () {
       const entries = (yield* config.entries()).filter(
-        (entry) => entry.type === "document" && entry.path && path.dirname(entry.path) === path.resolve(global.config),
+        (entry) => entry.type === "document" && entry.path && path.dirname(entry.path) === globalConfigPath,
       )
       return Config.latest(entries, "search")?.provider
     })
 
     const selected = Effect.fn("Search.selected")(function* () {
-      return pending ?? (yield* globalProvider())
+      return pendingProviderID ?? (yield* globalProviderID())
     })
 
-    const save = Effect.fn("Search.save")(function* (providerID: Integration.ID) {
-      pending = providerID
+    const saveProvider = Effect.fn("Search.saveProvider")(function* (providerID: Integration.ID) {
+      pendingProviderID = providerID
       yield* configGlobal.update(["search"], new ConfigSearch.Info({ provider: providerID })).pipe(
-        Effect.tapError(() => Effect.sync(() => (pending = undefined))),
+        Effect.tapError(() => Effect.sync(() => (pendingProviderID = undefined))),
         Effect.orDie,
       )
     })
 
     yield* events.subscribe(ConfigSchema.Event.Updated).pipe(
       Stream.runForEach(() =>
-        globalProvider().pipe(
+        globalProviderID().pipe(
           Effect.tap((providerID) =>
             Effect.sync(() => {
-              if (providerID === pending) pending = undefined
+              if (providerID === pendingProviderID) pendingProviderID = undefined
             }),
           ),
           Effect.ignore,
@@ -201,8 +188,17 @@ const layer = Layer.effect(
         (yield* integrations.search.list()).map((provider) => [provider.integrationID, provider]),
       )
       if (input.providerID) return yield* requireProvider(providers, input.providerID)
-      const override = yield* configuredProvider()
-      if (override) return yield* requireProvider(providers, override)
+      const configuredProviderID = Config.latest(yield* config.entries(), "search")?.provider
+      if (configuredProviderID) return yield* requireProvider(providers, configuredProviderID)
+      if (process.env.OPENCODE_WEBSEARCH_PROVIDER) {
+        return yield* requireProvider(providers, Integration.ID.make(process.env.OPENCODE_WEBSEARCH_PROVIDER))
+      }
+      if (truthy("OPENCODE_ENABLE_PARALLEL") || truthy("OPENCODE_EXPERIMENTAL_PARALLEL")) {
+        return yield* requireProvider(providers, Integration.ID.make("parallel"))
+      }
+      if (truthy("OPENCODE_EXPERIMENTAL") || truthy("OPENCODE_ENABLE_EXA") || truthy("OPENCODE_EXPERIMENTAL_EXA")) {
+        return yield* requireProvider(providers, Integration.ID.make("exa"))
+      }
       const providerID = yield* selected()
       const provider = providerID ? providers.get(providerID) : undefined
       if (provider) return provider
@@ -215,7 +211,7 @@ const layer = Layer.effect(
           if (selectedProvider) return selectedProvider
           const provider = yield* ask(providers, sessionID)
           yield* connect(provider, sessionID)
-          yield* save(provider.integrationID)
+          yield* saveProvider(provider.integrationID)
           return provider
         }),
       )
@@ -226,7 +222,7 @@ const layer = Layer.effect(
       select: Effect.fn("Search.select")(function* (providerID) {
         const provider = yield* integrations.search.get(providerID)
         if (!provider) return yield* new ProviderNotFoundError({ providerID })
-        yield* save(providerID)
+        yield* saveProvider(providerID)
       }),
       query: Effect.fn("Search.query")(function* (input) {
         const provider = yield* resolve(input)

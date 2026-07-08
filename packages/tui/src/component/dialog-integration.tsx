@@ -121,7 +121,7 @@ function manageIntegration(
     const sdk = useSDK()
     const toast = useToast()
     const credentials = credentialConnections(integration)
-    const selected = () => data.location.search.provider() === integration.id
+    const selected = createMemo(() => data.location.search.provider() === integration.id)
     const selectSearch = () => {
       void sdk.api.search
         .selectProvider({

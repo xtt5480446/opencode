@@ -207,10 +207,7 @@ export function integrationHost(integration: Integration.Interface): PluginConte
           connection.type === "credential" ? { ...connection, id: Credential.ID.make(connection.id) } : connection,
         ),
     },
-    register: (definition) =>
-      integration.transform((draft) => {
-        registerIntegration(draft, definition)
-      }),
+    register: (definition) => integration.transform((draft) => registerIntegration(draft, definition)),
     transform: (callback) =>
       integration.transform((draft) =>
         callback({

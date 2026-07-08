@@ -8,7 +8,7 @@ import { response } from "../location"
 
 export const SearchHandler = HttpApiBuilder.group(Api, "server.search", (handlers) =>
   Effect.gen(function* () {
-    const ready = Effect.fn("server.search.ready")(function* () {
+    const awaitPlugins = Effect.fn("server.search.awaitPlugins")(function* () {
       const plugins = yield* PluginSupervisor.Service
       yield* plugins.ready.pipe(
         Effect.timeoutOrElse({
@@ -34,7 +34,7 @@ export const SearchHandler = HttpApiBuilder.group(Api, "server.search", (handler
       .handle(
         "search.provider.select",
         Effect.fn("server.search.provider.select")(function* (request) {
-          yield* ready()
+          yield* awaitPlugins()
           const search = yield* Search.Service
           yield* search.select(request.payload.providerID).pipe(
             Effect.mapError(
@@ -52,7 +52,7 @@ export const SearchHandler = HttpApiBuilder.group(Api, "server.search", (handler
       .handle(
         "search.query",
         Effect.fn("server.search.query")(function* (request) {
-          yield* ready()
+          yield* awaitPlugins()
           const search = yield* Search.Service
           return yield* response(
             search.query(request.payload).pipe(

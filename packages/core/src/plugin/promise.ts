@@ -120,14 +120,14 @@ export function fromPromise(plugin: Plugin) {
 }
 
 function adaptIntegration(definition: IntegrationDefinition) {
-  const { methods, search, ...info } = definition
+  const { methods, search, ...definitionInfo } = definition
   return {
-    ...info,
+    ...definitionInfo,
     methods: methods?.map((method) => {
       if (method.type !== "oauth") return method
-      const { authorize, refresh, ...info } = method
+      const { authorize, refresh, ...methodInfo } = method
       return {
-        ...info,
+        ...methodInfo,
         authorize: (inputs: Parameters<typeof authorize>[0]) =>
           Effect.tryPromise({ try: () => authorize(inputs), catch: (cause) => cause }).pipe(
             Effect.map((authorization) => {
