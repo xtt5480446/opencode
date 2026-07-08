@@ -29,6 +29,7 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const location = yield* Location.Service
+    if (!location.vcs) return Service.of({})
     const watcher = yield* Watcher.Service
     const events = yield* EventV2.Service
     const fs = yield* FSUtil.Service
