@@ -194,6 +194,19 @@ describe("tool.shell", () => {
     ),
   )
 
+  each("identifies commands as running under opencode", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const code = "process.stdout.write([process.env.OPENCODE,process.env.AGENT].join(String.fromCharCode(44)))"
+        const command = `${PS.has(sh()) ? "& " : ""}${bin} -e ${evalarg(code)}`
+        const result = yield* run({ command })
+        expect(result.metadata.exit).toBe(0)
+        expect(result.output).toContain("1,1")
+      }),
+    ),
+  )
+
   it.live("falls back from terminal-only configured shell", () =>
     Effect.gen(function* () {
       const tmp = yield* tmpdirScoped({ config: { shell: "fish" } })

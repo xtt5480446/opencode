@@ -158,6 +158,8 @@ const layer = Layer.effectDiscard(
               const command = ChildProcess.make(input.command, [], {
                 cwd: target.canonical,
                 shell,
+                env: { OPENCODE: "1", AGENT: "1" },
+                extendEnv: true,
                 stdin: "ignore",
                 detached: process.platform !== "win32",
                 forceKillAfter: Duration.seconds(3),

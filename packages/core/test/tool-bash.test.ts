@@ -28,6 +28,8 @@ const runs: Array<{
   readonly command: string
   readonly cwd?: string
   readonly shell?: string | boolean
+  readonly env?: Record<string, string | undefined>
+  readonly extendEnv?: boolean
   readonly options?: AppProcess.RunOptions
 }> = []
 let denyAction: string | undefined
@@ -67,7 +69,14 @@ const appProcess = Layer.succeed(
     run: (command: ChildProcess.Command, options?: AppProcess.RunOptions) =>
       Effect.suspend(() => {
         if (command._tag !== "StandardCommand") throw new Error("expected standard command")
-        runs.push({ command: command.command, cwd: command.options.cwd, shell: command.options.shell, options })
+        runs.push({
+          command: command.command,
+          cwd: command.options.cwd,
+          shell: command.options.shell,
+          env: command.options.env,
+          extendEnv: command.options.extendEnv,
+          options,
+        })
         return runFailure ? Effect.fail(runFailure) : Effect.succeed(result)
       }),
   } as unknown as AppProcess.Interface),
@@ -168,6 +177,7 @@ describe("BashTool", () => {
               },
             })
             expect(runs).toMatchObject([{ command: "pwd", cwd: realpathSync(tmp.path) }])
+            expect(runs[0]).toMatchObject({ env: { OPENCODE: "1", AGENT: "1" }, extendEnv: true })
             expect(runs[0]?.options).toMatchObject({
               combineOutput: true,
               maxOutputBytes: BashTool.MAX_CAPTURE_BYTES,
