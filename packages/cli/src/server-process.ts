@@ -29,7 +29,7 @@ type ManagedServiceOptions = Service.Options & { readonly file: string }
 
 export const run = Effect.fn("cli.server-process.run")((options: Options) =>
   processEffect(options).pipe(
-    Effect.catchTag("ServiceAlreadyOwned", () => Effect.void),
+    Effect.catchTag("ServiceAlreadyOwned", () => Effect.logInfo("another process owns the managed service, exiting")),
     Effect.provide(Updater.layer),
     Effect.provide(AppNodeBuilder.build(LayerNode.group([Global.node, AppProcess.node, EffectFlock.node]))),
     Effect.provide(NodeServices.layer),
@@ -55,7 +55,11 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
             (acquired) => acquired,
             () => ({ _tag: "ServiceAlreadyOwned" }) as const,
           ),
-          Effect.retry(Schedule.spaced("100 millis").pipe(Schedule.both(Schedule.recurs(20)))),
+          // Retry only lost elections: a displaced owner may take a moment to release.
+          Effect.retry({
+            while: (error) => error._tag === "ServiceAlreadyOwned",
+            schedule: Schedule.spaced("100 millis").pipe(Schedule.both(Schedule.recurs(20))),
+          }),
         )
       }
       const password =

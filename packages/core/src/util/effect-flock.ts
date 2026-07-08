@@ -164,11 +164,12 @@ export namespace EffectFlock {
               process.kill(owner.pid, 0)
               return true
             },
-            catch: (cause) => {
-              const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined
-              return code !== "ESRCH"
-            },
-          }).pipe(Effect.orElseSucceed(() => false))
+            catch: (cause) => (cause && typeof cause === "object" && "code" in cause ? cause.code : undefined),
+          }).pipe(
+            // Only ESRCH proves the pid is gone; other errors (e.g. EPERM) mean a
+            // process exists, so never break a possibly live owner's lock.
+            Effect.catch((code) => Effect.succeed(code !== "ESRCH")),
+          )
           if (!alive) return true
         }
 
