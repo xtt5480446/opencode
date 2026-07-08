@@ -8339,10 +8339,6 @@ export class Search extends HeyApiClient {
       } | null
       query?: string
       providerID?: string
-      numResults?: number
-      livecrawl?: "fallback" | "preferred"
-      type?: "auto" | "fast" | "deep"
-      contextMaxCharacters?: number
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -8354,10 +8350,6 @@ export class Search extends HeyApiClient {
             { in: "query", key: "location" },
             { in: "body", key: "query" },
             { in: "body", key: "providerID" },
-            { in: "body", key: "numResults" },
-            { in: "body", key: "livecrawl" },
-            { in: "body", key: "type" },
-            { in: "body", key: "contextMaxCharacters" },
           ],
         },
       ],

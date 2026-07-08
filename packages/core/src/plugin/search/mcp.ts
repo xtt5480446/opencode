@@ -6,30 +6,24 @@ import { collectBoundedResponseBody } from "../../tool/http-body"
 
 export const MAX_RESPONSE_BYTES = 256 * 1024
 
-const Result = Schema.Struct({
-  result: Schema.Struct({
-    content: Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.String })),
-  }),
-})
-const decodeResult = Schema.decodeUnknownEffect(Schema.fromJsonString(Result))
-
-const parsePayload = (payload: string) =>
-  Effect.gen(function* () {
+export const parseResponse = <F extends Schema.Struct.Fields>(body: string, result: Schema.Struct<F>) => {
+  const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({ result })))
+  const parse = (payload: string) => {
     const trimmed = payload.trim()
-    if (!trimmed.startsWith("{")) return undefined
-    return (yield* decodeResult(trimmed)).result.content.find((item) => item.text)?.text
-  })
-
-export const parseResponse = Effect.fn("SearchMcp.parseResponse")(function* (body: string) {
-  const trimmed = body.trim()
-  const direct = trimmed ? yield* parsePayload(trimmed) : undefined
-  if (direct) return direct
-  for (const line of body.split("\n")) {
-    if (!line.startsWith("data: ")) continue
-    const data = yield* parsePayload(line.substring(6))
-    if (data) return data
+    if (!trimmed.startsWith("{")) return Effect.succeed(undefined)
+    return decode(trimmed).pipe(Effect.map((response) => response.result))
   }
-})
+  return Effect.gen(function* () {
+    const trimmed = body.trim()
+    const direct = trimmed ? yield* parse(trimmed) : undefined
+    if (direct) return direct
+    for (const line of body.split("\n")) {
+      if (!line.startsWith("data: ")) continue
+      const data = yield* parse(line.substring(6))
+      if (data) return data
+    }
+  })
+}
 
 const Request = <F extends Schema.Struct.Fields>(args: Schema.Struct<F>) =>
   Schema.Struct({
@@ -39,11 +33,11 @@ const Request = <F extends Schema.Struct.Fields>(args: Schema.Struct<F>) =>
     params: Schema.Struct({ name: Schema.String, arguments: args }),
   })
 
-export const call = <F extends Schema.Struct.Fields>(
+export const call = <F extends Schema.Struct.Fields, R extends Schema.Struct.Fields>(
   http: HttpClient.HttpClient,
   url: string,
   tool: string,
-  args: Schema.Struct<F>,
+  schema: { readonly input: Schema.Struct<F>; readonly output: Schema.Struct<R> },
   value: Schema.Struct.Type<F>,
   headers: Record<string, string> = {},
 ) =>
@@ -51,7 +45,7 @@ export const call = <F extends Schema.Struct.Fields>(
     const request = yield* HttpClientRequest.post(url).pipe(
       HttpClientRequest.accept("application/json, text/event-stream"),
       HttpClientRequest.setHeaders(headers),
-      HttpClientRequest.schemaBodyJson(Request(args))({
+      HttpClientRequest.schemaBodyJson(Request(schema.input))({
         jsonrpc: "2.0" as const,
         id: 1 as const,
         method: "tools/call" as const,
@@ -65,7 +59,7 @@ export const call = <F extends Schema.Struct.Fields>(
         MAX_RESPONSE_BYTES,
         () => new Error(`${tool} response exceeded ${MAX_RESPONSE_BYTES} bytes`),
       )
-      return yield* parseResponse(body.toString("utf8"))
+      return yield* parseResponse(body.toString("utf8"), schema.output)
     }).pipe(
       Effect.timeoutOrElse({
         duration: Duration.seconds(25),

@@ -1120,22 +1120,11 @@ type Endpoint26_2Input = {
   readonly location?: Endpoint26_2Request["query"]["location"]
   readonly query: Endpoint26_2Request["payload"]["query"]
   readonly providerID?: Endpoint26_2Request["payload"]["providerID"]
-  readonly numResults?: Endpoint26_2Request["payload"]["numResults"]
-  readonly livecrawl?: Endpoint26_2Request["payload"]["livecrawl"]
-  readonly type?: Endpoint26_2Request["payload"]["type"]
-  readonly contextMaxCharacters?: Endpoint26_2Request["payload"]["contextMaxCharacters"]
 }
 const Endpoint26_2 = (raw: RawClient["server.search"]) => (input: Endpoint26_2Input) =>
   raw["search.query"]({
     query: { location: input["location"] },
-    payload: {
-      query: input["query"],
-      providerID: input["providerID"],
-      numResults: input["numResults"],
-      livecrawl: input["livecrawl"],
-      type: input["type"],
-      contextMaxCharacters: input["contextMaxCharacters"],
-    },
+    payload: { query: input["query"], providerID: input["providerID"] },
   }).pipe(Effect.mapError(mapClientError))
 
 const adaptGroup26 = (raw: RawClient["server.search"]) => ({

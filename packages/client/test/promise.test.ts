@@ -64,14 +64,13 @@ test("search.query uses the public HTTP contract", async () => {
   const result = await client.search.query({
     query: "opencode",
     providerID: "exa",
-    numResults: 5,
     location: { directory: "/tmp/project" },
   })
 
   expect(result.data).toEqual({ providerID: "exa", text: "result", metadata: { requestID: "req_test" } })
   expect(request?.method).toBe("POST")
   expect(request?.url).toBe("http://localhost:3000/api/search?location%5Bdirectory%5D=%2Ftmp%2Fproject")
-  expect(await request?.json()).toEqual({ query: "opencode", providerID: "exa", numResults: 5 })
+  expect(await request?.json()).toEqual({ query: "opencode", providerID: "exa" })
 })
 
 test("search provider methods use the public HTTP contract", async () => {

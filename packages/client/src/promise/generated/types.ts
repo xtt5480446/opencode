@@ -6307,54 +6307,8 @@ export type SearchQueryInput = {
   readonly location?: {
     readonly location?: { readonly directory?: string | undefined; readonly workspace?: string | undefined } | undefined
   }["location"]
-  readonly query: {
-    readonly query: string
-    readonly providerID?: string
-    readonly numResults?: number
-    readonly livecrawl?: "fallback" | "preferred"
-    readonly type?: "auto" | "fast" | "deep"
-    readonly contextMaxCharacters?: number
-  }["query"]
-  readonly providerID?: {
-    readonly query: string
-    readonly providerID?: string
-    readonly numResults?: number
-    readonly livecrawl?: "fallback" | "preferred"
-    readonly type?: "auto" | "fast" | "deep"
-    readonly contextMaxCharacters?: number
-  }["providerID"]
-  readonly numResults?: {
-    readonly query: string
-    readonly providerID?: string
-    readonly numResults?: number
-    readonly livecrawl?: "fallback" | "preferred"
-    readonly type?: "auto" | "fast" | "deep"
-    readonly contextMaxCharacters?: number
-  }["numResults"]
-  readonly livecrawl?: {
-    readonly query: string
-    readonly providerID?: string
-    readonly numResults?: number
-    readonly livecrawl?: "fallback" | "preferred"
-    readonly type?: "auto" | "fast" | "deep"
-    readonly contextMaxCharacters?: number
-  }["livecrawl"]
-  readonly type?: {
-    readonly query: string
-    readonly providerID?: string
-    readonly numResults?: number
-    readonly livecrawl?: "fallback" | "preferred"
-    readonly type?: "auto" | "fast" | "deep"
-    readonly contextMaxCharacters?: number
-  }["type"]
-  readonly contextMaxCharacters?: {
-    readonly query: string
-    readonly providerID?: string
-    readonly numResults?: number
-    readonly livecrawl?: "fallback" | "preferred"
-    readonly type?: "auto" | "fast" | "deep"
-    readonly contextMaxCharacters?: number
-  }["contextMaxCharacters"]
+  readonly query: { readonly query: string; readonly providerID?: string }["query"]
+  readonly providerID?: { readonly query: string; readonly providerID?: string }["providerID"]
 }
 
 export type SearchQueryOutput = {

@@ -943,10 +943,6 @@ export type Endpoint26_2Input = {
   readonly location?: Endpoint26_2Request["query"]["location"]
   readonly query: Endpoint26_2Request["payload"]["query"]
   readonly providerID?: Endpoint26_2Request["payload"]["providerID"]
-  readonly numResults?: Endpoint26_2Request["payload"]["numResults"]
-  readonly livecrawl?: Endpoint26_2Request["payload"]["livecrawl"]
-  readonly type?: Endpoint26_2Request["payload"]["type"]
-  readonly contextMaxCharacters?: Endpoint26_2Request["payload"]["contextMaxCharacters"]
 }
 export type Endpoint26_2Output = EffectValue<ReturnType<RawClient["server.search"]["search.query"]>>
 export type SearchQueryOperation<E = never> = (input: Endpoint26_2Input) => Effect.Effect<Endpoint26_2Output, E>

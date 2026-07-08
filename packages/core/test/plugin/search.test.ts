@@ -9,11 +9,11 @@ import { requests, resetSearchFixture, searchIntegrationTest } from "./search-fi
 
 beforeEach(() => {
   resetSearchFixture(
-    JSON.stringify({
+    `event: message\ndata: ${JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
-      result: { content: [{ type: "text", text: "search results" }] },
-    }),
+      result: { content: [{ type: "text", text: "search results", _meta: { searchTime: 123 } }] },
+    })}\n\n`,
   )
 })
 
@@ -43,7 +43,7 @@ describe("built-in search integrations", () => {
     }),
   )
 
-  it.effect("registers Exa and maps search hints to its MCP tool", () =>
+  it.effect("registers Exa with its MCP schema", () =>
     Effect.gen(function* () {
       const integrations = yield* Integration.Service
       yield* SearchExa.Plugin.effect(host({ integration: integrationHost(integrations) }))
@@ -59,16 +59,10 @@ describe("built-in search integrations", () => {
       if (!provider) return yield* Effect.die("Expected Exa search provider")
       expect(
         yield* provider.execute(
-          {
-            query: "effect typescript",
-            numResults: 3,
-            livecrawl: "preferred",
-            type: "fast",
-            contextMaxCharacters: 2500,
-          },
+          { query: "effect typescript" },
           { credential: Credential.Key.make({ type: "key", key: "exa secret" }) },
         ),
-      ).toEqual({ text: "search results" })
+      ).toEqual({ text: "search results", metadata: { searchTime: 123 } })
       expect(requests).toEqual([
         {
           url: `${SearchExa.endpoint}?exaApiKey=exa+secret`,
@@ -79,13 +73,7 @@ describe("built-in search integrations", () => {
             method: "tools/call",
             params: {
               name: "web_search_exa",
-              arguments: {
-                query: "effect typescript",
-                type: "fast",
-                numResults: 3,
-                livecrawl: "preferred",
-                contextMaxCharacters: 2500,
-              },
+              arguments: { query: "effect typescript" },
             },
           },
         },
@@ -95,6 +83,29 @@ describe("built-in search integrations", () => {
 
   it.effect("registers Parallel and keeps its credential in the authorization header", () =>
     Effect.gen(function* () {
+      resetSearchFixture(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            content: [{ type: "text", text: "search results" }],
+            structuredContent: {
+              search_id: "search_1",
+              results: [
+                {
+                  url: "https://effect.website",
+                  title: "Effect",
+                  publish_date: null,
+                  excerpts: ["Effect documentation"],
+                },
+              ],
+              warnings: null,
+              usage: [{ name: "sku_search", count: 1 }],
+              session_id: "ses_parallel",
+            },
+          },
+        }),
+      )
       const integrations = yield* Integration.Service
       yield* SearchParallel.Plugin.effect(host({ integration: integrationHost(integrations) }))
       const provider = yield* integrations.search.get(Integration.ID.make("parallel"))
@@ -107,7 +118,23 @@ describe("built-in search integrations", () => {
           credential: Credential.Key.make({ type: "key", key: "parallel-secret" }),
         },
       )
-      expect(output).toEqual({ text: "search results" })
+      expect(output).toEqual({
+        text: "search results",
+        metadata: {
+          search_id: "search_1",
+          results: [
+            {
+              url: "https://effect.website",
+              title: "Effect",
+              publish_date: null,
+              excerpts: ["Effect documentation"],
+            },
+          ],
+          warnings: null,
+          usage: [{ name: "sku_search", count: 1 }],
+          session_id: "ses_parallel",
+        },
+      })
       expect(requests[0]).toMatchObject({
         url: SearchParallel.endpoint,
         headers: { authorization: "Bearer parallel-secret" },

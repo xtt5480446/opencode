@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, test } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { beforeEach, describe, expect } from "bun:test"
+import { Effect, Layer } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV2 } from "@opencode-ai/core/permission"
@@ -20,36 +20,6 @@ const webSearchToolNode = makeLocationNode({
 })
 
 const sessionID = SessionV2.ID.make("ses_websearch_test")
-const payload = (text: string) =>
-  JSON.stringify({
-    jsonrpc: "2.0",
-    id: 1,
-    result: { content: [{ type: "text", text }] },
-  })
-
-describe("WebSearchTool input", () => {
-  test("rejects out-of-range numeric controls", () => {
-    const decode = Schema.decodeUnknownSync(WebSearchTool.Input)
-    expect(() => decode({ query: "x", numResults: 0 })).toThrow()
-    expect(() => decode({ query: "x", numResults: WebSearchTool.MAX_NUM_RESULTS + 1 })).toThrow()
-    expect(() => decode({ query: "x", contextMaxCharacters: WebSearchTool.MAX_CONTEXT_CHARACTERS + 1 })).toThrow()
-  })
-})
-
-describe("WebSearchTool MCP response parser", () => {
-  test("parses plain JSON-RPC responses", async () => {
-    expect(await Effect.runPromise(WebSearchTool.parseResponse(payload("search results")))).toBe("search results")
-  })
-
-  test("parses SSE JSON-RPC responses and ignores non-JSON frames", async () => {
-    expect(
-      await Effect.runPromise(
-        WebSearchTool.parseResponse(`data: [DONE]\nevent: message\ndata: ${payload("search results")}\n\n`),
-      ),
-    ).toBe("search results")
-  })
-})
-
 const assertions: PermissionV2.AssertInput[] = []
 const queries: Search.QueryInput[] = []
 let result = new Search.Result({ providerID: Integration.ID.make("exa"), text: "search results" })
@@ -105,13 +75,7 @@ describe("WebSearchTool registration", () => {
             type: "tool-call",
             id: "call-search",
             name: "websearch",
-            input: {
-              query: "effect typescript",
-              numResults: 3,
-              livecrawl: "preferred",
-              type: "fast",
-              contextMaxCharacters: 2500,
-            },
+            input: { query: "effect typescript" },
           },
         }),
       ).toEqual({ type: "text", value: "search results" })
@@ -121,23 +85,13 @@ describe("WebSearchTool registration", () => {
           action: "websearch",
           resources: ["effect typescript"],
           save: ["*"],
-          metadata: {
-            query: "effect typescript",
-            numResults: 3,
-            livecrawl: "preferred",
-            type: "fast",
-            contextMaxCharacters: 2500,
-          },
+          metadata: { query: "effect typescript" },
         },
       ])
       expect(queries).toEqual([
         {
           sessionID,
           query: "effect typescript",
-          numResults: 3,
-          livecrawl: "preferred",
-          type: "fast",
-          contextMaxCharacters: 2500,
         },
       ])
     }),

@@ -7,12 +7,19 @@ import { SearchMcp } from "./mcp"
 
 export const endpoint = "https://mcp.exa.ai/mcp"
 
-const Args = Schema.Struct({
+const Input = Schema.Struct({
   query: Schema.String,
-  type: Schema.String,
-  numResults: Schema.Number,
-  livecrawl: Schema.String,
-  contextMaxCharacters: Schema.optional(Schema.Number),
+  numResults: Schema.Number.pipe(Schema.optional),
+})
+
+const Output = Schema.Struct({
+  content: Schema.Array(
+    Schema.Struct({
+      type: Schema.Literal("text"),
+      text: Schema.String,
+      _meta: Schema.Struct({ searchTime: Schema.Number }).pipe(Schema.optional),
+    }),
+  ),
 })
 
 export const Plugin = define<HttpClient.HttpClient | Scope.Scope>({
@@ -31,13 +38,21 @@ export const Plugin = define<HttpClient.HttpClient | Scope.Scope>({
         execute: (input, context) => {
           const url = new URL(endpoint)
           if (context.credential?.type === "key") url.searchParams.set("exaApiKey", context.credential.key)
-          return SearchMcp.call(http, url.toString(), "web_search_exa", Args, {
-            query: input.query,
-            type: input.type ?? "auto",
-            numResults: input.numResults ?? 8,
-            livecrawl: input.livecrawl ?? "fallback",
-            contextMaxCharacters: input.contextMaxCharacters,
-          }).pipe(Effect.map((text) => ({ text: text ?? "" })))
+          return SearchMcp.call(
+            http,
+            url.toString(),
+            "web_search_exa",
+            { input: Input, output: Output },
+            { query: input.query },
+          ).pipe(
+            Effect.map((result) => {
+              const content = result?.content.find((item) => item.text)
+              return {
+                text: content?.text ?? "",
+                ...(content?._meta ? { metadata: content._meta } : {}),
+              }
+            }),
+          )
         },
       },
     })

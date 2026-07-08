@@ -19036,10 +19036,6 @@ export type V2SearchQueryData = {
   body: {
     query: string
     providerID?: string
-    numResults?: number
-    livecrawl?: "fallback" | "preferred"
-    type?: "auto" | "fast" | "deep"
-    contextMaxCharacters?: number
   }
   path?: never
   query?: {
