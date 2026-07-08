@@ -123,8 +123,8 @@ function manageIntegration(
     const credentials = credentialConnections(integration)
     const selected = createMemo(() => data.location.search.provider() === integration.id)
     const selectSearch = () => {
-      void sdk.api.search
-        .selectProvider({
+      void sdk.api.search.provider
+        .select({
           providerID: integration.id,
           location: location(data),
         })
@@ -256,8 +256,8 @@ function KeyMethod(props: {
       placeholder="API key"
       onConfirm={(key) => {
         if (!key) return
-        void sdk.api.integration
-          .connectKey({
+        void sdk.api.integration.connect
+          .key({
             integrationID: props.integration.id,
             location: location(data),
             key,
@@ -295,8 +295,8 @@ function OAuthStarting(props: {
   const toast = useToast()
 
   onMount(() => {
-    void sdk.api.integration
-      .connectOauth({
+    void sdk.api.integration.connect
+      .oauth({
         integrationID: props.integration.id,
         location: location(data),
         methodID: props.method.id,
@@ -364,8 +364,8 @@ function OAuthAuto(props: {
   }))
 
   const poll = () => {
-    void sdk.api.integration
-      .attemptStatus({ attemptID: props.attempt.attemptID, location: location(data) })
+    void sdk.api.integration.attempt
+      .status({ attemptID: props.attempt.attemptID, location: location(data) })
       .then((result) => {
         const status = result.data
         if (status.status === "pending") {
@@ -391,7 +391,7 @@ function OAuthAuto(props: {
   onCleanup(() => {
     if (timer) clearTimeout(timer)
     if (settled) return
-    void sdk.api.integration.attemptCancel({ attemptID: props.attempt.attemptID, location: location(data) })
+    void sdk.api.integration.attempt.cancel({ attemptID: props.attempt.attemptID, location: location(data) })
   })
 
   return (
@@ -421,7 +421,7 @@ function OAuthCode(props: {
 
   onCleanup(() => {
     if (settled) return
-    void sdk.api.integration.attemptCancel({ attemptID: props.attempt.attemptID, location: location(data) })
+    void sdk.api.integration.attempt.cancel({ attemptID: props.attempt.attemptID, location: location(data) })
   })
 
   return (
@@ -430,8 +430,8 @@ function OAuthCode(props: {
       placeholder="Authorization code"
       onConfirm={(code) => {
         if (!code) return
-        void sdk.api.integration
-          .attemptComplete({ attemptID: props.attempt.attemptID, location: location(data), code })
+        void sdk.api.integration.attempt
+          .complete({ attemptID: props.attempt.attemptID, location: location(data), code })
           .then(() => {
             settled = true
             return connected(props.integration, data, dialog, toast, props.onConnected)

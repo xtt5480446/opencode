@@ -1,56 +1,71 @@
+// Client data layer: apply server events and cache API reads into a Solid store.
+// Prefer straightforward projection. Do not add generation counters, stale-response
+// merges, live/history overlays, or other race machinery here—last write wins.
+// Reconnect may re-bootstrap; that is enough. UI and the server own ordering concerns.
+
 import type {
-  AgentV2Info,
-  CommandV2Info,
+  AgentInfo,
+  CommandInfo,
   FormFormInfo,
   FormIntegrationInfo,
   FormUrlInfo,
   IntegrationInfo,
   LocationRef,
   McpServer,
-  ModelV2Info,
+  ModelInfo,
   PermissionSavedInfo,
   PermissionV2Request,
   ProviderV2Info,
   ReferenceInfo,
-  SessionMessage,
+  SessionMessageInfo,
   SessionMessageAssistant,
   SessionMessageAssistantReasoning,
   SessionMessageAssistantText,
   SessionMessageAssistantTool,
-  SessionV2Info,
+  SessionInfo,
   Shell,
-  SkillV2Info,
+  SkillInfo,
   V2Event,
 } from "@opencode-ai/sdk/v2"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import { useSDK } from "./sdk"
-import { createSignal, onCleanup } from "solid-js"
+import { batch, createSignal, onCleanup } from "solid-js"
 
 export type DataSessionStatus = "idle" | "running"
 
 const messageIDFromEvent = (eventID: string) => eventID.replace(/^evt_/, "msg_")
+const MESSAGE_PAGE_SIZE = 25
 
 export type FormInfo = FormFormInfo | FormUrlInfo | FormIntegrationInfo
 
+// Per-session message timeline plus older-history paging. `items` is ascending;
+// `cursor` is the opaque server cursor for the next older page after a desc first load.
+type SessionMessages = {
+  items: SessionMessageInfo[]
+  cursor?: string
+  complete: boolean
+  loading: boolean
+}
+
 type LocationData = {
-  agent?: AgentV2Info[]
-  command?: CommandV2Info[]
+  agent?: AgentInfo[]
+  command?: CommandInfo[]
   integration?: IntegrationInfo[]
   mcp?: McpServer[]
-  model?: ModelV2Info[]
+  model?: ModelInfo[]
   provider?: ProviderV2Info[]
   reference?: ReferenceInfo[]
   searchProvider?: string | null
   // Currently running shell commands for this location, keyed by shell id. Entries are removed
   // once the command exits or is deleted, so this only ever holds in-flight shells.
   shell?: Record<string, Shell>
-  skill?: SkillV2Info[]
+  skill?: SkillInfo[]
 }
 
 type Data = {
   session: {
-    info: Record<string, SessionV2Info>
+    info: Record<string, SessionInfo>
     // Family index keyed by a family's root (or furthest-known-ancestor when the
     // true root is not yet loaded). The value is a flat deduplicated list of every
     // session ID in that family, including the key itself once its info arrives.
@@ -58,7 +73,7 @@ type Data = {
     status: Record<string, DataSessionStatus>
     compaction: Partial<Record<string, string>>
     compactionReason: Partial<Record<string, "auto" | "manual">>
-    message: Record<string, SessionMessage[]>
+    message: Record<string, SessionMessages>
     input: Record<string, string[]>
     permission: Record<string, PermissionV2Request[]>
     // Pending forms keyed by session ID.
@@ -68,6 +83,10 @@ type Data = {
     permission: Record<string, PermissionSavedInfo[]>
   }
   location: Record<string, LocationData>
+}
+
+function emptyMessages(): SessionMessages {
+  return { items: [], complete: false, loading: false }
 }
 
 function locationKey(location: LocationRef) {
@@ -112,47 +131,42 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       directory: process.cwd(),
     })
     const messageIndex = new Map<string, Map<string, number>>()
-    let connectionGeneration = 0
-    let statusChanges: Set<string> | undefined
     let bootstrapping: Promise<void> | undefined
 
     function setSessionStatus(sessionID: string, status: DataSessionStatus) {
-      statusChanges?.add(sessionID)
       setStore("session", "status", sessionID, status)
     }
 
     const message = {
-      update(sessionID: string, fn: (messages: SessionMessage[], index: Map<string, number>) => void) {
+      update(sessionID: string, fn: (messages: SessionMessageInfo[], index: Map<string, number>) => void) {
         setStore(
           "session",
           "message",
           produce((draft) => {
-            fn((draft[sessionID] ??= []), index(sessionID))
+            fn((draft[sessionID] ??= emptyMessages()).items, index(sessionID))
           }),
         )
       },
-      append(messages: SessionMessage[], index: Map<string, number>, item: SessionMessage) {
+      append(messages: SessionMessageInfo[], index: Map<string, number>, item: SessionMessageInfo) {
         if (index.has(item.id)) return
         index.set(item.id, messages.length)
         messages.push(item)
       },
-      activeAssistant(messages: SessionMessage[]) {
+      activeAssistant(messages: SessionMessageInfo[]) {
         const item = messages.findLast((item) => item.type === "assistant" && !item.time.completed)
         return item?.type === "assistant" ? item : undefined
       },
-      assistant(messages: SessionMessage[], index: Map<string, number>, messageID: string) {
+      assistant(messages: SessionMessageInfo[], index: Map<string, number>, messageID: string) {
         const position = index.get(messageID)
         const item = position === undefined ? undefined : messages[position]
         return item?.type === "assistant" ? item : undefined
       },
-      shell(messages: SessionMessage[], shellID: string) {
-        const item = messages.findLast((item) => item.type === "shell" && item.shell.id === shellID)
+      shell(messages: SessionMessageInfo[], shellID: string) {
+        const item = messages.findLast((item) => item.type === "shell" && item.shellID === shellID)
         return item?.type === "shell" ? item : undefined
       },
-      compaction(messages: SessionMessage[]) {
-        const item = messages.findLast(
-          (item) => item.type === "compaction" && (item.status === "queued" || item.status === "running"),
-        )
+      compaction(messages: SessionMessageInfo[]) {
+        const item = messages.findLast((item) => item.type === "compaction" && item.status === "running")
         return item?.type === "compaction" ? item : undefined
       },
       latestTool(assistant: SessionMessageAssistant | undefined, callID?: string) {
@@ -252,6 +266,13 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         case "session.deleted":
           removeSession(event.data.sessionID)
           break
+        case "session.usage.updated":
+          if (store.session.info[event.data.sessionID])
+            setStore("session", "info", event.data.sessionID, {
+              cost: event.data.cost,
+              tokens: event.data.tokens,
+            })
+          break
         case "catalog.updated":
           void Promise.all([
             result.location.model.refresh(event.location),
@@ -305,6 +326,12 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         case "session.renamed":
           if (store.session.info[event.data.sessionID])
             setStore("session", "info", event.data.sessionID, "title", event.data.title)
+          break
+        case "session.moved":
+          if (store.session.info[event.data.sessionID]) {
+            setStore("session", "info", event.data.sessionID, "location", mutable(event.data.location))
+            setStore("session", "info", event.data.sessionID, "subpath", event.data.subpath)
+          }
           break
         case "session.prompt.promoted": {
           message.update(event.data.sessionID, (draft, index) => {
@@ -360,7 +387,6 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             message.append(draft, index, {
               id: messageIDFromEvent(event.id),
               type: "synthetic",
-              sessionID: event.data.sessionID,
               text: event.data.text,
               description: event.data.description,
               time: { created: event.created },
@@ -372,7 +398,10 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             message.append(draft, index, {
               id: messageIDFromEvent(event.id),
               type: "shell",
-              shell: event.data.shell,
+              shellID: event.data.shell.id,
+              command: event.data.shell.command,
+              status: event.data.shell.status,
+              exit: event.data.shell.exit,
               time: { created: event.created },
             })
           })
@@ -381,7 +410,9 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           message.update(event.data.sessionID, (draft) => {
             const match = message.shell(draft, event.data.shell.id)
             if (!match) return
-            match.shell = event.data.shell
+            match.command = event.data.shell.command
+            match.status = event.data.shell.status
+            match.exit = event.data.shell.exit
             match.output = event.data.output
             match.time.completed = event.created
           })
@@ -416,7 +447,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             })
           })
           break
-        case "session.step.ended":
+        case "session.step.ended": {
           message.update(event.data.sessionID, (draft, index) => {
             const currentAssistant = message.assistant(draft, index, event.data.assistantMessageID)
             if (!currentAssistant) return
@@ -428,6 +459,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               currentAssistant.snapshot = { ...currentAssistant.snapshot, end: event.data.snapshot }
           })
           break
+        }
         case "session.step.failed":
           message.update(event.data.sessionID, (draft, index) => {
             const currentAssistant = message.assistant(draft, index, event.data.assistantMessageID)
@@ -436,6 +468,10 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             currentAssistant.finish = "error"
             currentAssistant.error = event.data.error
             currentAssistant.retry = undefined
+            if (event.data.cost !== undefined && event.data.tokens !== undefined) {
+              currentAssistant.cost = event.data.cost
+              currentAssistant.tokens = event.data.tokens
+            }
           })
           break
         case "session.text.started":
@@ -465,7 +501,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               id: event.data.callID,
               name: event.data.name,
               time: { created: event.created },
-              state: { status: "pending", input: "" },
+              state: { status: "streaming", input: "" },
             })
           })
           break
@@ -475,7 +511,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               message.assistant(draft, index, event.data.assistantMessageID),
               event.data.callID,
             )
-            if (match?.state.status === "pending") match.state.input += event.data.delta
+            if (match?.state.status === "streaming") match.state.input += event.data.delta
           })
           break
         case "session.tool.input.ended":
@@ -484,7 +520,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               message.assistant(draft, index, event.data.assistantMessageID),
               event.data.callID,
             )
-            if (match?.state.status === "pending") match.state.input = event.data.text
+            if (match?.state.status === "streaming") match.state.input = event.data.text
           })
           break
         case "session.tool.called":
@@ -536,7 +572,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               message.assistant(draft, index, event.data.assistantMessageID),
               event.data.callID,
             )
-            if (!match || (match.state.status !== "pending" && match.state.status !== "running")) return
+            if (!match || (match.state.status !== "streaming" && match.state.status !== "running")) return
             match.state = {
               status: "error",
               error: event.data.error,
@@ -591,27 +627,27 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           setSessionStatus(event.data.sessionID, "running")
           break
         case "session.compaction.admitted":
-          message.update(event.data.sessionID, (draft, index) => {
-            if (message.compaction(draft)) return
-            message.append(draft, index, {
-              id: event.data.inputID,
-              type: "compaction",
-              status: "queued",
-              reason: "manual",
-              summary: "",
-              recent: "",
-              time: { created: event.created },
-            })
-          })
           break
         case "session.compaction.started":
           setStore("session", "compaction", event.data.sessionID, "")
           setStore("session", "compactionReason", event.data.sessionID, event.data.reason)
-          if (event.data.reason === "manual")
-            message.update(event.data.sessionID, (draft) => {
-              const current = message.compaction(draft)
-              if (current) current.status = "running"
+          message.update(event.data.sessionID, (draft, index) => {
+            const current = message.compaction(draft)
+            if (current) {
+              current.status = "running"
+              current.reason = event.data.reason
+              return
+            }
+            message.append(draft, index, {
+              id: event.data.inputID ?? messageIDFromEvent(event.id),
+              type: "compaction",
+              status: "running",
+              reason: event.data.reason,
+              summary: "",
+              recent: event.data.recent ?? "",
+              time: { created: event.created },
             })
+          })
           break
         case "session.execution.succeeded":
         case "session.execution.failed":
@@ -635,8 +671,9 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             setStore("session", "info", event.data.sessionID, "revert", undefined)
           break
         case "session.revert.committed":
-          if (store.session.info[event.data.sessionID])
+          if (store.session.info[event.data.sessionID]) {
             setStore("session", "info", event.data.sessionID, "revert", undefined)
+          }
           setStore(
             "session",
             "input",
@@ -651,22 +688,26 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           break
         case "session.compaction.delta":
           setStore("session", "compaction", event.data.sessionID, (text) => (text ?? "") + event.data.text)
-          if (store.session.compactionReason[event.data.sessionID] === "manual")
-            message.update(event.data.sessionID, (draft) => {
-              const current = message.compaction(draft)
-              if (current) current.summary += event.data.text
-            })
+          message.update(event.data.sessionID, (draft) => {
+            const current = message.compaction(draft)
+            if (current) current.summary += event.data.text
+          })
           break
         case "session.compaction.ended":
           setStore("session", "compaction", event.data.sessionID, undefined)
           setStore("session", "compactionReason", event.data.sessionID, undefined)
           message.update(event.data.sessionID, (draft, index) => {
-            const current = event.data.reason === "manual" ? message.compaction(draft) : undefined
+            const current = message.compaction(draft)
             if (current) {
-              current.status = "completed"
-              current.reason = event.data.reason
-              current.summary = event.data.text
-              current.recent = event.data.recent
+              const position = index.get(current.id)
+              if (position !== undefined)
+                draft[position] = {
+                  ...current,
+                  status: "completed",
+                  reason: event.data.reason,
+                  summary: event.data.text,
+                  recent: event.data.recent,
+                }
               return
             }
             message.append(draft, index, {
@@ -683,9 +724,17 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         case "session.compaction.failed":
           setStore("session", "compaction", event.data.sessionID, undefined)
           setStore("session", "compactionReason", event.data.sessionID, undefined)
-          message.update(event.data.sessionID, (draft) => {
+          message.update(event.data.sessionID, (draft, index) => {
             const current = message.compaction(draft)
-            if (current) current.status = "failed"
+            if (!current) return
+            const position = index.get(current.id)
+            if (position !== undefined)
+              draft[position] = {
+                ...current,
+                status: "failed",
+                reason: event.data.reason,
+                error: event.data.error,
+              }
           })
           break
         case "permission.v2.asked":
@@ -815,35 +864,38 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         },
         message: {
           ids(sessionID: string) {
-            return (store.session.message[sessionID] ?? []).map((message) => message.id)
+            return (store.session.message[sessionID]?.items ?? []).map((message) => message.id)
           },
           list(sessionID: string) {
-            return store.session.message[sessionID] ?? []
+            return store.session.message[sessionID]?.items ?? []
           },
           get(sessionID: string, messageID: string) {
-            const messages = store.session.message[sessionID]
+            const messages = store.session.message[sessionID]?.items
             const position = messageIndex.get(sessionID)?.get(messageID)
             return position === undefined ? undefined : messages?.[position]
           },
+          cursor(sessionID: string) {
+            return store.session.message[sessionID]?.cursor
+          },
+          complete(sessionID: string) {
+            return store.session.message[sessionID]?.complete ?? false
+          },
+          loading(sessionID: string) {
+            return store.session.message[sessionID]?.loading ?? false
+          },
           async refresh(sessionID: string) {
-            const live = [...(store.session.message[sessionID] ?? [])]
-            setStore("session", "message", sessionID, [])
+            setStore("session", "message", sessionID, { ...emptyMessages(), loading: true })
             messageIndex.set(sessionID, new Map())
-            const loaded = mutable(
-              (await sdk.api.message.list({ sessionID, limit: 200, order: "desc" })).data,
-            ).toReversed()
-            const loadedIDs = new Set(loaded.map((message) => message.id))
-            const liveByID = new Map(live.map((message) => [message.id, message]))
-            const messages = [
-              ...loaded.map((message) => {
-                if (message.type === "user") return message
-                return liveByID.get(message.id) ?? message
-              }),
-              ...live.filter((message) => !loadedIDs.has(message.id)),
-            ].toSorted((a, b) => a.time.created - b.time.created)
-            messageIndex.set(sessionID, new Map(messages.map((message, index) => [message.id, index])))
-            setStore("session", "message", sessionID, messages)
-            const running = messages.find((message) => message.type === "compaction" && message.status === "running")
+            const response = await sdk.api.message.list({ sessionID, limit: MESSAGE_PAGE_SIZE, order: "desc" })
+            const items = mutable(response.data).toReversed()
+            messageIndex.set(sessionID, new Map(items.map((message, index) => [message.id, index])))
+            setStore("session", "message", sessionID, {
+              items,
+              cursor: response.cursor.next ?? undefined,
+              complete: response.data.length < MESSAGE_PAGE_SIZE,
+              loading: false,
+            })
+            const running = items.find((message) => message.type === "compaction" && message.status === "running")
             setStore("session", "compaction", sessionID, running?.type === "compaction" ? running.summary : undefined)
             setStore(
               "session",
@@ -851,6 +903,25 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               sessionID,
               running?.type === "compaction" ? running.reason : undefined,
             )
+          },
+          async more(sessionID: string) {
+            const current = store.session.message[sessionID]
+            if (!current || current.loading || current.complete || !current.cursor) return
+            const cursor = current.cursor
+            setStore("session", "message", sessionID, "loading", true)
+            const response = await sdk.api.message.list({ sessionID, limit: MESSAGE_PAGE_SIZE, cursor })
+            const older = mutable(response.data).toReversed()
+            const prepend = older.filter((item) => !messageIndex.get(sessionID)?.has(item.id))
+            const items = [...prepend, ...current.items]
+            messageIndex.set(sessionID, new Map(items.map((item, position) => [item.id, position])))
+            batch(() => {
+              setStore("session", "message", sessionID, "items", items)
+              setStore("session", "message", sessionID, {
+                cursor: response.cursor.next ?? undefined,
+                complete: response.data.length < MESSAGE_PAGE_SIZE,
+                loading: false,
+              })
+            })
           },
         },
         permission: {
@@ -876,7 +947,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             return store.project.permission[projectID]
           },
           async refresh(projectID: string) {
-            setStore("project", "permission", projectID, mutable(await sdk.api.permission.listSaved({ projectID })))
+            setStore("project", "permission", projectID, mutable(await sdk.api.permission.saved.list({ projectID })))
           },
         },
       },
@@ -983,7 +1054,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             return store.location[locationKey(location ?? defaultLocation())]?.searchProvider ?? undefined
           },
           async refresh(ref?: LocationRef) {
-            const result = await sdk.api.search.provider({ location: locationQuery(ref ?? defaultLocation()) })
+            const result = await sdk.api.search.provider.get({ location: locationQuery(ref ?? defaultLocation()) })
             const key = locationKey(result.location)
             setStore("location", key, { ...store.location[key], searchProvider: result.data ?? null })
           },
@@ -1021,6 +1092,26 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             )
             for (const session of response.data) registerSession(session.id)
           }),
+        sdk.api.permission.request.list({ location: locationQuery(defaultLocation()) }).then((response) => {
+          const permissions = mutable(response.data).reduce<Record<string, PermissionV2Request[]>>(
+            (result, request) => ({
+              ...result,
+              [request.sessionID]: [...(result[request.sessionID] ?? []), request],
+            }),
+            {},
+          )
+          setStore("session", "permission", reconcile(permissions))
+        }),
+        sdk.api.form.request.list({ location: locationQuery(defaultLocation()) }).then((response) => {
+          const forms = mutable(response.data).reduce<Record<string, FormInfo[]>>(
+            (result, form) => ({
+              ...result,
+              [form.sessionID]: [...(result[form.sessionID] ?? []), form],
+            }),
+            {},
+          )
+          setStore("session", "form", reconcile(forms))
+        }),
         result.location.refresh(),
         result.location.agent.refresh(),
         result.location.integration.refresh(),
@@ -1044,23 +1135,16 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
     }
 
     function refreshActive() {
-      const generation = ++connectionGeneration
-      const changed = new Set<string>()
-      statusChanges = changed
       void sdk.api.session
         .active()
         .then((active) => {
-          if (generation !== connectionGeneration) return
-          const status: Record<string, DataSessionStatus> = Object.fromEntries(
-            Object.keys(active).map((sessionID) => [sessionID, "running" as const]),
+          setStore(
+            "session",
+            "status",
+            reconcile(Object.fromEntries(Object.keys(active).map((sessionID) => [sessionID, "running" as const]))),
           )
-          for (const sessionID of changed) status[sessionID] = store.session.status[sessionID]
-          setStore("session", "status", reconcile(status))
         })
         .catch(() => undefined)
-        .finally(() => {
-          if (statusChanges === changed) statusChanges = undefined
-        })
     }
 
     onCleanup(

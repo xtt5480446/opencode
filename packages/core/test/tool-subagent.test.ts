@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
 import { DateTime, Effect, Layer, Schema } from "effect"
+import { Money } from "@opencode-ai/schema/money"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
@@ -70,7 +71,7 @@ const executionNode = makeGlobalNode({
           sessionID,
           assistantMessageID,
           finish: "stop",
-          cost: 0,
+          cost: Money.USD.zero,
           tokens,
         })
       })
@@ -107,6 +108,11 @@ const withSubagent = (location: Location.Ref) =>
     const locations = yield* LocationServiceMap.Service
     yield* AgentV2.Service.use((agents) =>
       agents.transform((draft) => {
+        // The caller identity used by executeTool; subagent permission asserts against it.
+        draft.update(toolIdentity.agent, (agent) => {
+          agent.mode = "primary"
+          agent.permissions.push({ action: "*", resource: "*", effect: "allow" })
+        })
         draft.update(AgentV2.ID.make("reviewer"), (agent) => {
           agent.mode = "subagent"
           agent.model = childModel

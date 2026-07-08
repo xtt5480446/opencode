@@ -1,6 +1,6 @@
 export * as SearchParallel from "./parallel"
 
-import { define } from "@opencode-ai/plugin/v2/effect"
+import { define } from "@opencode-ai/plugin/v2/effect/plugin"
 import { Effect, Schema, Scope } from "effect"
 import { HttpClient } from "effect/unstable/http"
 import { InstallationVersion } from "../../installation/version"

@@ -1,7 +1,6 @@
 import { Effect } from "effect"
 import { SimulationProtocol } from "../protocol"
 import { SimulationLLMExchange } from "./llm-exchange"
-import { SimulationNetwork } from "./network"
 
 /**
  * Backend-hosted simulation control WebSocket.
@@ -19,16 +18,15 @@ import { SimulationNetwork } from "./network"
  * - `llm.finish`  { id, reason? } finish an exchange
  * - `llm.disconnect` { id } abruptly terminate an exchange without a finish
  * - `llm.pending`                 list open exchanges
- * - `network.log`                 simulated network request log
  */
 
 type ControlSocket = Bun.ServerWebSocket<{ unsubscribe?: () => void }>
 
 function parseRequest(input: string | Buffer) {
-  return SimulationProtocol.JsonRpc.decodeRequest(JSON.parse(typeof input === "string" ? input : input.toString()))
+  return SimulationProtocol.Backend.decodeRequest(JSON.parse(typeof input === "string" ? input : input.toString()))
 }
 
-async function handle(socket: ControlSocket, request: SimulationProtocol.JsonRpc.Request): Promise<unknown> {
+async function handle(socket: ControlSocket, request: SimulationProtocol.Backend.Request): Promise<unknown> {
   switch (request.method) {
     case "llm.attach": {
       socket.data.unsubscribe?.()
@@ -38,31 +36,27 @@ async function handle(socket: ControlSocket, request: SimulationProtocol.JsonRpc
       return { attached: true }
     }
     case "llm.chunk": {
-      const params = await SimulationProtocol.Backend.decodeChunkParams(request.params)
       await Effect.runPromise(
         SimulationLLMExchange.push(
-          params.id,
-          params.items.map((item) => ({ type: "item", item }) as const),
+          request.params.id,
+          request.params.items.map((item) => ({ type: "item", item }) as const),
         ),
       )
       return { ok: true }
     }
     case "llm.finish": {
-      const params = await SimulationProtocol.Backend.decodeFinishParams(request.params)
-      await Effect.runPromise(SimulationLLMExchange.push(params.id, [{ type: "finish", reason: params.reason }]))
+      await Effect.runPromise(
+        SimulationLLMExchange.push(request.params.id, [{ type: "finish", reason: request.params.reason }]),
+      )
       return { ok: true }
     }
     case "llm.disconnect": {
-      const params = await SimulationProtocol.Backend.decodeDisconnectParams(request.params)
-      await Effect.runPromise(SimulationLLMExchange.disconnect(params.id))
+      await Effect.runPromise(SimulationLLMExchange.disconnect(request.params.id))
       return { ok: true }
     }
     case "llm.pending":
       return { exchanges: SimulationLLMExchange.pending() }
-    case "network.log":
-      return { entries: SimulationNetwork.log() }
   }
-  throw new Error(`Unknown simulation control method: ${request.method}`)
 }
 
 export function start(endpoint: string) {
@@ -79,7 +73,7 @@ export function start(endpoint: string) {
         socket.data.unsubscribe?.()
       },
       async message(socket, message) {
-        let request: SimulationProtocol.JsonRpc.Request | undefined
+        let request: SimulationProtocol.Backend.Request | undefined
         try {
           request = parseRequest(message)
           const result = await handle(socket, request)

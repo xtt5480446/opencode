@@ -19,7 +19,7 @@ import { SessionMessage } from "@opencode-ai/schema/session-message"
 import { Workspace } from "@opencode-ai/schema/workspace"
 import { Api } from "@opencode-ai/server/api"
 import { compile, emitPromise } from "@opencode-ai/httpapi-codegen"
-import { ClientApi, endpointNames, groupNames, promiseOmitEndpoints } from "../src/contract"
+import { ClientApi, groupNames, promiseOmitEndpoints } from "../src/contract"
 
 const Client = await import("../src/effect")
 
@@ -38,7 +38,7 @@ test("Core and Server reuse the authoritative Schema and Protocol values", () =>
   expect(ProjectV2.Directory).toBe(Project.Directory)
   expect(ProjectV2.Directories).toBe(Project.Directories)
   expect(CoreSessionInput.Admitted).toBe(SessionInput.Admitted)
-  expect(CoreSessionMessage.Message).toBe(SessionMessage.Message)
+  expect(CoreSessionMessage.Info).toBe(SessionMessage.Info)
   expect(Api.groups["server.session"].identifier).toBe("server.session")
   expect(Api.groups["server.project"].identifier).toBe("server.project")
   expect(Object.keys(ClientApi.groups)).toEqual(Object.keys(Api.groups))
@@ -49,8 +49,8 @@ test("Core and Server reuse the authoritative Schema and Protocol values", () =>
 })
 
 test("client and Server contracts generate identically", () => {
-  const server = compile(Api, { groupNames, endpointNames, omitEndpoints: promiseOmitEndpoints })
-  const client = compile(ClientApi, { groupNames, endpointNames, omitEndpoints: promiseOmitEndpoints })
+  const server = compile(Api, { groupNames, omitEndpoints: promiseOmitEndpoints })
+  const client = compile(ClientApi, { groupNames, omitEndpoints: promiseOmitEndpoints })
 
   expect(emitPromise(client)).toEqual(emitPromise(server))
 })

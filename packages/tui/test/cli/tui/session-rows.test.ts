@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test"
-import type { SessionMessage, SessionMessageAssistant } from "@opencode-ai/sdk/v2"
+import type { SessionMessageAssistant, SessionMessageInfo } from "@opencode-ai/sdk/v2"
 import { reduceSessionRows } from "../../../src/routes/session/rows"
 
 test("groups exploration parts across assistant messages until a delimiter", () => {
-  const messages: SessionMessage[] = [
+  const messages: SessionMessageInfo[] = [
     { type: "user", id: "user-1", text: "Explore", time: { created: 0 } },
     assistant("assistant-1", [
       { type: "text", text: "Looking" },
@@ -35,7 +35,7 @@ test("groups exploration parts across assistant messages until a delimiter", () 
 })
 
 test("keeps non-exploration tools as individual part rows", () => {
-  const messages: SessionMessage[] = [
+  const messages: SessionMessageInfo[] = [
     assistant("assistant-1", [
       { type: "tool", id: "read-1", name: "read", state: pending(), time: { created: 1 } },
       { type: "tool", id: "bash-1", name: "bash", state: pending(), time: { created: 2 } },
@@ -63,7 +63,7 @@ test("keeps non-exploration tools as individual part rows", () => {
 })
 
 test("assigns stable kind ordinals within an assistant message", () => {
-  const messages: SessionMessage[] = [
+  const messages: SessionMessageInfo[] = [
     assistant("assistant-1", [
       { type: "text", text: "First" },
       { type: "reasoning", text: "Think" },
@@ -81,7 +81,7 @@ test("assigns stable kind ordinals within an assistant message", () => {
 })
 
 test("groups across empty assistant reasoning parts", () => {
-  const messages: SessionMessage[] = [
+  const messages: SessionMessageInfo[] = [
     assistant("assistant-1", [
       { type: "reasoning", text: "Looking" },
       { type: "tool", id: "read-1", name: "read", state: pending(), time: { created: 2 } },
@@ -112,7 +112,7 @@ test("completes exploration groups when another row follows", () => {
     { type: "tool", id: "grep-1", name: "grep", state: pending(), time: { created: 3 } },
   ])
   finished.finish = "stop"
-  const messages: SessionMessage[] = [
+  const messages: SessionMessageInfo[] = [
     assistant("assistant-1", [{ type: "tool", id: "read-1", name: "read", state: pending(), time: { created: 1 } }]),
     { type: "user", id: "user-1", text: "Continue", time: { created: 2 } },
     finished,
@@ -139,12 +139,11 @@ test("completes exploration groups when another row follows", () => {
 })
 
 test("hides synthetic messages without descriptions", () => {
-  const messages: SessionMessage[] = [
+  const messages: SessionMessageInfo[] = [
     assistant("assistant-1", [{ type: "tool", id: "read-1", name: "read", state: pending(), time: { created: 1 } }]),
     {
       type: "synthetic",
       id: "synthetic-1",
-      sessionID: "session-1",
       text: "internal context",
       time: { created: 2 },
     },
@@ -166,12 +165,11 @@ test("hides synthetic messages without descriptions", () => {
 })
 
 test("renders synthetic messages with descriptions", () => {
-  const messages: SessionMessage[] = [
+  const messages: SessionMessageInfo[] = [
     assistant("assistant-1", [{ type: "tool", id: "read-1", name: "read", state: pending(), time: { created: 1 } }]),
     {
       type: "synthetic",
       id: "synthetic-1",
-      sessionID: "session-1",
       text: "internal context",
       description: "Explicit notice",
       time: { created: 2 },
@@ -209,31 +207,25 @@ test("renders a footer for a pre-output retry assistant after replay", () => {
   expect(reduceSessionRows([message])).toEqual([{ type: "assistant-footer", messageID: "assistant-retry" }])
 })
 
-test("places a pending compaction barrier before every queued user message", () => {
-  const queued = (id: string, text: string, created: number): SessionMessage => ({
-    type: "user",
-    id,
-    text,
-    time: { created },
-  })
-  const messages: SessionMessage[] = [
-    queued("user-before", "Before", 1),
+test("history reduce keeps chronological order without pending reordering", () => {
+  const messages: SessionMessageInfo[] = [
+    { type: "user", id: "user-1", text: "Before", time: { created: 1 } },
     {
       type: "compaction",
       id: "compaction",
-      status: "queued",
+      status: "completed",
       reason: "manual",
-      summary: "",
+      summary: "done",
       recent: "",
       time: { created: 2 },
     },
-    queued("user-after", "After", 3),
+    { type: "user", id: "user-2", text: "After", time: { created: 3 } },
   ]
 
-  expect(reduceSessionRows(messages, new Set(["user-before", "user-after"]))).toEqual([
+  expect(reduceSessionRows(messages)).toEqual([
+    { type: "message", messageID: "user-1" },
     { type: "message", messageID: "compaction" },
-    { type: "message", messageID: "user-before" },
-    { type: "message", messageID: "user-after" },
+    { type: "message", messageID: "user-2" },
   ])
 })
 
@@ -249,5 +241,5 @@ function assistant(id: string, content: SessionMessageAssistant["content"]): Ses
 }
 
 function pending() {
-  return { status: "pending" as const, input: "" }
+  return { status: "streaming" as const, input: "" }
 }

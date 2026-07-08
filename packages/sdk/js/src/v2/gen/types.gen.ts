@@ -21,6 +21,7 @@ export type Event =
   | EventSessionModelSelected
   | EventSessionMoved
   | EventSessionRenamed
+  | EventSessionUsageUpdated
   | EventSessionForked
   | EventSessionPromptPromoted
   | EventSessionPromptAdmitted
@@ -95,6 +96,7 @@ export type Event =
   | EventTuiToastShow2
   | EventTuiSessionSelect2
   | EventMcpToolsChanged
+  | EventMcpResourcesChanged
   | EventMcpStatusChanged
   | EventCommandExecuted
   | EventFileEdited
@@ -169,14 +171,6 @@ export type MoveSessionError = {
   }
 }
 
-export type SnapshotFileDiff = {
-  file?: string
-  patch?: string
-  additions: number
-  deletions: number
-  status?: "added" | "deleted" | "modified"
-}
-
 export type PermissionAction = "allow" | "deny" | "ask"
 
 export type PermissionRule = {
@@ -186,59 +180,6 @@ export type PermissionRule = {
 }
 
 export type PermissionRuleset = Array<PermissionRule>
-
-export type Session = {
-  id: string
-  slug: string
-  projectID: string
-  workspaceID?: string
-  directory: string
-  path?: string
-  parentID?: string
-  summary?: {
-    additions: number
-    deletions: number
-    files: number
-    diffs?: Array<SnapshotFileDiff>
-  }
-  cost?: number
-  tokens?: {
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
-  share?: {
-    url: string
-  }
-  title: string
-  agent?: string
-  model?: {
-    id: string
-    providerID: string
-    variant?: string
-  }
-  version: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  time: {
-    created: number
-    updated: number
-    compacting?: number
-    archived?: number
-  }
-  permission?: PermissionRuleset
-  revert?: {
-    messageID: string
-    partID?: string
-    snapshot?: string
-    diff?: string
-  }
-}
 
 export type OutputFormatText = {
   type: "text"
@@ -267,7 +208,7 @@ export type UserMessage = {
   summary?: {
     title?: string
     body?: string
-    diffs: Array<SnapshotFileDiff>
+    diffs: Array<FileDiffLegacyInfo>
   }
   agent: string
   model: {
@@ -810,7 +751,7 @@ export type GlobalEvent = {
         type: "session.created"
         properties: {
           sessionID: string
-          info: Session
+          info: SessionV1Info
         }
       }
     | {
@@ -818,7 +759,7 @@ export type GlobalEvent = {
         type: "session.updated"
         properties: {
           sessionID: string
-          info: Session
+          info: SessionV1Info
         }
       }
     | {
@@ -893,6 +834,15 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           title: string
+        }
+      }
+    | {
+        id: string
+        type: "session.usage.updated"
+        properties: {
+          sessionID: string
+          cost: MoneyUsd
+          tokens: TokenUsageInfo
         }
       }
     | {
@@ -977,6 +927,7 @@ export type GlobalEvent = {
         type: "session.skill.activated"
         properties: {
           sessionID: string
+          id: string
           name: string
           text: string
         }
@@ -1021,16 +972,8 @@ export type GlobalEvent = {
           sessionID: string
           assistantMessageID: string
           finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown"
-          cost: number
-          tokens: {
-            input: number
-            output: number
-            reasoning: number
-            cache: {
-              read: number
-              write: number
-            }
-          }
+          cost: MoneyUsd
+          tokens: TokenUsageInfo
           snapshot?: string
           files?: Array<string>
         }
@@ -1042,6 +985,8 @@ export type GlobalEvent = {
           sessionID: string
           assistantMessageID: string
           error: SessionStructuredError
+          cost?: MoneyUsd
+          tokens?: TokenUsageInfo
         }
       }
     | {
@@ -1172,7 +1117,6 @@ export type GlobalEvent = {
             [key: string]: unknown
           }
           content: Array<LlmToolContent>
-          outputPaths?: Array<string>
           result?: unknown
           executed: boolean
           resultState?: SessionMessageProviderState
@@ -1216,6 +1160,8 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           reason: "auto" | "manual"
+          recent: string
+          inputID?: string
         }
       }
     | {
@@ -1241,6 +1187,9 @@ export type GlobalEvent = {
         type: "session.compaction.failed"
         properties: {
           sessionID: string
+          reason: "auto" | "manual"
+          error: SessionStructuredError
+          inputID?: string
         }
       }
     | {
@@ -1248,7 +1197,7 @@ export type GlobalEvent = {
         type: "session.revert.staged"
         properties: {
           sessionID: string
-          revert: RevertState
+          revert: SessionRevert
         }
       }
     | {
@@ -1282,7 +1231,7 @@ export type GlobalEvent = {
         type: "session.diff"
         properties: {
           sessionID: string
-          diff: Array<SnapshotFileDiff>
+          diff: Array<FileDiffLegacyInfo>
         }
       }
     | {
@@ -1599,6 +1548,13 @@ export type GlobalEvent = {
     | {
         id: string
         type: "mcp.tools.changed"
+        properties: {
+          server: string
+        }
+      }
+    | {
+        id: string
+        type: "mcp.resources.changed"
         properties: {
           server: string
         }
@@ -2358,7 +2314,7 @@ export type GlobalSession = {
     additions: number
     deletions: number
     files: number
-    diffs?: Array<SnapshotFileDiff>
+    diffs?: Array<FileDiffLegacyInfo>
   }
   cost?: number
   tokens?: {
@@ -2694,6 +2650,59 @@ export type ProviderAuthError1 = {
   }
 }
 
+export type Session = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<FileDiffLegacyInfo>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+}
+
 export type NotFoundError = {
   name: "NotFoundError"
   data: {
@@ -2838,7 +2847,7 @@ export type UnauthorizedError = {
 }
 
 export type SessionsResponse = {
-  data: Array<SessionV2Info>
+  data: Array<SessionInfo>
   cursor: {
     previous?: string
     next?: string
@@ -2927,52 +2936,12 @@ export type Shell1 = {
   }
 }
 
-export type SessionDurableEvent =
-  | SessionAgentSelected
-  | SessionModelSelected
-  | SessionMoved
-  | SessionRenamed
-  | SessionDeleted
-  | SessionForked
-  | SessionPromptPromoted
-  | SessionPromptAdmitted
-  | SessionExecutionStarted
-  | SessionExecutionSucceeded
-  | SessionExecutionFailed
-  | SessionExecutionInterrupted
-  | SessionInstructionsUpdated
-  | SessionSynthetic
-  | SessionSkillActivated
-  | SessionShellStarted
-  | SessionShellEnded
-  | SessionStepStarted
-  | SessionStepEnded
-  | SessionStepFailed
-  | SessionTextStarted
-  | SessionTextEnded
-  | SessionReasoningStarted
-  | SessionReasoningEnded
-  | SessionToolInputStarted
-  | SessionToolInputEnded
-  | SessionToolCalled
-  | SessionToolProgress
-  | SessionToolSuccess
-  | SessionToolFailed
-  | SessionRetryScheduled
-  | SessionCompactionAdmitted
-  | SessionCompactionStarted
-  | SessionCompactionEnded
-  | SessionCompactionFailed
-  | SessionRevertStaged
-  | SessionRevertCleared
-  | SessionRevertCommitted
-
-export type SessionLogItem = SessionDurableEvent | EventLogSynced
+export type SessionLogItem = SessionEventDurable | EventLogSynced
 
 export type SessionLogItemStream = string
 
 export type SessionMessagesResponse = {
-  data: Array<SessionMessage>
+  data: Array<SessionMessageInfo>
   cursor: {
     previous?: string
     next?: string
@@ -2989,6 +2958,14 @@ export type ProviderNotFoundError = {
   _tag: "ProviderNotFoundError"
   providerID: string
   message: string
+}
+
+export type McpResource2 = {
+  server: string
+  name: string
+  uri: string
+  description?: string
+  mimeType?: string
 }
 
 export type FormNotFoundError = {
@@ -3079,6 +3056,7 @@ export type V2Event =
   | SessionModelSelected
   | SessionMoved
   | SessionRenamed
+  | SessionUsageUpdated
   | SessionForked
   | SessionPromptPromoted
   | SessionPromptAdmitted
@@ -3153,6 +3131,7 @@ export type V2Event =
   | TuiToastShow
   | TuiSessionSelect
   | McpToolsChanged
+  | McpResourcesChanged
   | McpStatusChanged
   | CommandExecuted
   | FileEdited
@@ -3291,10 +3270,71 @@ export type IntegrationRef = {
   name: string
 }
 
-export type SkillV2Source = SkillV2DirectorySource | SkillV2UrlSource | SkillV2EmbeddedSource
+export type SkillSource = SkillDirectorySource | SkillUrlSource | SkillEmbeddedSource
 
 export type MoveSessionDestination = {
   directory: string
+}
+
+export type FileDiffLegacyInfo = {
+  file?: string
+  patch?: string
+  additions: number
+  deletions: number
+  status?: "added" | "deleted" | "modified"
+}
+
+export type SessionV1Info = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<FileDiffLegacyInfo>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
 }
 
 export type ModelRef = {
@@ -3306,6 +3346,18 @@ export type ModelRef = {
 export type LocationRef = {
   directory: string
   workspaceID?: string
+}
+
+export type MoneyUsd = number
+
+export type TokenUsageInfo = {
+  input: number
+  output: number
+  reasoning: number
+  cache: {
+    read: number
+    write: number
+  }
 }
 
 export type PromptBase64 = string
@@ -3362,20 +3414,19 @@ export type ToolFileContent = {
 
 export type LlmToolContent = ToolTextContent | ToolFileContent
 
-export type FileDiff = {
-  path: string
-  status: "added" | "modified" | "deleted"
+export type FileDiffInfo = {
+  file: string
+  patch: string
   additions: number
   deletions: number
-  patch: string
+  status: "added" | "deleted" | "modified"
 }
 
-export type RevertState = {
+export type SessionRevert = {
   messageID: string
   partID?: string
   snapshot?: string
-  diff?: string
-  files?: Array<FileDiff>
+  files?: Array<FileDiffInfo>
 }
 
 export type PermissionV2Source = {
@@ -3584,7 +3635,7 @@ export type SyncEventSessionCreated = {
     aggregateID: string
     data: {
       sessionID: string
-      info: Session
+      info: SessionV1Info
     }
   }
 }
@@ -3599,7 +3650,7 @@ export type SyncEventSessionUpdated = {
     aggregateID: string
     data: {
       sessionID: string
-      info: Session
+      info: SessionV1Info
     }
   }
 }
@@ -3891,6 +3942,7 @@ export type SyncEventSessionSkillActivated = {
     aggregateID: string
     data: {
       sessionID: string
+      id: string
       name: string
       text: string
     }
@@ -3963,16 +4015,8 @@ export type SyncEventSessionStepEnded = {
       sessionID: string
       assistantMessageID: string
       finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown"
-      cost: number
-      tokens: {
-        input: number
-        output: number
-        reasoning: number
-        cache: {
-          read: number
-          write: number
-        }
-      }
+      cost: MoneyUsd
+      tokens: TokenUsageInfo
       snapshot?: string
       files?: Array<string>
     }
@@ -3991,6 +4035,8 @@ export type SyncEventSessionStepFailed = {
       sessionID: string
       assistantMessageID: string
       error: SessionStructuredError
+      cost?: MoneyUsd
+      tokens?: TokenUsageInfo
     }
   }
 }
@@ -4154,7 +4200,6 @@ export type SyncEventSessionToolSuccess = {
         [key: string]: unknown
       }
       content: Array<LlmToolContent>
-      outputPaths?: Array<string>
       result?: unknown
       executed: boolean
       resultState?: SessionMessageProviderState
@@ -4226,6 +4271,8 @@ export type SyncEventSessionCompactionStarted = {
     data: {
       sessionID: string
       reason: "auto" | "manual"
+      recent: string
+      inputID?: string
     }
   }
 }
@@ -4257,6 +4304,9 @@ export type SyncEventSessionCompactionFailed = {
     aggregateID: string
     data: {
       sessionID: string
+      reason: "auto" | "manual"
+      error: SessionStructuredError
+      inputID?: string
     }
   }
 }
@@ -4271,7 +4321,7 @@ export type SyncEventSessionRevertStaged = {
     aggregateID: string
     data: {
       sessionID: string
-      revert: RevertState
+      revert: SessionRevert
     }
   }
 }
@@ -4370,8 +4420,9 @@ export type PermissionV2Rule = {
 
 export type PermissionV2Ruleset = Array<PermissionV2Rule>
 
-export type AgentV2Info = {
+export type AgentInfo = {
   id: string
+  name: string
   model?: ModelRef
   request: ProviderRequest
   system?: string
@@ -4387,7 +4438,7 @@ export type PluginInfo = {
   id: string
 }
 
-export type SessionV2Info = {
+export type SessionInfo = {
   id: string
   parentID?: string
   fork?: {
@@ -4397,16 +4448,8 @@ export type SessionV2Info = {
   projectID: string
   agent?: string
   model?: ModelRef
-  cost: number
-  tokens: {
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
+  cost: MoneyUsd
+  tokens: TokenUsageInfo
   time: {
     created: number
     updated: number
@@ -4415,7 +4458,7 @@ export type SessionV2Info = {
   title: string
   location: LocationRef
   subpath?: string
-  revert?: RevertState
+  revert?: SessionRevert
 }
 
 export type PromptInputFileAttachment = {
@@ -4491,7 +4534,6 @@ export type SessionMessageSynthetic = {
   time: {
     created: number
   }
-  sessionID: string
   text: string
   description?: string
   type: "synthetic"
@@ -4518,6 +4560,7 @@ export type SessionMessageSkill = {
     created: number
   }
   type: "skill"
+  skill: string
   name: string
   text: string
 }
@@ -4532,7 +4575,10 @@ export type SessionMessageShell = {
     completed?: number
   }
   type: "shell"
-  shell: Shell
+  shellID: string
+  command: string
+  status: "running" | "exited" | "timeout" | "killed"
+  exit?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   output?: {
     output: string
     cursor: number
@@ -4556,8 +4602,8 @@ export type SessionMessageAssistantReasoning = {
   }
 }
 
-export type SessionMessageToolStatePending = {
-  status: "pending"
+export type SessionMessageToolStateStreaming = {
+  status: "streaming"
   input: string
 }
 
@@ -4577,9 +4623,7 @@ export type SessionMessageToolStateCompleted = {
   input: {
     [key: string]: unknown
   }
-  attachments?: Array<PromptFileAttachment>
   content: Array<LlmToolContent>
-  outputPaths?: Array<string>
   structured: {
     [key: string]: unknown
   }
@@ -4607,7 +4651,7 @@ export type SessionMessageAssistantTool = {
   providerState?: SessionMessageProviderState
   providerResultState?: SessionMessageProviderState
   state:
-    | SessionMessageToolStatePending
+    | SessionMessageToolStateStreaming
     | SessionMessageToolStateRunning
     | SessionMessageToolStateCompleted
     | SessionMessageToolStateError
@@ -4615,7 +4659,6 @@ export type SessionMessageAssistantTool = {
     created: number
     ran?: number
     completed?: number
-    pruned?: number
   }
 }
 
@@ -4644,26 +4687,14 @@ export type SessionMessageAssistant = {
     files?: Array<string>
   }
   finish?: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown"
-  cost?: number
-  tokens?: {
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
+  cost?: MoneyUsd
+  tokens?: TokenUsageInfo
   error?: SessionStructuredError
   retry?: SessionMessageAssistantRetry
 }
 
-export type SessionMessageCompaction = {
+export type SessionMessageCompactionRunning = {
   type: "compaction"
-  status: "queued" | "running" | "completed" | "failed"
-  reason: "auto" | "manual"
-  summary: string
-  recent: string
   id: string
   metadata?: {
     [key: string]: unknown
@@ -4671,9 +4702,47 @@ export type SessionMessageCompaction = {
   time: {
     created: number
   }
+  status: "running"
+  reason: "auto" | "manual"
+  summary: string
+  recent: string
 }
 
-export type SessionMessage =
+export type SessionMessageCompactionCompleted = {
+  type: "compaction"
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+  }
+  status: "completed"
+  reason: "auto" | "manual"
+  summary: string
+  recent: string
+}
+
+export type SessionMessageCompactionFailed = {
+  type: "compaction"
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+  }
+  status: "failed"
+  reason: "auto" | "manual"
+  error: SessionStructuredError
+}
+
+export type SessionMessageCompaction =
+  | SessionMessageCompactionRunning
+  | SessionMessageCompactionCompleted
+  | SessionMessageCompactionFailed
+
+export type SessionMessageInfo =
   | SessionMessageAgentSelected
   | SessionMessageModelSelected
   | SessionMessageUser
@@ -4701,7 +4770,7 @@ export type SessionAgentSelected = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4720,7 +4789,7 @@ export type SessionModelSelected = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4739,7 +4808,7 @@ export type SessionMoved = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4759,7 +4828,7 @@ export type SessionRenamed = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4778,7 +4847,7 @@ export type SessionDeleted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 2
   }
   location?: LocationRef
   data: {
@@ -4796,7 +4865,7 @@ export type SessionForked = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4816,7 +4885,7 @@ export type SessionPromptPromoted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4835,7 +4904,7 @@ export type SessionPromptAdmitted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4856,7 +4925,7 @@ export type SessionExecutionStarted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4874,7 +4943,7 @@ export type SessionExecutionSucceeded = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4892,7 +4961,7 @@ export type SessionExecutionFailed = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4911,7 +4980,7 @@ export type SessionExecutionInterrupted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4930,7 +4999,7 @@ export type SessionInstructionsUpdated = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4949,7 +5018,7 @@ export type SessionSynthetic = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -4972,11 +5041,12 @@ export type SessionSkillActivated = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
     sessionID: string
+    id: string
     name: string
     text: string
   }
@@ -4992,7 +5062,7 @@ export type SessionShellStarted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5011,7 +5081,7 @@ export type SessionShellEnded = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5036,7 +5106,7 @@ export type SessionStepStarted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5058,23 +5128,15 @@ export type SessionStepEnded = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
     sessionID: string
     assistantMessageID: string
     finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown"
-    cost: number
-    tokens: {
-      input: number
-      output: number
-      reasoning: number
-      cache: {
-        read: number
-        write: number
-      }
-    }
+    cost: MoneyUsd
+    tokens: TokenUsageInfo
     snapshot?: string
     files?: Array<string>
   }
@@ -5090,13 +5152,15 @@ export type SessionStepFailed = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
     sessionID: string
     assistantMessageID: string
     error: SessionStructuredError
+    cost?: MoneyUsd
+    tokens?: TokenUsageInfo
   }
 }
 
@@ -5110,7 +5174,7 @@ export type SessionTextStarted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5130,7 +5194,7 @@ export type SessionTextEnded = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5151,7 +5215,7 @@ export type SessionReasoningStarted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5172,7 +5236,7 @@ export type SessionReasoningEnded = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5194,7 +5258,7 @@ export type SessionToolInputStarted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5215,7 +5279,7 @@ export type SessionToolInputEnded = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5236,7 +5300,7 @@ export type SessionToolCalled = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5261,7 +5325,7 @@ export type SessionToolProgress = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5285,7 +5349,7 @@ export type SessionToolSuccess = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5296,7 +5360,6 @@ export type SessionToolSuccess = {
       [key: string]: unknown
     }
     content: Array<LlmToolContent>
-    outputPaths?: Array<string>
     result?: unknown
     executed: boolean
     resultState?: SessionMessageProviderState
@@ -5313,7 +5376,7 @@ export type SessionToolFailed = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5337,7 +5400,7 @@ export type SessionRetryScheduled = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5359,7 +5422,7 @@ export type SessionCompactionAdmitted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5378,12 +5441,14 @@ export type SessionCompactionStarted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
     sessionID: string
     reason: "auto" | "manual"
+    recent: string
+    inputID?: string
   }
 }
 
@@ -5397,7 +5462,7 @@ export type SessionCompactionEnded = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5418,11 +5483,14 @@ export type SessionCompactionFailed = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
     sessionID: string
+    reason: "auto" | "manual"
+    error: SessionStructuredError
+    inputID?: string
   }
 }
 
@@ -5436,12 +5504,12 @@ export type SessionRevertStaged = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
     sessionID: string
-    revert: RevertState
+    revert: SessionRevert
   }
 }
 
@@ -5455,7 +5523,7 @@ export type SessionRevertCleared = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5473,7 +5541,7 @@ export type SessionRevertCommitted = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5481,6 +5549,46 @@ export type SessionRevertCommitted = {
     to: string
   }
 }
+
+export type SessionEventDurable =
+  | SessionAgentSelected
+  | SessionModelSelected
+  | SessionMoved
+  | SessionRenamed
+  | SessionDeleted
+  | SessionForked
+  | SessionPromptPromoted
+  | SessionPromptAdmitted
+  | SessionExecutionStarted
+  | SessionExecutionSucceeded
+  | SessionExecutionFailed
+  | SessionExecutionInterrupted
+  | SessionInstructionsUpdated
+  | SessionSynthetic
+  | SessionSkillActivated
+  | SessionShellStarted
+  | SessionShellEnded
+  | SessionStepStarted
+  | SessionStepEnded
+  | SessionStepFailed
+  | SessionTextStarted
+  | SessionTextEnded
+  | SessionReasoningStarted
+  | SessionReasoningEnded
+  | SessionToolInputStarted
+  | SessionToolInputEnded
+  | SessionToolCalled
+  | SessionToolProgress
+  | SessionToolSuccess
+  | SessionToolFailed
+  | SessionRetryScheduled
+  | SessionCompactionAdmitted
+  | SessionCompactionStarted
+  | SessionCompactionEnded
+  | SessionCompactionFailed
+  | SessionRevertStaged
+  | SessionRevertCleared
+  | SessionRevertCommitted
 
 export type EventLogSynced = {
   type: "log.synced"
@@ -5507,20 +5615,22 @@ export type ModelVariant = {
   }
 }
 
+export type MoneyUsdPerMillionTokens = number
+
 export type ModelCost = {
   tier?: {
     type: "context"
     size: number
   }
-  input: number
-  output: number
+  input: MoneyUsdPerMillionTokens
+  output: MoneyUsdPerMillionTokens
   cache: {
-    read: number
-    write: number
+    read: MoneyUsdPerMillionTokens
+    write: MoneyUsdPerMillionTokens
   }
 }
 
-export type ModelV2Info = {
+export type ModelInfo = {
   id: string
   modelID: string
   providerID: string
@@ -5716,6 +5826,19 @@ export type McpServer = {
   integrationID?: string
 }
 
+export type McpResourceTemplate = {
+  server: string
+  name: string
+  uriTemplate: string
+  description?: string
+  mimeType?: string
+}
+
+export type McpResourceCatalog = {
+  resources: Array<McpResource2>
+  templates: Array<McpResourceTemplate>
+}
+
 export type ProjectCurrent = {
   id: string
   directory: string
@@ -5770,7 +5893,7 @@ export type FileSystemEntry = {
   type: "file" | "directory"
 }
 
-export type CommandV2Info = {
+export type CommandInfo = {
   name: string
   template: string
   description?: string
@@ -5779,7 +5902,8 @@ export type CommandV2Info = {
   subtask?: boolean
 }
 
-export type SkillV2Info = {
+export type SkillInfo = {
+  id: string
   name: string
   description?: string
   slash?: boolean
@@ -5863,12 +5987,12 @@ export type SessionCreated = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
     sessionID: string
-    info: Session
+    info: SessionV1Info
   }
 }
 
@@ -5882,12 +6006,12 @@ export type SessionUpdated = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
     sessionID: string
-    info: Session
+    info: SessionV1Info
   }
 }
 
@@ -5901,7 +6025,7 @@ export type MessageUpdated = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5920,7 +6044,7 @@ export type MessageRemoved = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5939,7 +6063,7 @@ export type MessagePartUpdated = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
@@ -5959,13 +6083,28 @@ export type MessagePartRemoved = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRef
   data: {
     sessionID: string
     messageID: string
     partID: string
+  }
+}
+
+export type SessionUsageUpdated = {
+  id: string
+  created: number
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.usage.updated"
+  location?: LocationRef
+  data: {
+    sessionID: string
+    cost: MoneyUsd
+    tokens: TokenUsageInfo
   }
 }
 
@@ -6058,7 +6197,7 @@ export type SessionDiff = {
   location?: LocationRef
   data: {
     sessionID: string
-    diff: Array<SnapshotFileDiff>
+    diff: Array<FileDiffLegacyInfo>
   }
 }
 
@@ -6622,6 +6761,19 @@ export type McpToolsChanged = {
   }
 }
 
+export type McpResourcesChanged = {
+  id: string
+  created: number
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "mcp.resources.changed"
+  location?: LocationRef
+  data: {
+    server: string
+  }
+}
+
 export type McpStatusChanged = {
   id: string
   created: number
@@ -6934,7 +7086,7 @@ export type EventSessionCreated = {
   type: "session.created"
   properties: {
     sessionID: string
-    info: Session
+    info: SessionV1Info
   }
 }
 
@@ -6943,7 +7095,7 @@ export type EventSessionUpdated = {
   type: "session.updated"
   properties: {
     sessionID: string
-    info: Session
+    info: SessionV1Info
   }
 }
 
@@ -7027,6 +7179,16 @@ export type EventSessionRenamed = {
   properties: {
     sessionID: string
     title: string
+  }
+}
+
+export type EventSessionUsageUpdated = {
+  id: string
+  type: "session.usage.updated"
+  properties: {
+    sessionID: string
+    cost: MoneyUsd
+    tokens: TokenUsageInfo
   }
 }
 
@@ -7121,6 +7283,7 @@ export type EventSessionSkillActivated = {
   type: "session.skill.activated"
   properties: {
     sessionID: string
+    id: string
     name: string
     text: string
   }
@@ -7169,16 +7332,8 @@ export type EventSessionStepEnded = {
     sessionID: string
     assistantMessageID: string
     finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown"
-    cost: number
-    tokens: {
-      input: number
-      output: number
-      reasoning: number
-      cache: {
-        read: number
-        write: number
-      }
-    }
+    cost: MoneyUsd
+    tokens: TokenUsageInfo
     snapshot?: string
     files?: Array<string>
   }
@@ -7191,6 +7346,8 @@ export type EventSessionStepFailed = {
     sessionID: string
     assistantMessageID: string
     error: SessionStructuredError
+    cost?: MoneyUsd
+    tokens?: TokenUsageInfo
   }
 }
 
@@ -7333,7 +7490,6 @@ export type EventSessionToolSuccess = {
       [key: string]: unknown
     }
     content: Array<LlmToolContent>
-    outputPaths?: Array<string>
     result?: unknown
     executed: boolean
     resultState?: SessionMessageProviderState
@@ -7381,6 +7537,8 @@ export type EventSessionCompactionStarted = {
   properties: {
     sessionID: string
     reason: "auto" | "manual"
+    recent: string
+    inputID?: string
   }
 }
 
@@ -7409,6 +7567,9 @@ export type EventSessionCompactionFailed = {
   type: "session.compaction.failed"
   properties: {
     sessionID: string
+    reason: "auto" | "manual"
+    error: SessionStructuredError
+    inputID?: string
   }
 }
 
@@ -7417,7 +7578,7 @@ export type EventSessionRevertStaged = {
   type: "session.revert.staged"
   properties: {
     sessionID: string
-    revert: RevertState
+    revert: SessionRevert
   }
 }
 
@@ -7455,7 +7616,7 @@ export type EventSessionDiff = {
   type: "session.diff"
   properties: {
     sessionID: string
-    diff: Array<SnapshotFileDiff>
+    diff: Array<FileDiffLegacyInfo>
   }
 }
 
@@ -7780,6 +7941,14 @@ export type EventMcpToolsChanged = {
   }
 }
 
+export type EventMcpResourcesChanged = {
+  id: string
+  type: "mcp.resources.changed"
+  properties: {
+    server: string
+  }
+}
+
 export type EventMcpStatusChanged = {
   id: string
   type: "mcp.status.changed"
@@ -7965,19 +8134,19 @@ export type CredentialKey = {
   }
 }
 
-export type SkillV2DirectorySource = {
+export type SkillDirectorySource = {
   type: "directory"
   path: string
 }
 
-export type SkillV2UrlSource = {
+export type SkillUrlSource = {
   type: "url"
   url: string
 }
 
-export type SkillV2EmbeddedSource = {
+export type SkillEmbeddedSource = {
   type: "embedded"
-  skill: SkillV2Info
+  skill: SkillInfo
 }
 
 export type BadRequestError = {
@@ -7996,7 +8165,7 @@ export type InvalidRequestErrorV2 = {
 }
 
 export type SessionsResponseV2 = {
-  data: Array<SessionV2InfoV2>
+  data: Array<SessionInfoV2>
   cursor: {
     previous?: string | null
     next?: string | null
@@ -8036,74 +8205,21 @@ export type ShellV2 = {
   shell: string
   file: string
   pid?: number
-  exit?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  exit?: number | "NaN" | "Infinity" | "-Infinity"
   metadata: {
     [key: string]: unknown
   }
   time: {
-    started: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-    completed?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    started: number | "NaN" | "Infinity" | "-Infinity"
+    completed?: number | "NaN" | "Infinity" | "-Infinity"
   }
 }
 
 export type SessionMessagesResponseV2 = {
-  data: Array<SessionMessage>
+  data: Array<SessionMessageInfo>
   cursor: {
     previous?: string | null
     next?: string | null
-  }
-}
-
-export type SessionV2 = {
-  id: string
-  slug: string
-  projectID: string
-  workspaceID?: string
-  directory: string
-  path?: string
-  parentID?: string
-  summary?: {
-    additions: number
-    deletions: number
-    files: number
-    diffs?: Array<SnapshotFileDiff>
-  }
-  cost?: number
-  tokens?: {
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
-  share?: {
-    url: string
-  }
-  title: string
-  agent?: string
-  model?: {
-    id: string
-    providerID: string
-    variant?: string
-  }
-  version: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  time: {
-    created: number
-    updated: number
-    compacting?: number
-    archived?: number
-  }
-  permission?: PermissionRuleset
-  revert?: {
-    messageID: string
-    partID?: string
-    snapshot?: string
-    diff?: string
   }
 }
 
@@ -8128,7 +8244,7 @@ export type UserMessageV2 = {
   summary?: {
     title?: string | null
     body?: string | null
-    diffs: Array<SnapshotFileDiff>
+    diffs: Array<FileDiffLegacyInfo>
   } | null
   agent: string
   model: {
@@ -8545,6 +8661,7 @@ export type V2EventV2 =
   | SessionModelSelectedV2
   | SessionMovedV2
   | SessionRenamedV2
+  | SessionUsageUpdatedV2
   | SessionDeletedV2
   | SessionForkedV2
   | SessionPromptPromotedV2
@@ -8617,6 +8734,7 @@ export type V2EventV2 =
   | InstallationUpdateAvailableV2
   | VcsBranchUpdatedV2
   | McpStatusChangedV2
+  | McpResourcesChangedV2
   | PermissionAskedV2
   | PermissionRepliedV2
   | QuestionAskedV2
@@ -8644,8 +8762,9 @@ export type LocationInfoV2 = {
 
 export type AgentColorV2 = string | "primary" | "secondary" | "accent" | "success" | "warning" | "error" | "info"
 
-export type AgentV2InfoV2 = {
+export type AgentInfoV2 = {
   id: string
+  name: string
   model?: ModelRef
   request: ProviderRequest
   system?: string
@@ -8662,23 +8781,22 @@ export type LocationRefV2 = {
   workspaceID?: string
 }
 
-export type FileDiffV2 = {
-  path: string
-  status: "added" | "modified" | "deleted"
+export type FileDiffInfoV2 = {
+  file: string
+  patch: string
   additions: number
   deletions: number
-  patch: string
+  status: "added" | "deleted" | "modified"
 }
 
-export type RevertStateV2 = {
+export type SessionRevertV2 = {
   messageID: string
   partID?: string
   snapshot?: string
-  diff?: string
-  files?: Array<FileDiffV2>
+  files?: Array<FileDiffInfoV2>
 }
 
-export type SessionV2InfoV2 = {
+export type SessionInfoV2 = {
   id: string
   parentID?: string
   fork?: {
@@ -8688,16 +8806,8 @@ export type SessionV2InfoV2 = {
   projectID: string
   agent?: string
   model?: ModelRef
-  cost: number
-  tokens: {
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
+  cost: MoneyUsd
+  tokens: TokenUsageInfo
   time: {
     created: number
     updated: number
@@ -8706,7 +8816,7 @@ export type SessionV2InfoV2 = {
   title: string
   location: LocationRefV2
   subpath?: string
-  revert?: RevertStateV2
+  revert?: SessionRevertV2
 }
 
 export type PromptBase64V2 = string
@@ -8777,7 +8887,6 @@ export type SessionMessageSyntheticV2 = {
   time: {
     created: number
   }
-  sessionID: string
   text: string
   description?: string
   type: "synthetic"
@@ -8804,6 +8913,7 @@ export type SessionMessageSkillV2 = {
     created: number
   }
   type: "skill"
+  skill: string
   name: string
   text: string
 }
@@ -8818,7 +8928,10 @@ export type SessionMessageShellV2 = {
     completed?: number
   }
   type: "shell"
-  shell: ShellV2
+  shellID: string
+  command: string
+  status: "running" | "exited" | "timeout" | "killed"
+  exit?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   output?: {
     output: string
     cursor: number
@@ -8852,26 +8965,14 @@ export type SessionMessageAssistantV2 = {
     files?: Array<string>
   }
   finish?: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown"
-  cost?: number
-  tokens?: {
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
+  cost?: MoneyUsd
+  tokens?: TokenUsageInfo
   error?: SessionStructuredError
   retry?: SessionMessageAssistantRetryV2
 }
 
-export type SessionMessageCompactionV2 = {
+export type SessionMessageCompactionRunningV2 = {
   type: "compaction"
-  status: "queued" | "running" | "completed" | "failed"
-  reason: "auto" | "manual"
-  summary: string
-  recent: string
   id: string
   metadata?: {
     [key: string]: unknown
@@ -8879,6 +8980,39 @@ export type SessionMessageCompactionV2 = {
   time: {
     created: number
   }
+  status: "running"
+  reason: "auto" | "manual"
+  summary: string
+  recent: string
+}
+
+export type SessionMessageCompactionCompletedV2 = {
+  type: "compaction"
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+  }
+  status: "completed"
+  reason: "auto" | "manual"
+  summary: string
+  recent: string
+}
+
+export type SessionMessageCompactionFailedV2 = {
+  type: "compaction"
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+  }
+  status: "failed"
+  reason: "auto" | "manual"
+  error: SessionStructuredError
 }
 
 /**
@@ -8896,7 +9030,7 @@ export type SessionAgentSelectedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -8915,7 +9049,7 @@ export type SessionModelSelectedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -8934,7 +9068,7 @@ export type SessionMovedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -8954,7 +9088,7 @@ export type SessionRenamedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -8973,7 +9107,7 @@ export type SessionDeletedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 2
   }
   location?: LocationRefV2
   data: {
@@ -8991,7 +9125,7 @@ export type SessionForkedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9011,7 +9145,7 @@ export type SessionPromptPromotedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9030,7 +9164,7 @@ export type SessionPromptAdmittedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9051,7 +9185,7 @@ export type SessionExecutionStartedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9069,7 +9203,7 @@ export type SessionExecutionSucceededV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9087,7 +9221,7 @@ export type SessionExecutionFailedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9106,7 +9240,7 @@ export type SessionExecutionInterruptedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9125,7 +9259,7 @@ export type SessionInstructionsUpdatedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9144,7 +9278,7 @@ export type SessionSyntheticV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9167,11 +9301,12 @@ export type SessionSkillActivatedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
     sessionID: string
+    id: string
     name: string
     text: string
   }
@@ -9187,7 +9322,7 @@ export type SessionShellStartedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9206,7 +9341,7 @@ export type SessionShellEndedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9231,7 +9366,7 @@ export type SessionStepStartedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9253,23 +9388,15 @@ export type SessionStepEndedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
     sessionID: string
     assistantMessageID: string
     finish: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown"
-    cost: number
-    tokens: {
-      input: number
-      output: number
-      reasoning: number
-      cache: {
-        read: number
-        write: number
-      }
-    }
+    cost: MoneyUsd
+    tokens: TokenUsageInfo
     snapshot?: string
     files?: Array<string>
   }
@@ -9285,13 +9412,15 @@ export type SessionStepFailedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
     sessionID: string
     assistantMessageID: string
     error: SessionStructuredError
+    cost?: MoneyUsd
+    tokens?: TokenUsageInfo
   }
 }
 
@@ -9305,7 +9434,7 @@ export type SessionTextStartedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9325,7 +9454,7 @@ export type SessionTextEndedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9350,7 +9479,7 @@ export type SessionReasoningStartedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9375,7 +9504,7 @@ export type SessionReasoningEndedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9397,7 +9526,7 @@ export type SessionToolInputStartedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9418,7 +9547,7 @@ export type SessionToolInputEndedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9443,7 +9572,7 @@ export type SessionToolCalledV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9468,7 +9597,7 @@ export type SessionToolProgressV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9496,7 +9625,7 @@ export type SessionToolSuccessV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9507,7 +9636,6 @@ export type SessionToolSuccessV2 = {
       [key: string]: unknown
     }
     content: Array<LlmToolContent>
-    outputPaths?: Array<string>
     result?: unknown
     executed: boolean
     resultState?: SessionMessageProviderState6
@@ -9528,7 +9656,7 @@ export type SessionToolFailedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9552,7 +9680,7 @@ export type SessionRetryScheduledV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9574,7 +9702,7 @@ export type SessionCompactionAdmittedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9593,12 +9721,14 @@ export type SessionCompactionStartedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
     sessionID: string
     reason: "auto" | "manual"
+    recent: string
+    inputID?: string
   }
 }
 
@@ -9612,7 +9742,7 @@ export type SessionCompactionEndedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9633,11 +9763,14 @@ export type SessionCompactionFailedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
     sessionID: string
+    reason: "auto" | "manual"
+    error: SessionStructuredError
+    inputID?: string
   }
 }
 
@@ -9651,12 +9784,12 @@ export type SessionRevertStagedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
     sessionID: string
-    revert: RevertStateV2
+    revert: SessionRevertV2
   }
 }
 
@@ -9670,7 +9803,7 @@ export type SessionRevertClearedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9688,7 +9821,7 @@ export type SessionRevertCommittedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9704,6 +9837,19 @@ export type EventLogSyncedV2 = {
   type: "log.synced"
   aggregateID: string
   seq?: number
+}
+
+export type McpResourceV2 = {
+  server: string
+  name: string
+  uri: string
+  description?: string
+  mimeType?: string
+}
+
+export type McpResourceCatalogV2 = {
+  resources: Array<McpResourceV2>
+  templates: Array<McpResourceTemplate>
 }
 
 export type ProjectTimeV2 = {
@@ -9890,6 +10036,59 @@ export type AgentUpdatedV2 = {
     | Array<unknown>
 }
 
+export type SessionV1InfoV2 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<FileDiffLegacyInfo>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+}
+
 export type SessionCreatedV2 = {
   id: string
   created: number
@@ -9900,12 +10099,12 @@ export type SessionCreatedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
     sessionID: string
-    info: SessionV2
+    info: SessionV1InfoV2
   }
 }
 
@@ -9919,12 +10118,12 @@ export type SessionUpdatedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
     sessionID: string
-    info: SessionV2
+    info: SessionV1InfoV2
   }
 }
 
@@ -9938,12 +10137,12 @@ export type SessionDeleted1 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
     sessionID: string
-    info: SessionV2
+    info: SessionV1InfoV2
   }
 }
 
@@ -9957,7 +10156,7 @@ export type MessageUpdatedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9976,7 +10175,7 @@ export type MessageRemovedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -9995,7 +10194,7 @@ export type MessagePartUpdatedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
@@ -10015,13 +10214,28 @@ export type MessagePartRemovedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: number
+    version: 1
   }
   location?: LocationRefV2
   data: {
     sessionID: string
     messageID: string
     partID: string
+  }
+}
+
+export type SessionUsageUpdatedV2 = {
+  id: string
+  created: number
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.usage.updated"
+  location?: LocationRefV2
+  data: {
+    sessionID: string
+    cost: MoneyUsd
+    tokens: TokenUsageInfo
   }
 }
 
@@ -10647,6 +10861,19 @@ export type McpStatusChangedV2 = {
     [key: string]: unknown
   }
   type: "mcp.status.changed"
+  location?: LocationRefV2
+  data: {
+    server: string
+  }
+}
+
+export type McpResourcesChangedV2 = {
+  id: string
+  created: number
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "mcp.resources.changed"
   location?: LocationRefV2
   data: {
     server: string
@@ -13452,7 +13679,7 @@ export type SessionDiffResponses = {
   /**
    * Successfully retrieved diff
    */
-  200: Array<SnapshotFileDiff>
+  200: Array<FileDiffLegacyInfo>
 }
 
 export type SessionDiffResponse = SessionDiffResponses[keyof SessionDiffResponses]
@@ -15030,7 +15257,7 @@ export type V2AgentListResponses = {
    */
   200: {
     location: LocationInfoV2
-    data: Array<AgentV2InfoV2>
+    data: Array<AgentInfoV2>
   }
 }
 
@@ -15148,7 +15375,7 @@ export type V2SessionCreateResponses = {
    * Success
    */
   200: {
-    data: SessionV2InfoV2
+    data: SessionInfoV2
   }
 }
 
@@ -15253,7 +15480,7 @@ export type V2SessionGetResponses = {
    * Success
    */
   200: {
-    data: SessionV2InfoV2
+    data: SessionInfoV2
   }
 }
 
@@ -15292,7 +15519,7 @@ export type V2SessionForkResponses = {
    * Success
    */
   200: {
-    data: SessionV2InfoV2
+    data: SessionInfoV2
   }
 }
 
@@ -15408,6 +15635,46 @@ export type V2SessionRenameResponses = {
 }
 
 export type V2SessionRenameResponse = V2SessionRenameResponses[keyof V2SessionRenameResponses]
+
+export type V2SessionMoveData = {
+  body: {
+    destination: {
+      directory: string
+    }
+    moveChanges?: boolean | null
+  }
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/move"
+}
+
+export type V2SessionMoveErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError1 | InvalidRequestErrorV2
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+}
+
+export type V2SessionMoveError = V2SessionMoveErrors[keyof V2SessionMoveErrors]
+
+export type V2SessionMoveResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2SessionMoveResponse = V2SessionMoveResponses[keyof V2SessionMoveResponses]
 
 export type V2SessionPromptData = {
   body: {
@@ -15556,6 +15823,7 @@ export type V2SessionSyntheticData = {
     metadata?: {
       [key: string]: unknown
     }
+    resume?: boolean | null
   }
   path: {
     sessionID: string
@@ -15752,7 +16020,7 @@ export type V2SessionRevertStageResponses = {
    * Success
    */
   200: {
-    data: RevertStateV2
+    data: SessionRevertV2
   }
 }
 
@@ -15875,7 +16143,7 @@ export type V2SessionContextResponses = {
    * Success
    */
   200: {
-    data: Array<SessionMessage>
+    data: Array<SessionMessageInfo>
   }
 }
 
@@ -16142,13 +16410,13 @@ export type V2SessionMessageResponses = {
    * Success
    */
   200: {
-    data: SessionMessage
+    data: SessionMessageInfo
   }
 }
 
 export type V2SessionMessageResponse = V2SessionMessageResponses[keyof V2SessionMessageResponses]
 
-export type V2SessionMessagesData = {
+export type V2MessageListData = {
   body?: never
   path: {
     sessionID: string
@@ -16167,7 +16435,7 @@ export type V2SessionMessagesData = {
   url: "/api/session/{sessionID}/message"
 }
 
-export type V2SessionMessagesErrors = {
+export type V2MessageListErrors = {
   /**
    * InvalidCursorError | InvalidRequestError
    */
@@ -16186,16 +16454,16 @@ export type V2SessionMessagesErrors = {
   500: UnknownErrorV2
 }
 
-export type V2SessionMessagesError = V2SessionMessagesErrors[keyof V2SessionMessagesErrors]
+export type V2MessageListError = V2MessageListErrors[keyof V2MessageListErrors]
 
-export type V2SessionMessagesResponses = {
+export type V2MessageListResponses = {
   /**
    * SessionMessagesResponse
    */
   200: SessionMessagesResponseV2
 }
 
-export type V2SessionMessagesResponse = V2SessionMessagesResponses[keyof V2SessionMessagesResponses]
+export type V2MessageListResponse = V2MessageListResponses[keyof V2MessageListResponses]
 
 export type V2ModelListData = {
   body?: never
@@ -16232,7 +16500,7 @@ export type V2ModelListResponses = {
    */
   200: {
     location: LocationInfoV2
-    data: Array<ModelV2Info>
+    data: Array<ModelInfo>
   }
 }
 
@@ -16273,7 +16541,7 @@ export type V2ModelDefaultResponses = {
    */
   200: {
     location: LocationInfoV2
-    data: ModelV2Info | null
+    data: ModelInfo | null
   }
 }
 
@@ -16722,6 +16990,43 @@ export type V2McpListResponses = {
 }
 
 export type V2McpListResponse = V2McpListResponses[keyof V2McpListResponses]
+
+export type V2McpResourceCatalogData = {
+  body?: never
+  path?: never
+  query?: {
+    location?: {
+      directory?: string | null
+      workspace?: string | null
+    } | null
+  }
+  url: "/api/mcp/resource"
+}
+
+export type V2McpResourceCatalogErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestErrorV2
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2McpResourceCatalogError = V2McpResourceCatalogErrors[keyof V2McpResourceCatalogErrors]
+
+export type V2McpResourceCatalogResponses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfoV2
+    data: McpResourceCatalogV2
+  }
+}
+
+export type V2McpResourceCatalogResponse = V2McpResourceCatalogResponses[keyof V2McpResourceCatalogResponses]
 
 export type V2CredentialRemoveData = {
   body?: never
@@ -17577,7 +17882,7 @@ export type V2CommandListResponses = {
    */
   200: {
     location: LocationInfoV2
-    data: Array<CommandV2Info>
+    data: Array<CommandInfo>
   }
 }
 
@@ -17614,7 +17919,7 @@ export type V2SkillListResponses = {
    */
   200: {
     location: LocationInfoV2
-    data: Array<SkillV2Info>
+    data: Array<SkillInfo>
   }
 }
 
@@ -18581,20 +18886,25 @@ export type V2VcsDiffResponses = {
    */
   200: {
     location: LocationInfoV2
-    data: Array<SnapshotFileDiff>
+    data: Array<FileDiffInfoV2>
   }
 }
 
 export type V2VcsDiffResponse = V2VcsDiffResponses[keyof V2VcsDiffResponses]
 
-export type V2DebugLocationData = {
+export type V2DebugLocationEvictData = {
   body?: never
   path?: never
-  query?: never
+  query?: {
+    location?: {
+      directory?: string | null
+      workspace?: string | null
+    } | null
+  }
   url: "/api/debug/location"
 }
 
-export type V2DebugLocationErrors = {
+export type V2DebugLocationEvictErrors = {
   /**
    * InvalidRequestError
    */
@@ -18605,16 +18915,45 @@ export type V2DebugLocationErrors = {
   401: UnauthorizedError
 }
 
-export type V2DebugLocationError = V2DebugLocationErrors[keyof V2DebugLocationErrors]
+export type V2DebugLocationEvictError = V2DebugLocationEvictErrors[keyof V2DebugLocationEvictErrors]
 
-export type V2DebugLocationResponses = {
+export type V2DebugLocationEvictResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2DebugLocationEvictResponse = V2DebugLocationEvictResponses[keyof V2DebugLocationEvictResponses]
+
+export type V2DebugLocationListData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/api/debug/location"
+}
+
+export type V2DebugLocationListErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestErrorV2
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2DebugLocationListError = V2DebugLocationListErrors[keyof V2DebugLocationListErrors]
+
+export type V2DebugLocationListResponses = {
   /**
    * Success
    */
   200: Array<LocationRefV2>
 }
 
-export type V2DebugLocationResponse = V2DebugLocationResponses[keyof V2DebugLocationResponses]
+export type V2DebugLocationListResponse = V2DebugLocationListResponses[keyof V2DebugLocationListResponses]
 
 export type V2SearchProviderGetData = {
   body?: never

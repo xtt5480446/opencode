@@ -1,5 +1,5 @@
 import type { IntegrationApi } from "@opencode-ai/client/promise/api"
-import type { IntegrationMethodRegistration } from "../effect/integration.js"
+import type { IntegrationDraft, IntegrationMethodRegistration } from "../effect/integration.js"
 import type {
   CredentialOAuth,
   CredentialValue,
@@ -9,9 +9,9 @@ import type {
   IntegrationOAuthMethod,
 } from "@opencode-ai/sdk/v2/types"
 import type { Search } from "@opencode-ai/schema/search"
-import type { Registration, TransformHook } from "./registration.js"
+import type { Registration, Transform } from "./registration.js"
 
-export type { IntegrationMethodRegistration }
+export type { IntegrationDraft, IntegrationMethodRegistration }
 
 export type IntegrationOAuthAuthorization = {
   readonly url: string
@@ -50,11 +50,9 @@ export interface IntegrationDefinition {
   readonly search?: IntegrationSearchDefinition
 }
 
-export type IntegrationDraft = import("../effect/integration.js").IntegrationDraft
-
-export interface IntegrationHooks extends IntegrationApi {
+export interface IntegrationDomain extends IntegrationApi {
   readonly register: (definition: IntegrationDefinition) => Promise<Registration>
-  readonly transform: TransformHook<IntegrationDraft>
+  readonly transform: Transform<IntegrationDraft>
   readonly reload: () => Promise<void>
   readonly connection: {
     readonly active: (integrationID: string) => Promise<import("@opencode-ai/sdk/v2/types").ConnectionInfo | undefined>

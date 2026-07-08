@@ -5,7 +5,7 @@ import { Integration } from "@opencode-ai/core/integration"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { PluginPromise } from "@opencode-ai/core/plugin/promise"
-import { define } from "@opencode-ai/plugin/v2/promise"
+import { Plugin } from "@opencode-ai/plugin/v2"
 import { testEffect } from "../lib/effect"
 import { PluginTestLayer } from "./fixture"
 
@@ -17,7 +17,7 @@ describe("fromPromise", () => {
       const plugin = yield* PluginV2.Service
       const host = yield* PluginHost.make(plugin)
       const seen: string[] = []
-      const promisePlugin = define({
+      const promisePlugin = Plugin.define({
         id: "promise-client-reads",
         setup: async (ctx) => {
           const results = await Promise.all([
@@ -47,7 +47,7 @@ describe("fromPromise", () => {
       const plugin = yield* PluginV2.Service
       const host = yield* PluginHost.make(plugin)
 
-      const promisePlugin = define({
+      const promisePlugin = Plugin.define({
         id: "promise-example",
         setup: async (ctx) => {
           expect(ctx.options.mode).toBe("strict")
@@ -76,7 +76,7 @@ describe("fromPromise", () => {
       const plugin = yield* PluginV2.Service
       const host = yield* PluginHost.make(plugin)
 
-      const promisePlugin = define({
+      const promisePlugin = Plugin.define({
         id: "promise-dispose",
         setup: async (ctx) => {
           const registration = await ctx.agent.transform((draft) => {
@@ -100,7 +100,7 @@ describe("fromPromise", () => {
       const integrations = yield* Integration.Service
       const plugin = yield* PluginV2.Service
       const host = yield* PluginHost.make(plugin)
-      const promisePlugin = define({
+      const promisePlugin = Plugin.define({
         id: "promise-search",
         setup: async (ctx) => {
           await ctx.integration.register({

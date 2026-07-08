@@ -15,7 +15,7 @@ const PromisePlugin = await import("../src/v2/promise/index")
 test.each([
   ["effect", Plugin],
   ["promise", PromisePlugin],
-])("%s entrypoint exposes its canonical Schema contracts", (name, entrypoint) => {
+])("%s entrypoint exposes its canonical Schema contracts", (_name, entrypoint) => {
   expect(entrypoint.Agent).toBe(Agent)
   expect(entrypoint.Command).toBe(Command)
   expect(entrypoint.Connection).toBe(Connection)
@@ -32,10 +32,9 @@ test.each([
     "Credential",
     "Integration",
     "Model",
+    "Plugin",
     "Provider",
     "Reference",
     "Skill",
-    ...(name === "effect" ? ["Tool"] : []),
-    "define",
   ])
 })

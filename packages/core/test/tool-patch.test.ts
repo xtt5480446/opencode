@@ -13,20 +13,20 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
-import { ApplyPatchTool } from "@opencode-ai/core/tool/apply-patch"
+import { PatchTool } from "@opencode-ai/core/tool/patch"
 import { location } from "./fixture/location"
 import { tmpdir } from "./fixture/tmpdir"
 import { makeLocationNode } from "@opencode-ai/core/effect/app-node"
 import { testEffect } from "./lib/effect"
 import { toolIdentity, executeTool, registerToolPlugin, settleTool, toolDefinitions } from "./lib/tool"
 
-const applyPatchToolNode = makeLocationNode({
-  name: "test/apply-patch-tool-plugin",
-  layer: Layer.effectDiscard(registerToolPlugin(ApplyPatchTool.Plugin)),
+const patchToolNode = makeLocationNode({
+  name: "test/patch-tool-plugin",
+  layer: Layer.effectDiscard(registerToolPlugin(PatchTool.Plugin)),
   deps: [ToolRegistry.toolsNode, LocationMutation.node, FileMutation.node, FSUtil.node, PermissionV2.node],
 })
 
-const sessionID = SessionV2.ID.make("ses_apply_patch_tool_test")
+const sessionID = SessionV2.ID.make("ses_patch_tool_test")
 const assertions: PermissionV2.AssertInput[] = []
 let denyAction: string | undefined
 let failRemoveTarget: string | undefined
@@ -116,7 +116,7 @@ const withTool = <A, E, R>(directory: string, body: (registry: ToolRegistry.Inte
           ToolRegistry.toolsNode,
           LocationMutation.node,
           FileMutation.node,
-          applyPatchToolNode,
+          patchToolNode,
         ]),
         [
           [FSUtil.node, filesystem],
@@ -129,13 +129,13 @@ const withTool = <A, E, R>(directory: string, body: (registry: ToolRegistry.Inte
   )
 }
 
-const call = (patchText: string, id = "call-apply-patch") => ({
+const call = (patchText: string, id = "call-patch") => ({
   sessionID,
   ...toolIdentity,
-  call: { type: "tool-call" as const, id, name: "apply_patch", input: { patchText } },
+  call: { type: "tool-call" as const, id, name: "patch", input: { patchText } },
 })
 
-// apply_patch is only materialized for OpenAI/GPT models.
+// patch is only materialized for OpenAI/GPT models.
 const model = { id: "gpt-5", provider: "openai" }
 
 const exists = (target: string) =>
@@ -147,7 +147,7 @@ const exists = (target: string) =>
   )
 const it = testEffect(Layer.empty)
 
-describe("ApplyPatchTool", () => {
+describe("PatchTool", () => {
   it.live("registers and sequentially applies add, update, and delete hunks", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
@@ -162,7 +162,7 @@ describe("ApplyPatchTool", () => {
             withTool(tmp.path, (registry) =>
               Effect.gen(function* () {
                 expect((yield* toolDefinitions(registry, undefined, model)).map((tool) => tool.name)).toEqual([
-                  "apply_patch",
+                  "patch",
                 ])
                 const settled = yield* settleTool(
                   registry,
@@ -241,7 +241,7 @@ describe("ApplyPatchTool", () => {
                     ),
                     model,
                   ),
-                ).toEqual({ type: "error", value: "apply_patch moves are not supported yet" })
+                ).toEqual({ type: "error", value: "patch moves are not supported yet" })
                 expect(yield* exists(path.join(tmp.path, "created.txt"))).toBe(false)
                 expect(assertions).toEqual([])
               }),

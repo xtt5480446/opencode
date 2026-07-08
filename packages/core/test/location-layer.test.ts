@@ -3,8 +3,9 @@ import path from "path"
 import { describe, expect } from "bun:test"
 import { Config } from "@opencode-ai/schema/config"
 import { Plugin } from "@opencode-ai/schema/plugin"
-import { Context, DateTime, Effect, Equal, Hash, Schema, Stream } from "effect"
-import { define } from "@opencode-ai/plugin/v2/effect"
+import { Money } from "@opencode-ai/schema/money"
+import { Context, DateTime, Effect, Equal, Hash, RcMap, Schema, Stream } from "effect"
+import { Plugin as EffectPlugin } from "@opencode-ai/plugin/v2/effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -12,6 +13,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LocationServiceMap } from "@opencode-ai/core/location-services"
 import { Location } from "@opencode-ai/core/location"
 import { PluginV2 } from "@opencode-ai/core/plugin"
+import { SdkPlugins } from "@opencode-ai/core/plugin/sdk"
 import { PluginSupervisor } from "@opencode-ai/core/plugin/supervisor"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProjectV2 } from "@opencode-ai/core/project"
@@ -28,8 +30,43 @@ import { Reference } from "../src/reference"
 import { ToolRegistry } from "../src/tool/registry"
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node, LocationServiceMap.node])))
+const itWithSdk = testEffect(
+  AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node, SdkPlugins.node, LocationServiceMap.node])),
+)
 
 describe("LocationServiceMap", () => {
+  itWithSdk.live("preserves embedded SDK plugins after Location eviction", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const sdk = yield* SdkPlugins.Service
+          const locations = yield* LocationServiceMap.Service
+          const id = AgentV2.ID.make("persistent-sdk-agent")
+          const plugin = EffectPlugin.define({
+            id: "persistent-sdk-plugin",
+            effect: (ctx) => ctx.agent.transform((agents) => agents.update(id, () => {})),
+          })
+          yield* sdk.register(plugin)
+
+          const ref = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
+          const read = Effect.gen(function* () {
+            const supervisor = yield* PluginSupervisor.Service
+            yield* supervisor.ready
+            const agents = yield* AgentV2.Service
+            return yield* agents.get(id)
+          })
+
+          expect(yield* read.pipe(Effect.scoped, Effect.provide(locations.get(ref)))).toBeDefined()
+          yield* locations.invalidate(ref)
+          expect(yield* read.pipe(Effect.scoped, Effect.provide(locations.get(ref)))).toBeDefined()
+        }),
+      ),
+    ),
+  )
+
   it.live("applies ordered plugin config operations during boot", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
@@ -172,6 +209,36 @@ describe("LocationServiceMap", () => {
     ),
   )
 
+  it.live("normalizes ref key shapes to one cached location graph", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const locations = yield* LocationServiceMap.Service
+            const directory = AbsolutePath.make(dir.path)
+            const absent = Location.Ref.make({ directory })
+            const present = Location.Ref.make({ directory, workspaceID: undefined })
+            // The two shapes are not structurally Equal: own-key sets differ.
+            expect(Object.keys(absent)).toEqual(["directory"])
+            expect(Object.keys(present)).toEqual(["directory", "workspaceID"])
+            expect(Equal.equals(absent, present)).toBe(false)
+
+            const first = yield* locations.contextEffect(absent)
+            expect(yield* locations.contextEffect(present)).toBe(first)
+            expect(Array.from(yield* RcMap.keys(locations.rcMap))).toHaveLength(1)
+
+            // Invalidating with the shape opposite to the one that booted must evict.
+            yield* locations.invalidate(present)
+            expect(Array.from(yield* RcMap.keys(locations.rcMap))).toHaveLength(0)
+          }),
+        ),
+      ),
+    ),
+  )
+
   it.live("isolates catalog state by location", () =>
     Effect.acquireRelease(
       Effect.promise(() => Promise.all([tmpdir(), tmpdir()])),
@@ -224,6 +291,7 @@ describe("LocationServiceMap", () => {
             "edit",
             "glob",
             "grep",
+            "patch",
             "question",
             "read",
             "shell",
@@ -241,6 +309,7 @@ describe("LocationServiceMap", () => {
             "edit",
             "glob",
             "grep",
+            "patch",
             "question",
             "read",
             "shell",
@@ -288,7 +357,7 @@ describe("LocationServiceMap", () => {
                   id: ModelV2.ID.make("chat"),
                   providerID: ProviderV2.ID.make("unavailable"),
                 },
-                cost: 0,
+                cost: Money.USD.zero,
                 tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
                 time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
                 location,
@@ -337,7 +406,7 @@ describe("LocationServiceMap", () => {
                   providerID: ProviderV2.ID.make("aliased"),
                   variant: ModelV2.VariantID.make("high"),
                 },
-                cost: 0,
+                cost: Money.USD.zero,
                 tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
                 time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
                 location,
@@ -366,7 +435,7 @@ describe("LocationServiceMap", () => {
       Effect.flatMap((dir) =>
         Effect.gen(function* () {
           const plugins = yield* PluginV2.Service
-          const reviewer = define({
+          const reviewer = EffectPlugin.define({
             id: "reviewer",
             effect: (ctx) =>
               ctx.agent

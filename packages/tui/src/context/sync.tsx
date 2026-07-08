@@ -15,7 +15,7 @@ import type {
   ProviderListResponse,
   QuestionRequest,
   Session,
-  SnapshotFileDiff,
+  FileDiffInfo,
   Todo,
   VcsInfo,
 } from "@opencode-ai/sdk/v2"
@@ -42,9 +42,6 @@ export const {
       provider_default: Record<string, string>
       provider_next: ProviderListResponse
       console_state: ConsoleState
-      capabilities: {
-        experimentalBackgroundSubagents: boolean
-      }
       provider_auth: Record<string, ProviderAuthMethod[]>
       agent: Agent[]
       command: Command[]
@@ -52,7 +49,7 @@ export const {
       question: Record<string, QuestionRequest[]>
       config: Config
       session: Session[]
-      session_diff: Record<string, SnapshotFileDiff[]>
+      session_diff: Record<string, FileDiffInfo[]>
       todo: Record<string, Todo[]>
       message: Record<string, Message[]>
       part: Record<string, Part[]>
@@ -71,9 +68,6 @@ export const {
         connected: [],
       },
       console_state: emptyConsoleState,
-      capabilities: {
-        experimentalBackgroundSubagents: false,
-      },
       provider_auth: {},
       agent: [],
       command: [],

@@ -12,7 +12,7 @@ import type {
 import type { IntegrationApi } from "@opencode-ai/client/effect/api"
 import type { Search } from "@opencode-ai/schema/search"
 import type { Effect, Scope } from "effect"
-import type { Registration, TransformHook } from "./registration.js"
+import type { Registration, Transform } from "./registration.js"
 
 export type IntegrationOAuthAuthorization = {
   readonly url: string
@@ -80,9 +80,9 @@ export interface IntegrationDraft {
   }
 }
 
-export interface IntegrationHooks extends IntegrationApi<unknown> {
+export interface IntegrationDomain extends IntegrationApi<unknown> {
   readonly register: (definition: IntegrationDefinition) => Effect.Effect<Registration, never, Scope.Scope>
-  readonly transform: TransformHook<IntegrationDraft>
+  readonly transform: Transform<IntegrationDraft>
   readonly reload: () => Effect.Effect<void>
   readonly connection: {
     readonly active: (integrationID: string) => Effect.Effect<ConnectionInfo | undefined>

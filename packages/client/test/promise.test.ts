@@ -34,17 +34,13 @@ test("exposes every standard HTTP API group", () => {
     "search",
   ])
   expect(Object.keys(client.debug)).toEqual(["location"])
+  expect(Object.keys(client.debug.location)).toEqual(["list", "evict"])
   expect(Object.keys(client.message)).toEqual(["list"])
-  expect(Object.keys(client.integration)).toEqual([
-    "list",
-    "get",
-    "connectKey",
-    "connectOauth",
-    "attemptStatus",
-    "attemptComplete",
-    "attemptCancel",
-  ])
-  expect(Object.keys(client.search)).toEqual(["provider", "selectProvider", "query"])
+  expect(Object.keys(client.integration)).toEqual(["list", "get", "connect", "attempt"])
+  expect(Object.keys(client.integration.connect)).toEqual(["key", "oauth"])
+  expect(Object.keys(client.integration.attempt)).toEqual(["status", "complete", "cancel"])
+  expect(Object.keys(client.search)).toEqual(["provider", "query"])
+  expect(Object.keys(client.search.provider)).toEqual(["get", "select"])
   expect(Object.keys(client.file)).toEqual(["read", "list", "find"])
   expect(Object.keys(client.vcs)).toEqual(["status", "diff"])
   expect(Object.keys(client.pty)).toEqual(["list", "create", "get", "update", "remove"])
@@ -93,14 +89,37 @@ test("search provider methods use the public HTTP contract", async () => {
     },
   })
 
-  expect(await client.search.provider({ location: { directory: "/tmp/project" } })).toMatchObject({ data: "exa" })
-  await client.search.selectProvider({ providerID: "parallel", location: { directory: "/tmp/project" } })
+  expect(await client.search.provider.get({ location: { directory: "/tmp/project" } })).toMatchObject({ data: "exa" })
+  await client.search.provider.select({ providerID: "parallel", location: { directory: "/tmp/project" } })
 
   expect(requests.map((request) => [request.method, request.url])).toEqual([
     ["GET", "http://localhost:3000/api/search/provider?location%5Bdirectory%5D=%2Ftmp%2Fproject"],
     ["POST", "http://localhost:3000/api/search/provider?location%5Bdirectory%5D=%2Ftmp%2Fproject"],
   ])
   expect(await requests[1]?.json()).toEqual({ providerID: "parallel" })
+})
+
+test("MCP resource catalog uses the public HTTP contract", async () => {
+  let request: Request | undefined
+  const client = OpenCode.make({
+    baseUrl: "http://localhost:3000",
+    fetch: async (input) => {
+      request = input instanceof Request ? input : new Request(input)
+      return Response.json({
+        location: { directory: "/tmp/project", project: { id: "proj_test", directory: "/tmp/project" } },
+        data: {
+          resources: [{ server: "docs", name: "Readme", uri: "docs://readme" }],
+          templates: [{ server: "docs", name: "File", uriTemplate: "docs://{path}" }],
+        },
+      })
+    },
+  })
+
+  const result = await client["server.mcp"].resource.catalog({ location: { directory: "/tmp/project" } })
+
+  expect(result.data.resources[0]?.uri).toBe("docs://readme")
+  expect(request?.method).toBe("GET")
+  expect(request?.url).toBe("http://localhost:3000/api/mcp/resource?location%5Bdirectory%5D=%2Ftmp%2Fproject")
 })
 
 test("file.read returns binary content from the public HTTP contract", async () => {

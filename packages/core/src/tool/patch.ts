@@ -1,6 +1,6 @@
-export * as ApplyPatchTool from "./apply-patch"
+export * as PatchTool from "./patch"
 
-import type { PluginContext } from "@opencode-ai/plugin/v2/effect"
+import type { Context as PluginContext } from "@opencode-ai/plugin/v2/effect/plugin"
 import { ToolFailure } from "@opencode-ai/llm"
 import { FileDiff } from "@opencode-ai/schema/file-diff"
 import { createTwoFilesPatch, diffLines } from "diff"
@@ -12,7 +12,7 @@ import { Patch } from "../patch"
 import { PermissionV2 } from "../permission"
 import { Tool } from "./tool"
 
-export const name = "apply_patch"
+export const name = "patch"
 
 export const Input = Schema.Struct({
   patchText: Schema.String.annotate({
@@ -55,8 +55,8 @@ type Prepared =
     })
 
 export const Plugin = {
-  id: "opencode.tool.apply-patch",
-  effect: Effect.fn("ApplyPatchTool.Plugin")(function* (ctx: PluginContext) {
+  id: "opencode.tool.patch",
+  effect: Effect.fn("PatchTool.Plugin")(function* (ctx: PluginContext) {
     const mutation = yield* LocationMutation.Service
     const files = yield* FileMutation.Service
     const fs = yield* FSUtil.Service
@@ -91,11 +91,11 @@ export const Plugin = {
                   if (!input.patchText.trim()) return yield* new ToolFailure({ message: "patchText is required" })
                   const hunks = yield* Effect.try({
                     try: () => Patch.parse(input.patchText),
-                    catch: (cause) => new ToolFailure({ message: `apply_patch verification failed: ${String(cause)}` }),
+                    catch: (cause) => new ToolFailure({ message: `patch verification failed: ${String(cause)}` }),
                   })
                   if (hunks.length === 0) return yield* new ToolFailure({ message: "patch rejected: empty patch" })
                   const move = hunks.find((hunk) => hunk.type === "update" && hunk.movePath !== undefined)
-                  if (move) return yield* new ToolFailure({ message: "apply_patch moves are not supported yet" })
+                  if (move) return yield* new ToolFailure({ message: "patch moves are not supported yet" })
 
                   const targets: Array<{ readonly hunk: Patch.Hunk; readonly target: LocationMutation.Target }> = []
                   for (const hunk of hunks)
@@ -194,6 +194,19 @@ export const Plugin = {
         ),
       )
       .pipe(Effect.orDie)
+
+    yield* ctx.session.hook("request", (event) =>
+      Effect.sync(() => {
+        const usePatch =
+          event.model.providerID.toLowerCase() === "openai" || event.model.id.toLowerCase().includes("gpt")
+        if (usePatch) {
+          delete event.tools.edit
+          delete event.tools.write
+          return
+        }
+        delete event.tools.patch
+      }),
+    )
   }),
 }
 
