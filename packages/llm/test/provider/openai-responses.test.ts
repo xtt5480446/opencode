@@ -1471,6 +1471,29 @@ describe("OpenAI Responses route", () => {
     }),
   )
 
+  it.effect("surfaces error event details nested under a top-level error field", () =>
+    Effect.gen(function* () {
+      const response = yield* LLMClient.generate(request).pipe(
+        Effect.provide(
+          fixedResponse(
+            sseEvents({
+              type: "error",
+              error: { code: "context_length_exceeded", message: "prompt too long" },
+            }),
+          ),
+        ),
+      )
+
+      expect(response.events).toEqual([
+        {
+          type: "provider-error",
+          message: "context_length_exceeded: prompt too long",
+          classification: "context-overflow",
+        },
+      ])
+    }),
+  )
+
   it.effect("falls back to a stable default when both error and response are absent", () =>
     Effect.gen(function* () {
       const response = yield* LLMClient.generate(request).pipe(
