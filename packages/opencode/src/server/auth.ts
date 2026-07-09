@@ -1,6 +1,7 @@
 export * as ServerAuth from "./auth"
 
 import { ConfigService } from "@/effect/config-service"
+import { Service } from "@opencode-ai/client/effect"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Config as EffectConfig, Context, Option, Redacted } from "effect"
 
@@ -45,4 +46,13 @@ export function headers(credentials?: Credentials) {
   const authorization = header(credentials)
   if (!authorization) return undefined
   return { Authorization: authorization }
+}
+
+export function endpoint(url: string, credentials?: Credentials): Service.Endpoint {
+  const password = credentials?.password ?? Flag.OPENCODE_SERVER_PASSWORD
+  const username = credentials?.username ?? Flag.OPENCODE_SERVER_USERNAME ?? "opencode"
+  return {
+    url,
+    auth: password ? { type: "basic", username, password } : undefined,
+  }
 }

@@ -3,8 +3,6 @@ import { UI } from "@/cli/ui"
 import { errorMessage } from "@opencode-ai/tui/util/error"
 import { validateSession } from "../tui/validate-session"
 import { ServerAuth } from "@/server/auth"
-import { OpenCode } from "@opencode-ai/client/promise"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 
 export const AttachCommand = cmd({
   command: "attach <url>",
@@ -63,7 +61,9 @@ export const AttachCommand = cmd({
       return
     }
 
-    const headers = ServerAuth.headers({ password: args.password, username: args.username })
+    const credentials = { password: args.password, username: args.username }
+    const headers = ServerAuth.headers(credentials)
+    const endpoint = ServerAuth.endpoint(args.url, credentials)
     const config = await TuiConfig.get()
 
     try {
@@ -84,9 +84,7 @@ export const AttachCommand = cmd({
     const { createLegacyTuiPluginHost } = await import("@/plugin/tui/runtime")
     await Effect.runPromise(
       run({
-        // @ts-expect-error V1 does not consume the V2-only server input.
-        client: createOpencodeClient({ baseUrl: args.url, headers, directory }),
-        api: OpenCode.make({ baseUrl: args.url, headers }),
+        server: { endpoint },
         config,
         pluginHost: createLegacyTuiPluginHost(),
         args: {

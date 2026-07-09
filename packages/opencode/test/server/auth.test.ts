@@ -20,6 +20,10 @@ describe("ServerAuth", () => {
 
     expect(ServerAuth.header()).toBeUndefined()
     expect(ServerAuth.headers()).toBeUndefined()
+    expect(ServerAuth.endpoint("http://localhost:4096")).toEqual({
+      url: "http://localhost:4096",
+      auth: undefined,
+    })
   })
 
   test("defaults to the opencode username", () => {
@@ -46,6 +50,10 @@ describe("ServerAuth", () => {
 
     expect(ServerAuth.headers({ password: "cli-secret", username: "bob" })).toEqual({
       Authorization: `Basic ${Buffer.from("bob:cli-secret").toString("base64")}`,
+    })
+    expect(ServerAuth.endpoint("https://example.test", { password: "cli-secret", username: "bob" })).toEqual({
+      url: "https://example.test",
+      auth: { type: "basic", username: "bob", password: "cli-secret" },
     })
   })
 

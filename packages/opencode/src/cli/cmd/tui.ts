@@ -8,8 +8,6 @@ import { errorMessage } from "@opencode-ai/tui/util/error"
 import { withTimeout } from "@/util/timeout"
 import { withNetworkOptions, resolveNetworkOptionsNoConfig, hasArg } from "@/cli/network"
 import { Filesystem } from "@/util/filesystem"
-import { OpenCode } from "@opencode-ai/client/promise"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { writeHeapSnapshot } from "v8"
 import { ServerAuth } from "@/server/auth"
 import { validateSession } from "../tui/validate-session"
@@ -135,6 +133,7 @@ export const TuiThreadCommand = cmd({
       const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
       const headers = external ? ServerAuth.headers() : undefined
       const url = (await client.call("server", network)).url
+      const endpoint = external ? ServerAuth.endpoint(url) : { url }
 
       try {
         await validateSession({
@@ -157,11 +156,9 @@ export const TuiThreadCommand = cmd({
         const { Effect } = await import("effect")
         const { run } = await import("../tui/layer")
         const { createLegacyTuiPluginHost } = await import("@/plugin/tui/runtime")
-         await Effect.runPromise(
+        await Effect.runPromise(
           run({
-            // @ts-expect-error V1 does not consume the V2-only server input.
-            client: createOpencodeClient({ baseUrl: url, headers, directory: cwd }),
-            api: OpenCode.make({ baseUrl: url, headers }),
+            server: { endpoint },
             async onSnapshot() {
               const tui = writeHeapSnapshot("tui.heapsnapshot")
               const server = await client.call("snapshot", undefined)
