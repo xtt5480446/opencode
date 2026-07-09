@@ -387,6 +387,7 @@ export const getUsage = (input: { model: Provider.Model; usage: Usage; metadata?
       ? input.model.cost.experimentalOver200K
       : input.model.cost)
   const totalNanoAiu = input.metadata?.["copilot"]?.["totalNanoAiu"]
+  const cacheReadCost = input.model.api.npm === "@ai-sdk/cerebras" ? costInfo?.input : costInfo?.cache?.read
   return {
     cost:
       typeof totalNanoAiu === "number" && Number.isFinite(totalNanoAiu) && totalNanoAiu >= 0
@@ -395,7 +396,7 @@ export const getUsage = (input: { model: Provider.Model; usage: Usage; metadata?
             new Decimal(0)
               .add(new Decimal(tokens.input).mul(costInfo?.input ?? 0).div(1_000_000))
               .add(new Decimal(tokens.output).mul(costInfo?.output ?? 0).div(1_000_000))
-              .add(new Decimal(tokens.cache.read).mul(costInfo?.cache?.read ?? 0).div(1_000_000))
+              .add(new Decimal(tokens.cache.read).mul(cacheReadCost ?? 0).div(1_000_000))
               .add(new Decimal(tokens.cache.write).mul(costInfo?.cache?.write ?? 0).div(1_000_000))
               // TODO: update models.dev to have better pricing model, for now:
               // charge reasoning tokens at the same rate as output tokens

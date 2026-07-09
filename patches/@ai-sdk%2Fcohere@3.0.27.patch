@@ -1,0 +1,126 @@
+diff --git a/dist/index.js b/dist/index.js
+index ce8d4ae802f5909937840b856866c2d735800212..d448e921d51cb0a4f752cdad09080b21d4d8e8a9 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -139,11 +139,12 @@ function convertCohereUsage(tokens) {
+   }
+   const inputTokens = tokens.input_tokens;
+   const outputTokens = tokens.output_tokens;
++  const cacheReadTokens = tokens.cached_tokens ?? 0;
+   return {
+     inputTokens: {
+       total: inputTokens,
+-      noCache: inputTokens,
+-      cacheRead: void 0,
++      noCache: Math.max(0, inputTokens - cacheReadTokens),
++      cacheRead: cacheReadTokens || void 0,
+       cacheWrite: void 0
+     },
+     outputTokens: {
+@@ -672,7 +673,8 @@ var cohereChatResponseSchema = import_v43.z.object({
+     }),
+     tokens: import_v43.z.object({
+       input_tokens: import_v43.z.number(),
+-      output_tokens: import_v43.z.number()
++      output_tokens: import_v43.z.number(),
++      cached_tokens: import_v43.z.number().optional()
+     })
+   })
+ });
+@@ -732,7 +734,8 @@ var cohereChatChunkSchema = import_v43.z.discriminatedUnion("type", [
+       usage: import_v43.z.object({
+         tokens: import_v43.z.object({
+           input_tokens: import_v43.z.number(),
+-          output_tokens: import_v43.z.number()
++          output_tokens: import_v43.z.number(),
++          cached_tokens: import_v43.z.number().optional()
+         })
+       })
+     })
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 44f26c27511f9089cdcc9456590dee100b070b0a..d3f585b58208430404135060af5774a7ecfa65d0 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -126,11 +126,12 @@ function convertCohereUsage(tokens) {
+   }
+   const inputTokens = tokens.input_tokens;
+   const outputTokens = tokens.output_tokens;
++  const cacheReadTokens = tokens.cached_tokens ?? 0;
+   return {
+     inputTokens: {
+       total: inputTokens,
+-      noCache: inputTokens,
+-      cacheRead: void 0,
++      noCache: Math.max(0, inputTokens - cacheReadTokens),
++      cacheRead: cacheReadTokens || void 0,
+       cacheWrite: void 0
+     },
+     outputTokens: {
+@@ -661,7 +662,8 @@ var cohereChatResponseSchema = z3.object({
+     }),
+     tokens: z3.object({
+       input_tokens: z3.number(),
+-      output_tokens: z3.number()
++      output_tokens: z3.number(),
++      cached_tokens: z3.number().optional()
+     })
+   })
+ });
+@@ -721,7 +723,8 @@ var cohereChatChunkSchema = z3.discriminatedUnion("type", [
+       usage: z3.object({
+         tokens: z3.object({
+           input_tokens: z3.number(),
+-          output_tokens: z3.number()
++          output_tokens: z3.number(),
++          cached_tokens: z3.number().optional()
+         })
+       })
+     })
+diff --git a/src/cohere-chat-language-model.ts b/src/cohere-chat-language-model.ts
+index e4971ccf255ffff77c38fd35caccf84a032ad150..93fea74a08c0f9bcc6c63689fbc9e72669cdeba1 100644
+--- a/src/cohere-chat-language-model.ts
++++ b/src/cohere-chat-language-model.ts
+@@ -495,6 +495,7 @@ const cohereChatResponseSchema = z.object({
+     tokens: z.object({
+       input_tokens: z.number(),
+       output_tokens: z.number(),
++      cached_tokens: z.number().optional(),
+     }),
+   }),
+ });
+@@ -558,6 +559,7 @@ const cohereChatChunkSchema = z.discriminatedUnion('type', [
+         tokens: z.object({
+           input_tokens: z.number(),
+           output_tokens: z.number(),
++          cached_tokens: z.number().optional(),
+         }),
+       }),
+     }),
+diff --git a/src/convert-cohere-usage.ts b/src/convert-cohere-usage.ts
+index 0f83a63ab85ab2c2ae136edd509e1f738553041f..3913f8d221c8980916769a9890b56030f69a6070 100644
+--- a/src/convert-cohere-usage.ts
++++ b/src/convert-cohere-usage.ts
+@@ -3,6 +3,7 @@ import { LanguageModelV3Usage } from '@ai-sdk/provider';
+ export type CohereUsageTokens = {
+   input_tokens: number;
+   output_tokens: number;
++  cached_tokens?: number;
+ };
+ 
+ export function convertCohereUsage(
+@@ -27,12 +28,13 @@ export function convertCohereUsage(
+ 
+   const inputTokens = tokens.input_tokens;
+   const outputTokens = tokens.output_tokens;
++  const cacheReadTokens = tokens.cached_tokens ?? 0;
+ 
+   return {
+     inputTokens: {
+       total: inputTokens,
+-      noCache: inputTokens,
+-      cacheRead: undefined,
++      noCache: Math.max(0, inputTokens - cacheReadTokens),
++      cacheRead: cacheReadTokens || undefined,
+       cacheWrite: undefined,
+     },
+     outputTokens: {

@@ -1,0 +1,34 @@
+diff --git a/dist/index.js b/dist/index.js
+index 6fb7ae621cf5fe350ec9295af8f3d3507d265df3..ee16ee3af60f461fe2b074eb9cab44ea586c97ee 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -283,10 +283,10 @@ function createAiGateway(options) {
+ function parseAiGatewayOptions(options) {
+   const headers = new Headers();
+   if (options.skipCache === true) {
+-    headers.set("cf-skip-cache", "true");
++    headers.set("cf-aig-skip-cache", "true");
+   }
+   if (options.cacheTtl) {
+-    headers.set("cf-cache-ttl", options.cacheTtl.toString());
++    headers.set("cf-aig-cache-ttl", options.cacheTtl.toString());
+   }
+   if (options.metadata) {
+     headers.set("cf-aig-metadata", JSON.stringify(options.metadata));
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 1c00a815117b5854073eb9c01cafa5bc273a367e..11acdaa65021952eb52622ebd3d9b87633e5f8e5 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -254,10 +254,10 @@ function createAiGateway(options) {
+ function parseAiGatewayOptions(options) {
+   const headers = new Headers();
+   if (options.skipCache === true) {
+-    headers.set("cf-skip-cache", "true");
++    headers.set("cf-aig-skip-cache", "true");
+   }
+   if (options.cacheTtl) {
+-    headers.set("cf-cache-ttl", options.cacheTtl.toString());
++    headers.set("cf-aig-cache-ttl", options.cacheTtl.toString());
+   }
+   if (options.metadata) {
+     headers.set("cf-aig-metadata", JSON.stringify(options.metadata));

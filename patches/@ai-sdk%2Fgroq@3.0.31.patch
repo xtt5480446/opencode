@@ -1,0 +1,67 @@
+diff --git a/dist/index.js b/dist/index.js
+index 45a104f2e0775761858eac2a82ced64bceba1f5e..36861246fa3aea50f82a233aec8c8edaef0ff6e3 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -57,13 +57,14 @@ function convertGroqUsage(usage) {
+   }
+   const promptTokens = (_a = usage.prompt_tokens) != null ? _a : 0;
+   const completionTokens = (_b = usage.completion_tokens) != null ? _b : 0;
+-  const reasoningTokens = (_d = (_c = usage.completion_tokens_details) == null ? void 0 : _c.reasoning_tokens) != null ? _d : void 0;
++  const cacheReadTokens = (_d = (_c = usage.prompt_tokens_details) == null ? void 0 : _c.cached_tokens) != null ? _d : 0;
++  const reasoningTokens = usage.completion_tokens_details?.reasoning_tokens ?? void 0;
+   const textTokens = reasoningTokens != null ? completionTokens - reasoningTokens : completionTokens;
+   return {
+     inputTokens: {
+       total: promptTokens,
+-      noCache: promptTokens,
+-      cacheRead: void 0,
++      noCache: Math.max(0, promptTokens - cacheReadTokens),
++      cacheRead: cacheReadTokens || void 0,
+       cacheWrite: void 0
+     },
+     outputTokens: {
+diff --git a/dist/index.mjs b/dist/index.mjs
+index c644c32235d8fa88c51c0fc6958feb1da4877c96..6aa35dd173cd67dbdd2f6f3a5fe2d901cbaafae8 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -44,13 +44,14 @@ function convertGroqUsage(usage) {
+   }
+   const promptTokens = (_a = usage.prompt_tokens) != null ? _a : 0;
+   const completionTokens = (_b = usage.completion_tokens) != null ? _b : 0;
+-  const reasoningTokens = (_d = (_c = usage.completion_tokens_details) == null ? void 0 : _c.reasoning_tokens) != null ? _d : void 0;
++  const cacheReadTokens = (_d = (_c = usage.prompt_tokens_details) == null ? void 0 : _c.cached_tokens) != null ? _d : 0;
++  const reasoningTokens = usage.completion_tokens_details?.reasoning_tokens ?? void 0;
+   const textTokens = reasoningTokens != null ? completionTokens - reasoningTokens : completionTokens;
+   return {
+     inputTokens: {
+       total: promptTokens,
+-      noCache: promptTokens,
+-      cacheRead: void 0,
++      noCache: Math.max(0, promptTokens - cacheReadTokens),
++      cacheRead: cacheReadTokens || void 0,
+       cacheWrite: void 0
+     },
+     outputTokens: {
+diff --git a/src/convert-groq-usage.ts b/src/convert-groq-usage.ts
+index a16809223b068bc1d682ef9156ccc82ce89ace5c..732b14508609106bd5946ba9f9323c7863ee2da5 100644
+--- a/src/convert-groq-usage.ts
++++ b/src/convert-groq-usage.ts
+@@ -40,6 +40,7 @@ export function convertGroqUsage(
+ 
+   const promptTokens = usage.prompt_tokens ?? 0;
+   const completionTokens = usage.completion_tokens ?? 0;
++  const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
+   const reasoningTokens =
+     usage.completion_tokens_details?.reasoning_tokens ?? undefined;
+   const textTokens =
+@@ -50,8 +51,8 @@ export function convertGroqUsage(
+   return {
+     inputTokens: {
+       total: promptTokens,
+-      noCache: promptTokens,
+-      cacheRead: undefined,
++      noCache: Math.max(0, promptTokens - cacheReadTokens),
++      cacheRead: cacheReadTokens || undefined,
+       cacheWrite: undefined,
+     },
+     outputTokens: {

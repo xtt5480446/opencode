@@ -1,0 +1,101 @@
+diff --git a/dist/index.js b/dist/index.js
+index d73573b013e61903991cad2074187a3ade8921ab..ca7923e551f8f0cb4c27e0afd5f6cb3bc3b6c1c4 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -73,7 +73,7 @@ function convertOpenAICompatibleChatUsage(usage) {
+   }
+   const promptTokens = (_a = usage.prompt_tokens) != null ? _a : 0;
+   const completionTokens = (_b = usage.completion_tokens) != null ? _b : 0;
+-  const cacheReadTokens = (_d = (_c = usage.prompt_tokens_details) == null ? void 0 : _c.cached_tokens) != null ? _d : 0;
++  const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? usage.cached_tokens ?? 0;
+   const reasoningTokens = (_f = (_e = usage.completion_tokens_details) == null ? void 0 : _e.reasoning_tokens) != null ? _f : 0;
+   return {
+     inputTokens: {
+@@ -894,6 +894,7 @@ var openaiCompatibleTokenUsageSchema = import_v43.z.looseObject({
+   prompt_tokens: import_v43.z.number().nullish(),
+   completion_tokens: import_v43.z.number().nullish(),
+   total_tokens: import_v43.z.number().nullish(),
++  cached_tokens: import_v43.z.number().nullish(),
+   prompt_tokens_details: import_v43.z.object({
+     cached_tokens: import_v43.z.number().nullish()
+   }).nullish(),
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 237c9e209da9da2d4d557eb309e1adc2157c1426..fb45541149086633e27f02c89b742208222bb185 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -53,7 +53,7 @@ function convertOpenAICompatibleChatUsage(usage) {
+   }
+   const promptTokens = (_a = usage.prompt_tokens) != null ? _a : 0;
+   const completionTokens = (_b = usage.completion_tokens) != null ? _b : 0;
+-  const cacheReadTokens = (_d = (_c = usage.prompt_tokens_details) == null ? void 0 : _c.cached_tokens) != null ? _d : 0;
++  const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? usage.cached_tokens ?? 0;
+   const reasoningTokens = (_f = (_e = usage.completion_tokens_details) == null ? void 0 : _e.reasoning_tokens) != null ? _f : 0;
+   return {
+     inputTokens: {
+@@ -881,6 +881,7 @@ var openaiCompatibleTokenUsageSchema = z3.looseObject({
+   prompt_tokens: z3.number().nullish(),
+   completion_tokens: z3.number().nullish(),
+   total_tokens: z3.number().nullish(),
++  cached_tokens: z3.number().nullish(),
+   prompt_tokens_details: z3.object({
+     cached_tokens: z3.number().nullish()
+   }).nullish(),
+diff --git a/dist/internal/index.js b/dist/internal/index.js
+index 0858632db778d30b303fbc9d5d46a29582d6e5b5..bb414ac25b77cb1a492cf6ad64f24decae38dd31 100644
+--- a/dist/internal/index.js
++++ b/dist/internal/index.js
+@@ -249,7 +249,7 @@ function convertOpenAICompatibleChatUsage(usage) {
+   }
+   const promptTokens = (_a = usage.prompt_tokens) != null ? _a : 0;
+   const completionTokens = (_b = usage.completion_tokens) != null ? _b : 0;
+-  const cacheReadTokens = (_d = (_c = usage.prompt_tokens_details) == null ? void 0 : _c.cached_tokens) != null ? _d : 0;
++  const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? usage.cached_tokens ?? 0;
+   const reasoningTokens = (_f = (_e = usage.completion_tokens_details) == null ? void 0 : _e.reasoning_tokens) != null ? _f : 0;
+   return {
+     inputTokens: {
+diff --git a/dist/internal/index.mjs b/dist/internal/index.mjs
+index 116b2deee86bf07cf981a64c000c7a4f3e42b52e..de08e6248318a0e48866ba41e9788485d56dd5cb 100644
+--- a/dist/internal/index.mjs
++++ b/dist/internal/index.mjs
+@@ -224,7 +224,7 @@ function convertOpenAICompatibleChatUsage(usage) {
+   }
+   const promptTokens = (_a = usage.prompt_tokens) != null ? _a : 0;
+   const completionTokens = (_b = usage.completion_tokens) != null ? _b : 0;
+-  const cacheReadTokens = (_d = (_c = usage.prompt_tokens_details) == null ? void 0 : _c.cached_tokens) != null ? _d : 0;
++  const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? usage.cached_tokens ?? 0;
+   const reasoningTokens = (_f = (_e = usage.completion_tokens_details) == null ? void 0 : _e.reasoning_tokens) != null ? _f : 0;
+   return {
+     inputTokens: {
+diff --git a/src/chat/convert-openai-compatible-chat-usage.ts b/src/chat/convert-openai-compatible-chat-usage.ts
+index 7982309cd99afbf7eb84a733c37446ac3cb9b626..454f14fe45af3f7475ba0371173c3342f242ccd9 100644
+--- a/src/chat/convert-openai-compatible-chat-usage.ts
++++ b/src/chat/convert-openai-compatible-chat-usage.ts
+@@ -5,6 +5,7 @@ export function convertOpenAICompatibleChatUsage(
+     | {
+         prompt_tokens?: number | null;
+         completion_tokens?: number | null;
++        cached_tokens?: number | null;
+         prompt_tokens_details?: {
+           cached_tokens?: number | null;
+         } | null;
+@@ -34,7 +35,7 @@ export function convertOpenAICompatibleChatUsage(
+ 
+   const promptTokens = usage.prompt_tokens ?? 0;
+   const completionTokens = usage.completion_tokens ?? 0;
+-  const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
++  const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? usage.cached_tokens ?? 0;
+   const reasoningTokens =
+     usage.completion_tokens_details?.reasoning_tokens ?? 0;
+ 
+diff --git a/src/chat/openai-compatible-chat-language-model.ts b/src/chat/openai-compatible-chat-language-model.ts
+index 9a803cb1173e1454facb73ae430ede0ea0a3d2de..fd2c8e78ad850e11492b6be51922a382664739bf 100644
+--- a/src/chat/openai-compatible-chat-language-model.ts
++++ b/src/chat/openai-compatible-chat-language-model.ts
+@@ -723,6 +723,7 @@ const openaiCompatibleTokenUsageSchema = z
+     prompt_tokens: z.number().nullish(),
+     completion_tokens: z.number().nullish(),
+     total_tokens: z.number().nullish(),
++    cached_tokens: z.number().nullish(),
+     prompt_tokens_details: z
+       .object({
+         cached_tokens: z.number().nullish(),

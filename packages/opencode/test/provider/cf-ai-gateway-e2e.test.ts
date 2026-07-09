@@ -16,7 +16,7 @@ import type * as Provider from "@/provider/provider"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
-type Captured = { url: string; outerBody: unknown }
+type Captured = { url: string; headers: Headers; outerBody: unknown }
 type ProviderOptions = Record<string, Record<string, JSONValue>>
 
 const realFetch = globalThis.fetch
@@ -32,7 +32,7 @@ beforeEach(() => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
     if (url.startsWith("https://gateway.ai.cloudflare.com/")) {
       const bodyText = typeof init?.body === "string" ? init.body : ""
-      captured = { url, outerBody: bodyText ? JSON.parse(bodyText) : null }
+      captured = { url, headers: new Headers(init?.headers), outerBody: bodyText ? JSON.parse(bodyText) : null }
       return new Response(
         JSON.stringify({
           id: "chatcmpl-test",
@@ -128,5 +128,20 @@ describe("cf-ai-gateway end-to-end (regression: #24432)", () => {
       "cloudflare-ai-gateway": { reasoningEffort: "high" },
     })
     expect(upstream?.reasoning_effort).toBeUndefined()
+  })
+
+  test("uses current Cloudflare cache headers", async () => {
+    const aigateway = createAiGateway({
+      accountId: "test",
+      gateway: "test",
+      apiKey: "test",
+      options: { cacheTtl: 300, skipCache: true },
+    })
+    await generateText({ model: aigateway(createUnified()("openai/gpt-5.4")), prompt: "hi" })
+
+    expect(captured?.headers.get("cf-aig-cache-ttl")).toBe("300")
+    expect(captured?.headers.get("cf-aig-skip-cache")).toBe("true")
+    expect(captured?.headers.get("cf-cache-ttl")).toBeNull()
+    expect(captured?.headers.get("cf-skip-cache")).toBeNull()
   })
 })

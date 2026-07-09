@@ -1564,6 +1564,25 @@ describe("SessionNs.getUsage", () => {
     expect(result.tokens.cache.read).toBe(200)
   })
 
+  test("charges Cerebras cache reads at the normal input rate", () => {
+    const result = SessionNs.getUsage({
+      model: createModel({
+        context: 100_000,
+        output: 32_000,
+        npm: "@ai-sdk/cerebras",
+        cost: { input: 10, output: 0, cache: { read: 0, write: 0 } },
+      }),
+      usage: usage({
+        inputTokens: 1_000_000,
+        outputTokens: 0,
+        totalTokens: 1_000_000,
+        cacheReadInputTokens: 200_000,
+      }),
+    })
+
+    expect(result.cost).toBe(10)
+  })
+
   test("handles anthropic cache write metadata", () => {
     const model = createModel({ context: 100_000, output: 32_000 })
     const result = SessionNs.getUsage({
