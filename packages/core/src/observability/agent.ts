@@ -1,7 +1,7 @@
 export * as AgentTelemetry from "./agent"
 
 import type { LLMEvent, Usage } from "@opencode-ai/llm"
-import { Cause, Clock, Context, Effect, Exit } from "effect"
+import { Cause, Clock, Context, Effect, Exit, Option } from "effect"
 import { ParentSpan, type Span } from "effect/Tracer"
 import {
   ATTR_ERROR_TYPE,
@@ -46,13 +46,14 @@ import { SessionTelemetry } from "./session"
 export type ModelCallTrigger = "input" | "tool_result" | "retry" | "compaction" | "resume"
 export type RetryDecision = "exhausted" | "non_retryable" | "output_started" | "step_limit"
 
-export const Current = Context.Reference<Span | undefined>("@opencode/AgentTelemetry/Current", {
-  defaultValue: () => undefined,
-})
-
 const FailureState = Context.Reference<{ stage?: string } | undefined>("@opencode/AgentTelemetry/FailureState", {
   defaultValue: () => undefined,
 })
+
+export const currentSpan = Effect.option(Effect.currentSpan).pipe(
+  Effect.map(Option.getOrUndefined),
+  Effect.map(findAgentSpan),
+)
 
 const observe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.catchCauseIf(
@@ -97,7 +98,6 @@ export const invoke = <A, E, R>(
               Effect.andThen(
                 effect.pipe(
                   Effect.withParentSpan(span, { captureStackTrace: false }),
-                  Effect.provideService(Current, span),
                   Effect.provideService(FailureState, failureState),
                   Effect.withTracerEnabled(false),
                 ),
@@ -205,8 +205,8 @@ export const modelCall = (input: {
     })
   const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.gen(function* () {
-      const span = yield* Current
-      const parentSessionID = span?.attributes.get(ATTR_OPENCODE_SESSION_PARENT_ID)
+      const agentSpan = yield* currentSpan
+      const parentSessionID = agentSpan?.attributes.get(ATTR_OPENCODE_SESSION_PARENT_ID)
       const observed = effect.pipe(
         Effect.annotateSpans({
           [ATTR_GEN_AI_AGENT_NAME]: input.agent,
@@ -219,8 +219,8 @@ export const modelCall = (input: {
           ...(typeof parentSessionID === "string" ? { [ATTR_OPENCODE_SESSION_PARENT_ID]: parentSessionID } : {}),
         }),
       )
-      if (!span) return yield* observed
-      return yield* observed.pipe(Effect.withParentSpan(span, { captureStackTrace: false }))
+      if (!agentSpan) return yield* observed
+      return yield* observed.pipe(Effect.withParentSpan(agentSpan, { captureStackTrace: false }))
     })
   return { observe: observeEvent, run }
 }
@@ -271,7 +271,7 @@ function recordUsage(usage: Usage) {
 
 function event(name: string, attributes: Record<string, unknown>) {
   return Effect.gen(function* () {
-    const span = yield* Current
+    const span = yield* currentSpan
     if (!span) return
     const time = yield* Clock.currentTimeNanos
     yield* observe(Effect.sync(() => span.event(name, time, attributes)))
@@ -280,9 +280,16 @@ function event(name: string, attributes: Record<string, unknown>) {
 
 function withCurrent(f: (span: Span) => void) {
   return Effect.gen(function* () {
-    const span = yield* Current
+    const span = yield* currentSpan
     if (span) yield* observe(Effect.sync(() => f(span)))
   })
+}
+
+function findAgentSpan(span: Span | undefined): Span | undefined {
+  if (!span) return
+  if (span.attributes.get(ATTR_GEN_AI_OPERATION_NAME) === GEN_AI_OPERATION_NAME_VALUE_INVOKE_AGENT) return span
+  const parent = Option.getOrUndefined(span.parent)
+  return findAgentSpan(parent?._tag === "Span" ? parent : undefined)
 }
 
 function classify(f: () => string) {

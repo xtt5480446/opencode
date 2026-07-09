@@ -16,7 +16,7 @@ import {
   ATTR_URL_SCHEME,
 } from "../semconv"
 import { LLMError } from "../schema"
-import { CurrentModelSpan } from "./context"
+import { currentModelSpan } from "./context"
 
 export const RequestIssued = Context.Reference<((time: bigint) => Effect.Effect<void>) | undefined>(
   "@opencode/LLM/Telemetry/RequestIssued",
@@ -46,7 +46,7 @@ export const stream = <A, R>(
 ) =>
   Stream.unwrap(
     Effect.gen(function* () {
-      const parent = yield* CurrentModelSpan
+      const parent = yield* currentModelSpan
       if (!parent) return source(request)
       const url = URL.canParse(request.url) ? new URL(request.url) : undefined
       const port = url?.port

@@ -1,6 +1,6 @@
 export * as ToolTelemetry from "./tool"
 
-import { Cause, Clock, Context, Effect, Exit } from "effect"
+import { Cause, Clock, Effect, Exit, Option } from "effect"
 import type { Span } from "effect/Tracer"
 import {
   ATTR_ERROR_TYPE,
@@ -22,9 +22,10 @@ import {
 import { AgentTelemetry } from "./agent"
 import { SessionTelemetry } from "./session"
 
-export const Current = Context.Reference<Span | undefined>("@opencode/ToolTelemetry/Current", {
-  defaultValue: () => undefined,
-})
+export const currentSpan = Effect.option(Effect.currentSpan).pipe(
+  Effect.map(Option.getOrUndefined),
+  Effect.map(findToolSpan),
+)
 
 const observe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.catchCauseIf(
@@ -44,8 +45,8 @@ export const execute = <A, E, R>(
   resultErrorType?: (result: A) => string | undefined,
 ) =>
   Effect.gen(function* () {
-    const toolSpan = yield* Current
-    const agentSpan = yield* AgentTelemetry.Current
+    const toolSpan = yield* currentSpan
+    const agentSpan = yield* AgentTelemetry.currentSpan
     const parent = toolSpan ?? agentSpan
     const parentSessionID = agentSpan?.attributes.get(ATTR_OPENCODE_SESSION_PARENT_ID)
     const span = yield* Effect.makeSpan(`execute_tool ${input.call.name}`, {
@@ -104,14 +105,13 @@ export const execute = <A, E, R>(
         )
       }),
       Effect.withParentSpan(span, { captureStackTrace: false }),
-      Effect.provideService(Current, span),
       Effect.withTracerEnabled(false),
     )
   })
 
 export const child = (input: { readonly agent: string; readonly sessionID: string }) =>
   Effect.gen(function* () {
-    const span = yield* Current
+    const span = yield* currentSpan
     if (span)
       yield* observe(
         Effect.sync(() => {
@@ -130,3 +130,10 @@ export const child = (input: { readonly agent: string; readonly sessionID: strin
         ),
     }
   })
+
+function findToolSpan(span: Span | undefined): Span | undefined {
+  if (!span) return
+  if (span.attributes.get(ATTR_GEN_AI_OPERATION_NAME) === GEN_AI_OPERATION_NAME_VALUE_EXECUTE_TOOL) return span
+  const parent = Option.getOrUndefined(span.parent)
+  return findToolSpan(parent?._tag === "Span" ? parent : undefined)
+}

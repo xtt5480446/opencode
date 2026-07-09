@@ -307,6 +307,7 @@ function modelFromLanguage(info: ModelV2.Info, language: LanguageModelV3) {
     provider: ProviderID.make(info.providerID),
     providerMetadataKey: optionKey,
     protocol: "ai-sdk",
+    operation: "chat",
     endpoint: Endpoint.path("/", { baseURL: "https://ai-sdk.local" }),
     auth: Auth.none,
     transport: {

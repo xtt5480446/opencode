@@ -45,6 +45,7 @@ const raiseEvent = (event: FakeEvent): import("../src/schema").LLMEvent =>
 
 const fakeProtocol = Protocol.make<FakeBody, FakeEvent, FakeEvent, void>({
   id: "fake",
+  operation: "chat",
   body: {
     schema: Schema.Struct({
       body: Schema.String,

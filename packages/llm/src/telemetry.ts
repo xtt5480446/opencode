@@ -33,14 +33,11 @@ import {
   ATTR_OPENCODE_TRANSPORT_KIND,
   ATTR_SERVER_ADDRESS,
   ATTR_SERVER_PORT,
-  GEN_AI_OPERATION_NAME_VALUE_CHAT,
-  GEN_AI_OPERATION_NAME_VALUE_GENERATE_CONTENT,
   GEN_AI_OUTPUT_TYPE_VALUE_JSON,
   GEN_AI_OUTPUT_TYPE_VALUE_TEXT,
 } from "./semconv"
 import { LLMError, LLMEvent, type LLMRequest, type Usage } from "./schema"
 import { RequestIssued, ResponseChunkReceived } from "./telemetry/http"
-import { CurrentModelSpan } from "./telemetry/context"
 
 export { RequestIssued, ResponseChunkReceived } from "./telemetry/http"
 
@@ -60,8 +57,7 @@ const observe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 
 export function stream(request: LLMRequest, source: Stream.Stream<LLMEvent, LLMError>) {
   const generation = request.generation
-  const identity = telemetryIdentity(request)
-  const operation = identity.operation
+  const operation = request.model.route.operation
   const baseURL = request.model.route.endpoint.baseURL
   const url = baseURL && URL.canParse(baseURL) ? new URL(baseURL) : undefined
   const server = serverAttributes(url)
@@ -73,7 +69,7 @@ export function stream(request: LLMRequest, source: Stream.Stream<LLMEvent, LLME
         : undefined
   const attributes = {
     [ATTR_GEN_AI_OPERATION_NAME]: operation,
-    [ATTR_GEN_AI_PROVIDER_NAME]: identity.provider,
+    [ATTR_GEN_AI_PROVIDER_NAME]: request.model.provider,
     [ATTR_GEN_AI_REQUEST_MODEL]: request.model.id,
     [ATTR_GEN_AI_REQUEST_STREAM]: true,
     [ATTR_OPENCODE_LLM_ROUTE]: request.model.route.id,
@@ -177,7 +173,6 @@ function observeStream(input: {
       ),
     ),
     Stream.provideService(ParentSpan, input.span),
-    Stream.provideService(CurrentModelSpan, input.span),
     Stream.provideService(RequestIssued, (time) =>
       observe(
         Effect.sync(() => {
@@ -308,22 +303,4 @@ function serverAttributes(url: URL | undefined) {
     [ATTR_SERVER_ADDRESS]: url.hostname,
     ...(port === undefined ? {} : { [ATTR_SERVER_PORT]: port }),
   }
-}
-
-function telemetryIdentity(request: LLMRequest) {
-  const operation =
-    request.model.route.protocol === "gemini"
-      ? GEN_AI_OPERATION_NAME_VALUE_GENERATE_CONTENT
-      : GEN_AI_OPERATION_NAME_VALUE_CHAT
-  const provider =
-    request.model.provider === "google"
-      ? "gcp.gemini"
-      : request.model.provider === "amazon-bedrock"
-        ? "aws.bedrock"
-        : request.model.provider === "azure"
-          ? "azure.ai.openai"
-          : request.model.provider === "xai"
-            ? "x_ai"
-            : request.model.provider
-  return { operation, provider }
 }

@@ -39,8 +39,8 @@ export const use = <A, E, R>(
       Effect.flatMap(consume),
     )
     const parent =
-      (yield* ToolTelemetry.Current) ??
-      (yield* AgentTelemetry.Current) ??
+      (yield* ToolTelemetry.currentSpan) ??
+      (yield* AgentTelemetry.currentSpan) ??
       Option.getOrUndefined(yield* Effect.option(Effect.currentSpan))
     if (!parent) return yield* execute
     const url = URL.canParse(request.url) ? new URL(request.url) : undefined

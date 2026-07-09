@@ -37,6 +37,7 @@ export type OpenRouterBody = Schema.Schema.Type<typeof OpenRouterBody>
 
 export const protocol = Protocol.make({
   id: "openrouter-chat",
+  operation: OpenAIChat.protocol.operation,
   body: {
     schema: OpenRouterBody,
     from: (request) =>

@@ -964,6 +964,7 @@ const step = (state: ParserState, event: OpenAIResponsesEvent) => {
  */
 export const protocol = Protocol.make({
   id: ADAPTER,
+  operation: "chat",
   body: {
     schema: OpenAIResponsesBody,
     from: fromRequest,

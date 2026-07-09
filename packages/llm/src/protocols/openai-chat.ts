@@ -476,6 +476,7 @@ const finishEvents = (state: ParserState): ReadonlyArray<LLMEvent> => {
  */
 export const protocol = Protocol.make({
   id: ADAPTER,
+  operation: "chat",
   body: {
     schema: OpenAIChatBody,
     from: fromRequest,

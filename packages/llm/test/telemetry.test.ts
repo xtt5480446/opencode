@@ -3,6 +3,7 @@ import { Cause, Clock, Deferred, Effect, Fiber, References, Stream, Tracer } fro
 import * as TestClock from "effect/testing/TestClock"
 import { FetchHttpClient, HttpClientRequest } from "effect/unstable/http"
 import { LLM, LLMEvent, Message, Usage } from "../src"
+import * as Gemini from "../src/protocols/gemini"
 import * as OpenAIChat from "../src/protocols/openai-chat"
 import * as OpenAIResponses from "../src/protocols/openai-responses"
 import { LLMClient } from "../src/route"
@@ -444,7 +445,7 @@ describe("GenAI telemetry", () => {
     }),
   )
 
-  it.effect("uses the semantic convention provider identity", () =>
+  it.effect("uses the model provider and route operation identity", () =>
     Effect.gen(function* () {
       const spans: Tracer.NativeSpan[] = []
       const tracer = Tracer.make({
@@ -463,7 +464,18 @@ describe("GenAI telemetry", () => {
         Stream.fromIterable([LLMEvent.finish({ reason: "stop" })]),
       ).pipe(Stream.runDrain, Effect.provideService(Tracer.Tracer, tracer))
 
-      expect(spans.find((span) => span.name === "chat grok")?.attributes.get(ATTR_GEN_AI_PROVIDER_NAME)).toBe("x_ai")
+      const span = spans.find((span) => span.name === "chat grok")
+      expect(span?.attributes.get(ATTR_GEN_AI_PROVIDER_NAME)).toBe("xai")
+      expect(span?.attributes.get(ATTR_GEN_AI_OPERATION_NAME)).toBe("chat")
+
+      yield* instrument(
+        LLM.request({ model: Gemini.route.model({ id: "gemini-test" }), prompt: "secret" }),
+        Stream.fromIterable([LLMEvent.finish({ reason: "stop" })]),
+      ).pipe(Stream.runDrain, Effect.provideService(Tracer.Tracer, tracer))
+
+      const gemini = spans.find((span) => span.name === "generate_content gemini-test")
+      expect(gemini?.attributes.get(ATTR_GEN_AI_PROVIDER_NAME)).toBe("google")
+      expect(gemini?.attributes.get(ATTR_GEN_AI_OPERATION_NAME)).toBe("generate_content")
     }),
   )
 

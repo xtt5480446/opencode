@@ -1,6 +1,8 @@
 import { Schema, type Effect } from "effect"
 import type { LLMError, LLMEvent, LLMRequest, ProtocolID } from "../schema"
 
+export type GenAIOperation = "chat" | "generate_content"
+
 /**
  * The semantic API contract of one model server family.
  *
@@ -36,6 +38,8 @@ import type { LLMError, LLMEvent, LLMRequest, ProtocolID } from "../schema"
 export interface Protocol<Body, Frame, Event, State> {
   /** Stable id for the wire protocol implementation. */
   readonly id: ProtocolID
+  /** OpenTelemetry GenAI operation represented by one request. */
+  readonly operation: GenAIOperation
   /** Request side: schema for the provider-native body and how to build it. */
   readonly body: ProtocolBody<Body>
   /** Response side: streaming state machine. */

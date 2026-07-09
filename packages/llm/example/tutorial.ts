@@ -178,6 +178,7 @@ const FakeProtocol = Protocol.make<FakeBody, string, string, void>({
   // Protocol ids are open strings, so external packages can define their own
   // protocols without changing this package.
   id: "fake-echo",
+  operation: "chat",
   body: {
     schema: FakeBody,
     from: (request) =>

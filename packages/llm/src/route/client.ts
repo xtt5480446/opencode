@@ -6,7 +6,7 @@ import type { Framing } from "./framing"
 import { HttpTransport } from "./transport"
 import type { Transport, TransportRuntime } from "./transport"
 import { WebSocketExecutor } from "./transport"
-import type { Protocol } from "./protocol"
+import type { GenAIOperation, Protocol } from "./protocol"
 import { applyCachePolicy } from "../cache-policy"
 import { LLMTelemetry } from "../telemetry"
 import { ProviderShared } from "../protocols/shared"
@@ -39,6 +39,7 @@ export interface Route<Body, Prepared = unknown> {
   /** ProviderMetadata namespace emitted and consumed by this route. */
   readonly providerMetadataKey?: string
   readonly protocol: ProtocolID
+  readonly operation: GenAIOperation
   readonly endpoint: Endpoint<Body>
   readonly auth: Auth
   readonly transport: Transport<Body, Prepared, unknown>
@@ -256,6 +257,7 @@ function makeFromTransport<Body, Prepared, Frame, Event, State>(
       provider: routeInput.provider === undefined ? undefined : ProviderID.make(routeInput.provider),
       providerMetadataKey: routeInput.providerMetadataKey,
       protocol: protocol.id,
+      operation: protocol.operation,
       endpoint: routeInput.endpoint,
       auth: routeInput.auth ?? Auth.none,
       transport: routeInput.transport,

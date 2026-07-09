@@ -16,7 +16,7 @@ import {
 } from "../semconv"
 import { LLMError } from "../schema"
 import { safeUrl } from "./http"
-import { CurrentModelSpan } from "./context"
+import { currentModelSpan } from "./context"
 
 export { RequestIssued, ResponseChunkReceived } from "./http"
 
@@ -30,7 +30,7 @@ const observe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 export const stream = <A, R>(urlValue: string, source: Stream.Stream<A, LLMError, R>) =>
   Stream.unwrap(
     Effect.gen(function* () {
-      const parent = yield* CurrentModelSpan
+      const parent = yield* currentModelSpan
       if (!parent) return source
       const url = URL.canParse(urlValue) ? new URL(urlValue) : undefined
       const port = url?.port

@@ -862,6 +862,7 @@ const step = (state: ParserState, event: AnthropicEvent) => {
  */
 export const protocol = Protocol.make({
   id: ADAPTER,
+  operation: "chat",
   body: {
     schema: AnthropicMessagesBody,
     from: fromRequest,

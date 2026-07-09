@@ -485,6 +485,7 @@ const step = (state: ParserState, event: GeminiEvent) => {
  */
 export const protocol = Protocol.make({
   id: ADAPTER,
+  operation: "generate_content",
   body: {
     schema: GeminiBody,
     from: fromRequest,
