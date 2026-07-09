@@ -61,7 +61,7 @@ type Dependencies = {
   readonly llm: {
     readonly stream: (request: LLMRequest) => Stream.Stream<LLMEvent, LLMError>
   }
-  readonly config: readonly Config.Entry[]
+  readonly config: Settings
 }
 
 export type AutoInput = {
@@ -193,7 +193,7 @@ export const buildPrompt = (input: { readonly previousSummary?: string; readonly
   ].join("\n\n")
 
 const make = (dependencies: Dependencies) => {
-  const config = settings(dependencies.config)
+  const config = dependencies.config
   const compact = Effect.fn("SessionCompaction.compact")(function* (input: {
     readonly sessionID: SessionSchema.ID
     readonly model: Model
@@ -232,6 +232,8 @@ const make = (dependencies: Dependencies) => {
               type: event.classification === "context-overflow" ? "provider.invalid-request" : "provider.error",
               message: event.message,
             }
+          if (LLMEvent.is.finish(event) && event.reason === "length")
+            failure = { type: "compaction.failed", message: "Compaction reached the model output limit" }
           if (LLMEvent.is.textDelta(event)) {
             chunks.push(event.text)
             return dependencies.events.publish(SessionEvent.Compaction.Delta, {
@@ -284,16 +286,7 @@ const make = (dependencies: Dependencies) => {
     },
   ) {
     const selected = select(input.messages, config.tokens)
-    if (!selected) {
-      if (input.inputID === undefined) return false
-      yield* dependencies.events.publish(SessionEvent.Compaction.Failed, {
-        sessionID: input.sessionID,
-        reason: input.reason,
-        error: { type: "compaction.unavailable", message: "Nothing to compact yet" },
-        inputID: input.inputID,
-      })
-      return false
-    }
+    if (!selected) return false
     const previousSummary = input.messages.find(
       (message) => message.type === "compaction" && message.status === "completed",
     )
@@ -318,7 +311,6 @@ const make = (dependencies: Dependencies) => {
       messages: input.messages,
       model: input.request.model,
       reason: "auto",
-      output: input.request.generation?.maxTokens ?? input.request.model.route.defaults.limits?.output ?? 0,
     })
   })
   const compactManual = Effect.fn("SessionCompaction.compactManual")(function* (input: CompactInput) {
@@ -377,12 +369,22 @@ export const layer = Layer.effect(
     const llm = yield* LLMClient.Service
     const config = yield* Config.Service
     const models = yield* SessionRunnerModel.Service
-    const compaction = make({ events, llm, config: yield* config.entries() })
+    const configured = settings(yield* config.entries())
+    const compaction = make({ events, llm, config: configured })
 
     return Service.of({
       compactIfNeeded: compaction.compactIfNeeded,
       compactAfterOverflow: compaction.compactAfterOverflow,
       compactManual: Effect.fn("SessionCompaction.compactManual")(function* (input) {
+        if (!select(input.messages, configured.tokens)) {
+          yield* events.publish(SessionEvent.Compaction.Failed, {
+            sessionID: input.session.id,
+            reason: "manual",
+            error: { type: "compaction.unavailable", message: "Nothing to compact yet" },
+            inputID: input.inputID,
+          })
+          return false
+        }
         const resolved = yield* models.resolve(input.session).pipe(
           Effect.catch((error) =>
             events

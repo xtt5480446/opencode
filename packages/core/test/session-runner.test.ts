@@ -128,10 +128,10 @@ const compactModel = Model.make({
   provider: "fake",
   route: OpenAIChat.route.with({ limits: { context: 4_000, output: 50 } }),
 })
-const undersizedModel = Model.make({
-  id: "undersized",
+const undersizedContextModel = Model.make({
+  id: "undersized-context",
   provider: "fake",
-  route: OpenAIChat.route.with({ limits: { context: 1, output: 1 } }),
+  route: OpenAIChat.route.with({ limits: { context: 1, output: 1_000 } }),
 })
 const recoveryModel = Model.make({
   id: "recovery",
@@ -1544,6 +1544,7 @@ describe("SessionRunnerLLM", () => {
       yield* setup
       const session = yield* SessionV2.Service
       const compaction = yield* session.compact({ sessionID })
+      modelResolveHook = Effect.die("model resolution should not run")
 
       yield* session.resume(sessionID)
 
@@ -1622,10 +1623,35 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("rejects a manual compaction truncated by the model output limit", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      response = reply.text("Earlier answer", "text-manual-length-history")
+      yield* admit(session, "Earlier question")
+      yield* session.resume(sessionID)
+
+      response = [
+        LLMEvent.textDelta({ id: "summary", text: "Partial summary" }),
+        LLMEvent.finish({ reason: "length" }),
+      ]
+      const compaction = yield* session.compact({ sessionID })
+      yield* session.resume(sessionID)
+
+      expect((yield* session.messages({ sessionID })).find((message) => message.id === compaction.id)).toMatchObject({
+        type: "compaction",
+        status: "failed",
+        error: { type: "compaction.failed", message: "Compaction reached the model output limit" },
+      })
+    }),
+  )
+
   it.effect("settles an admitted manual compaction when pre-start resolution throws", () =>
     Effect.gen(function* () {
-      yield* setup
-      const session = yield* SessionV2.Service
+      const session = yield* setup
+      response = reply.text("Earlier answer", "text-manual-resolution-history")
+      yield* admit(session, "Earlier question")
+      yield* session.resume(sessionID)
+
       const compaction = yield* session.compact({ sessionID })
       modelResolveHook = Effect.die("model resolution failed")
 
@@ -1747,7 +1773,7 @@ describe("SessionRunnerLLM", () => {
   it.effect("recovers from provider context overflow despite an undersized configured limit", () =>
     Effect.gen(function* () {
       const session = yield* setupOverflowRecovery
-      currentModel = undersizedModel
+      currentModel = undersizedContextModel
       responses = [
         [LLMEvent.providerError({ message: "prompt too long", classification: "context-overflow" })],
         reply.text("## Objective\n- Recover undersized limit", "text-summary-undersized-limit"),
@@ -1757,6 +1783,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests).toHaveLength(3)
+      expect(requests[1].generation?.maxTokens).toBe(1_000)
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "compaction", summary: "## Objective\n- Recover undersized limit" },
         { type: "assistant", finish: "stop" },
