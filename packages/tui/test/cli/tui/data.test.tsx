@@ -595,13 +595,12 @@ test("completes exploration when a queued prompt is promoted", async () => {
     emitEvent(events, {
       id: "evt_prompt_admitted",
       created: 3,
-      type: "session.prompt.admitted",
+      type: "session.input.admitted",
       durable: durable(sessionID, 2),
       data: {
         sessionID,
         inputID: "message-user",
-        prompt: { text: "Continue" },
-        delivery: "steer",
+        input: { type: "user", data: { text: "Continue" }, delivery: "steer" },
       },
     })
     await wait(() => rows.at(-1)?.type === "message")
@@ -610,7 +609,7 @@ test("completes exploration when a queued prompt is promoted", async () => {
     emitEvent(events, {
       id: "evt_prompt_promoted",
       created: 4,
-      type: "session.prompt.promoted",
+      type: "session.input.promoted",
       durable: durable(sessionID, 3),
       data: { sessionID, inputID: "message-user" },
     })
@@ -651,9 +650,9 @@ test("removes committed revert messages from local state", async () => {
       emitEvent(events, {
         id: EventV2.ID.create(),
         created: seq,
-        type: "session.prompt.admitted",
+        type: "session.input.admitted",
         durable: durable(sessionID, seq),
-        data: { sessionID, inputID, prompt: { text: inputID }, delivery: "steer" },
+        data: { sessionID, inputID, input: { type: "user", data: { text: inputID }, delivery: "steer" } },
       })
     }
     await wait(() => data.session.message.ids(sessionID).length === 3)
@@ -1485,7 +1484,9 @@ test("adds, dismisses, and refreshes form requests", async () => {
   const events = createEventStream()
   const calls = createFetch((url) => {
     if (url.pathname !== "/api/session/ses_1/form") return
-    return json({ data: [{ id: "frm_remote", sessionID: "ses_1", mode: "form", fields: [] }] })
+    return json({
+      data: [{ id: "frm_remote", sessionID: "ses_1", title: "Input requested", mode: "form", fields: [] }],
+    })
   }, events)
   let data!: ReturnType<typeof useData>
   let sdk!: ReturnType<typeof useSDK>
@@ -1514,13 +1515,13 @@ test("adds, dismisses, and refreshes form requests", async () => {
       id: "evt_form_created_1",
       created: 0,
       type: "form.created",
-      data: { form: { id: "frm_1", sessionID: "ses_1", mode: "form", fields: [] } },
+      data: { form: { id: "frm_1", sessionID: "ses_1", title: "Input requested", mode: "form", fields: [] } },
     })
     emitEvent(events, {
       id: "evt_form_created_duplicate",
       created: 1,
       type: "form.created",
-      data: { form: { id: "frm_1", sessionID: "ses_1", mode: "form", fields: [] } },
+      data: { form: { id: "frm_1", sessionID: "ses_1", title: "Input requested", mode: "form", fields: [] } },
     })
     await wait(() => data.session.form.list("ses_1")?.length === 1)
 
@@ -1536,7 +1537,7 @@ test("adds, dismisses, and refreshes form requests", async () => {
       id: "evt_form_created_2",
       created: 3,
       type: "form.created",
-      data: { form: { id: "frm_2", sessionID: "ses_1", mode: "form", fields: [] } },
+      data: { form: { id: "frm_2", sessionID: "ses_1", title: "Input requested", mode: "form", fields: [] } },
     })
     emitEvent(events, {
       id: "evt_form_cancelled_2",
@@ -1553,11 +1554,238 @@ test("adds, dismisses, and refreshes form requests", async () => {
   }
 })
 
+test("tracks global forms by location", async () => {
+  const events = createEventStream()
+  const calls = createFetch(undefined, events)
+  const other = { directory: "/tmp/opencode-other", workspaceID: "wrk_other" }
+  let data!: ReturnType<typeof useData>
+  let sdk!: ReturnType<typeof useSDK>
+
+  function Probe() {
+    data = useData()
+    sdk = useSDK()
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </SDKProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => sdk.connection.status() === "connected")
+    events.emit({
+      id: "evt_form_created_global_other",
+      created: 0,
+      location: other,
+      type: "form.created",
+      data: {
+        form: { id: "frm_other", sessionID: "global", title: "Input requested", mode: "form", fields: [] },
+      },
+    })
+
+    await wait(() => data.session.form.list("global", other)?.length === 1)
+    expect(data.session.form.list("global", { directory }) ?? []).toEqual([])
+
+    events.emit({
+      id: "evt_form_created_global_default",
+      created: 1,
+      location: { directory },
+      type: "form.created",
+      data: {
+        form: { id: "frm_default", sessionID: "global", title: "Input requested", mode: "form", fields: [] },
+      },
+    })
+    await wait(() => data.session.form.list("global", { directory })?.length === 1)
+
+    events.emit({
+      id: "evt_form_replied_global_other",
+      created: 2,
+      location: other,
+      type: "form.replied",
+      data: { id: "frm_other", sessionID: "global", answer: {} },
+    })
+    await wait(() => data.session.form.list("global", other)?.length === 0)
+    expect(data.session.form.list("global", { directory })?.map((form) => form.id)).toEqual(["frm_default"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("refreshes global forms for the requested location", async () => {
+  const events = createEventStream()
+  const requests: URL[] = []
+  const other = { directory: "/tmp/opencode-other", workspaceID: "wrk_other" }
+  const calls = createFetch((url) => {
+    if (url.pathname !== "/api/form/request") return
+    requests.push(url)
+    const requestedDirectory = url.searchParams.get("location[directory]") ?? directory
+    const requestedWorkspace = url.searchParams.get("location[workspace]") ?? undefined
+    return json({
+      location: {
+        directory: requestedDirectory,
+        workspaceID: requestedWorkspace,
+        project: { id: "proj_test", directory: requestedDirectory },
+      },
+      data: [
+        {
+          id: requestedDirectory === other.directory ? "frm_other" : "frm_default",
+          sessionID: "global",
+          title: "Input requested",
+          mode: "form",
+          fields: [],
+        },
+      ],
+    })
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let sdk!: ReturnType<typeof useSDK>
+
+  function Probe() {
+    data = useData()
+    sdk = useSDK()
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </SDKProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => sdk.connection.status() === "connected" && requests.length > 0)
+    requests.length = 0
+
+    await data.session.form.refresh("global", { directory })
+    await data.session.form.refresh("global", other)
+
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.searchParams.get("location[directory]")).toBe(other.directory)
+    expect(requests[1]?.searchParams.get("location[workspace]")).toBe(other.workspaceID)
+    expect(data.session.form.list("global", other)?.map((form) => form.id)).toEqual(["frm_other"])
+    expect(data.session.form.list("global", { directory })?.map((form) => form.id)).toEqual(["frm_default"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("refreshes global forms once per loaded location after reconnect", async () => {
+  const events = createEventStream()
+  const requests: URL[] = []
+  const counts = new Map<string, number>()
+  const home = { directory: process.cwd() }
+  const other = { directory: "/tmp/opencode-other", workspaceID: "wrk_other" }
+  const calls = createFetch((url) => {
+    if (url.pathname === "/api/location")
+      return json({ ...home, project: { id: "proj_test", directory: home.directory } })
+    if (url.pathname === "/api/session")
+      return json({
+        data: [
+          { id: "ses_default", title: "Default", location: home, time: { created: 0, updated: 0 } },
+          { id: "ses_other_1", title: "Other one", location: other, time: { created: 0, updated: 0 } },
+          { id: "ses_other_2", title: "Other two", location: other, time: { created: 0, updated: 0 } },
+        ],
+        cursor: {},
+      })
+    if (url.pathname !== "/api/form/request") return
+    requests.push(url)
+    const requestedDirectory = url.searchParams.get("location[directory]") ?? home.directory
+    const requestedWorkspace = url.searchParams.get("location[workspace]") ?? undefined
+    const count = (counts.get(requestedDirectory) ?? 0) + 1
+    counts.set(requestedDirectory, count)
+    return json({
+      location: {
+        directory: requestedDirectory,
+        workspaceID: requestedWorkspace,
+        project: { id: "proj_test", directory: requestedDirectory },
+      },
+      data: [
+        {
+          id: `frm_${requestedDirectory === other.directory ? "other" : "default"}_${count}`,
+          sessionID: "global",
+          title: "Input requested",
+          mode: "form",
+          fields: [],
+        },
+      ],
+    })
+  }, events)
+  let data!: ReturnType<typeof useData>
+
+  function Probe() {
+    data = useData()
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </SDKProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(
+      () =>
+        data.session.form.list("global", home)?.[0]?.id === "frm_default_1" &&
+        data.session.form.list("global", other)?.[0]?.id === "frm_other_1",
+    )
+    expect(requests).toHaveLength(2)
+    requests.length = 0
+
+    events.disconnect()
+
+    await wait(
+      () =>
+        data.session.form.list("global", home)?.[0]?.id === "frm_default_2" &&
+        data.session.form.list("global", other)?.[0]?.id === "frm_other_2",
+      4000,
+    )
+    expect(requests).toHaveLength(2)
+    expect(
+      requests.map((url) => [
+        url.searchParams.get("location[directory]") ?? directory,
+        url.searchParams.get("location[workspace]") ?? undefined,
+      ]),
+    ).toEqual([
+      [home.directory, undefined],
+      [other.directory, other.workspaceID],
+    ])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("reconciles all pending form requests when the event stream reconnects", async () => {
   const events = createEventStream()
   let requests = [
-    { id: "frm_old", sessionID: "ses_old", mode: "form" as const, fields: [] },
-    { id: "frm_keep", sessionID: "ses_keep", mode: "url" as const, url: "https://example.com" },
+    { id: "frm_old", sessionID: "ses_old", title: "Input requested", mode: "form" as const, fields: [] },
+    {
+      id: "frm_keep",
+      sessionID: "ses_keep",
+      title: "Input requested",
+      mode: "url" as const,
+      url: "https://example.com",
+    },
   ]
   let calls = 0
   const fetch = createFetch((url) => {
@@ -1588,7 +1816,7 @@ test("reconciles all pending form requests when the event stream reconnects", as
     await wait(() => data.session.form.list("ses_old")?.[0]?.id === "frm_old")
     expect(data.session.form.list("ses_keep")?.[0]?.id).toBe("frm_keep")
 
-    requests = [{ id: "frm_new", sessionID: "ses_new", mode: "form" as const, fields: [] }]
+    requests = [{ id: "frm_new", sessionID: "ses_new", title: "Input requested", mode: "form" as const, fields: [] }]
     events.disconnect()
 
     await wait(() => calls === 2 && data.session.form.list("ses_new")?.[0]?.id === "frm_new")
@@ -1791,13 +2019,12 @@ test("renders admitted prompts immediately and tracks them until promoted", asyn
     emitEvent(events, {
       id: "evt_admitted_1",
       created: 0,
-      type: "session.prompt.admitted",
+      type: "session.input.admitted",
       durable: durable(sessionID),
       data: {
         sessionID,
         inputID: messageID,
-        prompt: { text: "hello" },
-        delivery: "steer",
+        input: { type: "user", data: { text: "hello" }, delivery: "steer" },
       },
     })
     await wait(() => sync.session.message.list(sessionID)?.length === 1)
@@ -1812,7 +2039,7 @@ test("renders admitted prompts immediately and tracks them until promoted", asyn
     emitEvent(events, {
       id: "evt_prompted_1",
       created: 0,
-      type: "session.prompt.promoted",
+      type: "session.input.promoted",
       durable: durable(sessionID, 1),
       data: {
         sessionID,
@@ -1820,8 +2047,8 @@ test("renders admitted prompts immediately and tracks them until promoted", asyn
       },
     })
 
-    await wait(() => received.at(-1) === "session.prompt.promoted")
-    expect(received.slice(-2)).toEqual(["session.prompt.admitted", "session.prompt.promoted"])
+    await wait(() => received.at(-1) === "session.input.promoted")
+    expect(received.slice(-2)).toEqual(["session.input.admitted", "session.input.promoted"])
     unsubscribe()
     const message = sync.session.message.list(sessionID)?.[0]
     expect(message?.type).toBe("user")

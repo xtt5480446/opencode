@@ -146,7 +146,6 @@ import type {
   ProjectUpdateErrors,
   ProjectUpdateResponses,
   PromptAgentAttachment,
-  PromptInput,
   PromptInputFileAttachment,
   ProviderAuthErrors,
   ProviderAuthResponses,
@@ -362,6 +361,8 @@ import type {
   V2QuestionRequestListResponses,
   V2ReferenceListErrors,
   V2ReferenceListResponses,
+  V2ServerGetErrors,
+  V2ServerGetResponses,
   V2SessionActiveErrors,
   V2SessionActiveResponses,
   V2SessionBackgroundErrors,
@@ -5113,6 +5114,20 @@ export class Health extends HeyApiClient {
   }
 }
 
+export class Server extends HeyApiClient {
+  /**
+   * Get server information
+   *
+   * Return the URLs that can be used to connect to this server.
+   */
+  public get<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<V2ServerGetResponses, V2ServerGetErrors, ThrowOnError>({
+      url: "/api/server",
+      ...options,
+    })
+  }
+}
+
 export class Location extends HeyApiClient {
   /**
    * Get location
@@ -6149,7 +6164,12 @@ export class Session3 extends HeyApiClient {
     parameters: {
       sessionID: string
       id?: string | null
-      prompt?: PromptInput
+      text?: string
+      files?: Array<PromptInputFileAttachment>
+      agents?: Array<PromptAgentAttachment>
+      metadata?: {
+        [key: string]: unknown
+      }
       delivery?: "steer" | "queue" | null
       resume?: boolean | null
     },
@@ -6162,7 +6182,10 @@ export class Session3 extends HeyApiClient {
           args: [
             { in: "path", key: "sessionID" },
             { in: "body", key: "id" },
-            { in: "body", key: "prompt" },
+            { in: "body", key: "text" },
+            { in: "body", key: "files" },
+            { in: "body", key: "agents" },
+            { in: "body", key: "metadata" },
             { in: "body", key: "delivery" },
             { in: "body", key: "resume" },
           ],
@@ -6274,16 +6297,18 @@ export class Session3 extends HeyApiClient {
   /**
    * Add synthetic message
    *
-   * Append a synthetic message to a session and resume execution.
+   * Durably admit synthetic session input and schedule execution unless resume is false.
    */
   public synthetic<ThrowOnError extends boolean = false>(
     parameters: {
       sessionID: string
+      id?: string | null
       text?: string
       description?: string | null
       metadata?: {
         [key: string]: unknown
       }
+      delivery?: "steer" | "queue" | null
       resume?: boolean | null
     },
     options?: Options<never, ThrowOnError>,
@@ -6294,9 +6319,11 @@ export class Session3 extends HeyApiClient {
         {
           args: [
             { in: "path", key: "sessionID" },
+            { in: "body", key: "id" },
             { in: "body", key: "text" },
             { in: "body", key: "description" },
             { in: "body", key: "metadata" },
+            { in: "body", key: "delivery" },
             { in: "body", key: "resume" },
           ],
         },
@@ -8257,6 +8284,11 @@ export class V2 extends HeyApiClient {
   private _health?: Health
   get health(): Health {
     return (this._health ??= new Health({ client: this.client }))
+  }
+
+  private _server?: Server
+  get server(): Server {
+    return (this._server ??= new Server({ client: this.client }))
   }
 
   private _location?: Location

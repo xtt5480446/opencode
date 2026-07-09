@@ -286,8 +286,8 @@ export function Prompt(props: PromptProps) {
       last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
     if (tokens <= 0) return
 
-    const model = data.location
-      .model.list(session.location)
+    const model = data.location.model
+      .list(session.location)
       ?.find((model) => model.providerID === last.model.providerID && model.id === last.model.id)
     const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
     const cost = session.cost
@@ -629,7 +629,7 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.visible === false || dialog.stack.length > 0) {
+    if (props.visible === false || props.disabled || dialog.stack.length > 0) {
       if (input.focused) input.blur()
       return
     }
@@ -1139,11 +1139,9 @@ export function Prompt(props: PromptProps) {
       const error = await sdk.api.session
         .prompt({
           sessionID,
-          prompt: {
-            text: [...editorParts.map((part) => part.text), inputText].filter(Boolean).join("\n\n"),
-            files: store.prompt.files,
-            agents: store.prompt.agents,
-          },
+          text: [...editorParts.map((part) => part.text), inputText].filter(Boolean).join("\n\n"),
+          files: store.prompt.files,
+          agents: store.prompt.agents,
         })
         .then(
           () => undefined,
@@ -1452,7 +1450,10 @@ export function Prompt(props: PromptProps) {
                   input.cursorColor = theme.text
                 }, 0)
               }}
-              onMouseDown={(r: MouseEvent) => r.target?.focus()}
+              onMouseDown={(r: MouseEvent) => {
+                if (props.disabled) return
+                r.target?.focus()
+              }}
               focusedBackgroundColor={theme.backgroundElement}
               cursorColor={props.disabled ? theme.backgroundElement : theme.text}
               syntaxStyle={syntax()}

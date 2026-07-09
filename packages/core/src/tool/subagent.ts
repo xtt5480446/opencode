@@ -154,7 +154,7 @@ export const Plugin = {
 
                 const run = Effect.gen(function* () {
                   // The child session owns its agent/model (set at create); prompt only admits input.
-                  yield* runtime.session.prompt({ sessionID: child.id, prompt: { text: input.prompt }, resume: false })
+                  yield* runtime.session.prompt({ sessionID: child.id, text: input.prompt, resume: false })
                   yield* telemetry.resume(runtime.session.resume(child.id), background)
                   return yield* latestAssistantText(child.id)
                 }).pipe(Effect.onInterrupt(() => runtime.session.interrupt(child.id)))
