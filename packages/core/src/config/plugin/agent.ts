@@ -15,6 +15,7 @@ import { PermissionV2 } from "../../permission"
 import type { LocationMutation } from "../../location-mutation"
 import type { ReadTool } from "../../tool/read"
 import type { EditTool } from "../../tool/edit"
+import { AgentPlugin } from "../../plugin/agent"
 
 const legacySources = [
   { pattern: "{agent,agents}/**/*.md", primary: false },
@@ -76,7 +77,22 @@ export const Plugin = define({
       const configuredDefault = Config.latest(loaded.documents, "default_agent")
       if (configuredDefault !== undefined) draft.default(AgentV2.ID.make(configuredDefault))
       for (const current of draft.list()) {
-        draft.update(current.id, (agent) => agent.permissions.push(...permissions))
+        draft.update(current.id, (agent) => {
+          const initial = AgentV2.Info.empty(AgentV2.ID.make(current.id)).permissions.length
+          const hasBuiltInDefaults = AgentPlugin.defaultPermissions.every((rule, index) => {
+            const existing = agent.permissions[initial + index]
+            return (
+              existing?.action === rule.action &&
+              existing.resource === rule.resource &&
+              existing.effect === rule.effect
+            )
+          })
+          agent.permissions.splice(
+            hasBuiltInDefaults ? initial + AgentPlugin.defaultPermissions.length : initial,
+            0,
+            ...permissions,
+          )
+        })
       }
 
       for (const document of loaded.documents) {

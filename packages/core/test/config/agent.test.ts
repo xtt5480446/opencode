@@ -9,9 +9,12 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
+import { Location } from "@opencode-ai/core/location"
 import { PermissionV2 } from "@opencode-ai/core/permission"
+import { AgentPlugin } from "@opencode-ai/core/plugin/agent"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { ConfigMigrateV1 } from "@opencode-ai/core/v1/config/migrate"
+import { location } from "../fixture/location"
 import { tmpdir } from "../fixture/tmpdir"
 import { testEffect } from "../lib/effect"
 import { agentHost, host } from "../plugin/host"
@@ -48,6 +51,42 @@ describe("ConfigAgentPlugin.Plugin", () => {
       expect(PermissionV2.evaluate("external_directory", "C:\\Users\\test\\cache\\files\\*", permissions).effect).toBe(
         "deny",
       )
+    }),
+  )
+
+  it.effect("applies global permissions before built-in and configured agent rules", () =>
+    Effect.gen(function* () {
+      const agents = yield* AgentV2.Service
+      yield* AgentPlugin.Plugin.effect(host({ agent: agentHost(agents) })).pipe(
+        Effect.provideService(
+          Location.Service,
+          Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
+        ),
+      )
+      const config = Config.Service.of({
+        entries: () =>
+          Effect.succeed([
+            new Config.Document({
+              type: "document",
+              info: decode(
+                ConfigMigrateV1.migrate({
+                  permission: { bash: { "rm*": "ask", "git reset*": "ask" } },
+                }),
+              ),
+            }),
+          ]),
+      })
+
+      yield* ConfigAgentPlugin.Plugin.effect(host({ agent: agentHost(agents) })).pipe(
+        Effect.provideService(Config.Service, config),
+      )
+
+      const build = yield* agents.get(AgentV2.defaultID)
+      const explore = yield* agents.get(AgentV2.ID.make("explore"))
+      if (!build || !explore) throw new Error("expected built-in agents")
+      expect(PermissionV2.evaluate("shell", "rm -rf tmp", build.permissions).effect).toBe("ask")
+      expect(PermissionV2.evaluate("shell", "rm -rf tmp", explore.permissions).effect).toBe("deny")
+      expect(PermissionV2.evaluate("shell", "ls", explore.permissions).effect).toBe("deny")
     }),
   )
 
@@ -110,13 +149,13 @@ describe("ConfigAgentPlugin.Plugin", () => {
       if (!buildAgent) throw new Error("expected configured build agent")
       expect(buildAgent.permissions).toEqual([
         ...defaultPermissions,
-        { action: "bash", resource: "*", effect: "allow" },
         { action: "bash", resource: "*", effect: "ask" },
         { action: "read", resource: "*", effect: "allow" },
+        { action: "bash", resource: "*", effect: "allow" },
         { action: "bash", resource: "git *", effect: "allow" },
       ])
       expect(PermissionV2.evaluate("bash", "git status", buildAgent.permissions).effect).toBe("allow")
-      expect(PermissionV2.evaluate("bash", "bun test", buildAgent.permissions).effect).toBe("ask")
+      expect(PermissionV2.evaluate("bash", "bun test", buildAgent.permissions).effect).toBe("allow")
 
       const reviewer = yield* agents.get(AgentV2.ID.make("reviewer"))
       if (!reviewer) throw new Error("expected configured reviewer agent")
