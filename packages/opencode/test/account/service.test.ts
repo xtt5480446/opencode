@@ -1,7 +1,7 @@
 import { expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { Duration, Effect, Layer, Option, Schema } from "effect"
+import { Duration, Effect, Layer, Logger, Option, References, Schema } from "effect"
 import { sql } from "drizzle-orm"
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/unstable/http"
 
@@ -102,6 +102,8 @@ it.live("login normalizes trailing slashes in the provided server URL", () =>
 
 it.live("login maps transport failures to account transport errors", () =>
   Effect.gen(function* () {
+    const logs: Array<string> = []
+    const logger = Logger.formatLogFmt.pipe(Logger.map((output) => logs.push(output)))
     const client = HttpClient.make((req) =>
       Effect.fail(
         new HttpClientError.HttpClientError({
@@ -110,13 +112,27 @@ it.live("login maps transport failures to account transport errors", () =>
       ),
     )
 
-    const error = yield* Effect.flip(Account.use.login("https://one.example.com").pipe(Effect.provide(live(client))))
+    const error = yield* Effect.flip(
+      Account.use
+        .login("https://one.example.com")
+        .pipe(
+          Effect.provide(live(client)),
+          Effect.provide(Logger.layer([logger])),
+          Effect.provideService(References.MinimumLogLevel, "Debug"),
+        ),
+    )
 
     expect(error).toBeInstanceOf(AccountTransportError)
     if (error instanceof AccountTransportError) {
       expect(error.method).toBe("POST")
       expect(error.url).toBe("https://one.example.com/auth/device/code")
     }
+    expect(logs).toHaveLength(2)
+    expect(logs[0]).toContain('message="account request"')
+    expect(logs[0]).toContain("method=POST")
+    expect(logs[0]).toContain("url=https://one.example.com/auth/device/code")
+    expect(logs[1]).toContain('message="account request failed"')
+    expect(logs.join("\n")).not.toContain("opencode-cli")
   }),
 )
 

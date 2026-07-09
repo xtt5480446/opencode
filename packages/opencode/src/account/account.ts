@@ -195,21 +195,33 @@ const layer: Layer.Layer<Service, never, AccountRepo.Service | HttpClient.HttpCl
     const httpOk = HttpClient.filterStatusOk(http)
     const httpReadOk = HttpClient.filterStatusOk(httpRead)
 
+    const executeRequest = <A, E, R>(request: HttpClientRequest.HttpClientRequest, effect: Effect.Effect<A, E, R>) =>
+      Effect.logDebug("account request").pipe(
+        Effect.annotateLogs({ method: request.method, url: request.url }),
+        Effect.andThen(effect),
+        mapAccountServiceError("HTTP request failed"),
+        Effect.tapError((error) =>
+          Effect.logError("account request failed").pipe(
+            Effect.annotateLogs({ method: request.method, url: request.url, error: error.message }),
+          ),
+        ),
+      )
+
     const executeRead = (request: HttpClientRequest.HttpClientRequest) =>
-      httpRead.execute(request).pipe(mapAccountServiceError("HTTP request failed"))
+      executeRequest(request, httpRead.execute(request))
 
     const executeReadOk = (request: HttpClientRequest.HttpClientRequest) =>
-      httpReadOk.execute(request).pipe(mapAccountServiceError("HTTP request failed"))
+      executeRequest(request, httpReadOk.execute(request))
 
     const executeEffectOk = <E>(request: Effect.Effect<HttpClientRequest.HttpClientRequest, E>) =>
       request.pipe(
-        Effect.flatMap((req) => httpOk.execute(req)),
+        Effect.flatMap((req) => executeRequest(req, httpOk.execute(req))),
         mapAccountServiceError("HTTP request failed"),
       )
 
     const executeEffect = <E>(request: Effect.Effect<HttpClientRequest.HttpClientRequest, E>) =>
       request.pipe(
-        Effect.flatMap((req) => http.execute(req)),
+        Effect.flatMap((req) => executeRequest(req, http.execute(req))),
         mapAccountServiceError("HTTP request failed"),
       )
 
