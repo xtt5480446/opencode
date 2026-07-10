@@ -40,6 +40,8 @@ import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
 
+const MAX_OUTPUT_TOKENS = 32_000
+
 /**
  * Runs one durable coding-agent Session until it settles.
  *
@@ -210,6 +212,9 @@ const layer = Layer.effect(
           .map(SystemPart.make),
         messages: [...toLLMMessages(context, model), ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : [])],
         tools: toolMaterialization?.definitions ?? [],
+        generation: {
+          maxTokens: Math.min(model.route.defaults.limits?.output ?? 0, MAX_OUTPUT_TOKENS) || MAX_OUTPUT_TOKENS,
+        },
         toolChoice: isLastStep ? "none" : undefined,
       })
       if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))

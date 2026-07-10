@@ -108,6 +108,11 @@ const recoveryModel = Model.make({
   provider: "fake",
   route: OpenAIChat.route.with({ limits: { context: 20_000, output: 1_000 } }),
 })
+const fullContextOutputModel = Model.make({
+  id: "full-context-output",
+  provider: "fake",
+  route: OpenAIChat.route.with({ limits: { context: 500_000, output: 500_000 } }),
+})
 const authorizations: Tool.Context[] = []
 const executions: string[] = []
 const permission = Layer.succeed(
@@ -652,6 +657,22 @@ describe("SessionRunnerLLM", () => {
         { role: "user", content: [{ type: "text", text: "Second" }] },
       ])
       expect(yield* session.messages({ sessionID })).toHaveLength(2)
+    }),
+  )
+
+  it.effect("caps output when the catalog output limit consumes the full context window", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      currentModel = fullContextOutputModel
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "hi" }), resume: false })
+      requests.length = 0
+      response = []
+
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.generation).toEqual({ maxTokens: 32_000 })
     }),
   )
 
