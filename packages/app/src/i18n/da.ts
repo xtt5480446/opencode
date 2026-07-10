@@ -799,7 +799,8 @@ export const dict = {
   "settings.general.row.showTerminal.description": "Vis terminalknappen i desktopappens titellinje",
   "settings.general.row.showStatus.title": "Serverstatus",
   "settings.general.row.showStatus.description": "Vis serverstatusknappen i titellinjen",
-  "settings.general.row.showTools.description": "Vis værktøjsknappen i titellinjen",
+  "settings.general.row.showTools.title": "Værktøjsmenu",
+  "settings.general.row.showTools.description": "Vis hurtig adgang til MCP'er, LSP'er og plugins i titellinjen",
   "settings.general.row.mobileTitlebarBottom.title": "Navigation nederst",
   "settings.general.row.mobileTitlebarBottom.description":
     "Placer titellinjen og sessionsfanerne nederst på skærmen på mobilenheder",

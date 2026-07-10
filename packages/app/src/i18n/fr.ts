@@ -750,7 +750,9 @@ export const dict = {
     "Afficher le bouton du terminal dans la barre de titre de l'application desktop",
   "settings.general.row.showStatus.title": "État du serveur",
   "settings.general.row.showStatus.description": "Afficher le bouton d'état du serveur dans la barre de titre",
-  "settings.general.row.showTools.description": "Afficher le bouton des outils dans la barre de titre",
+  "settings.general.row.showTools.title": "Menu Outils",
+  "settings.general.row.showTools.description":
+    "Afficher un accès rapide aux MCP, LSP et plugins dans la barre de titre",
   "settings.general.row.mobileTitlebarBottom.title": "Navigation en bas",
   "settings.general.row.mobileTitlebarBottom.description":
     "Placer la barre de titre et les onglets de session en bas de l'écran sur mobile",

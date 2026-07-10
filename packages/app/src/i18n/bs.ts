@@ -805,7 +805,8 @@ export const dict = {
   "settings.general.row.showTerminal.description": "Prikaži dugme terminala u naslovnoj traci desktop aplikacije",
   "settings.general.row.showStatus.title": "Status servera",
   "settings.general.row.showStatus.description": "Prikaži dugme statusa servera u naslovnoj traci",
-  "settings.general.row.showTools.description": "Prikaži dugme alata u naslovnoj traci",
+  "settings.general.row.showTools.title": "Meni alata",
+  "settings.general.row.showTools.description": "Prikaži brzi pristup MCP, LSP i dodacima u naslovnoj traci",
   "settings.general.row.mobileTitlebarBottom.title": "Donja navigacija",
   "settings.general.row.mobileTitlebarBottom.description":
     "Postavi naslovnu traku i kartice sesije na dno ekrana na mobilnim uređajima",

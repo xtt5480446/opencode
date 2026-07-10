@@ -741,7 +741,8 @@ export const dict = {
   "settings.general.row.showTerminal.description": "Mostrar o botão do terminal na barra de título do desktop",
   "settings.general.row.showStatus.title": "Status do servidor",
   "settings.general.row.showStatus.description": "Mostrar o botão de status do servidor na barra de título",
-  "settings.general.row.showTools.description": "Mostrar o botão de ferramentas na barra de título",
+  "settings.general.row.showTools.title": "Menu de ferramentas",
+  "settings.general.row.showTools.description": "Mostrar acesso rápido a MCPs, LSPs e plugins na barra de título",
   "settings.general.row.mobileTitlebarBottom.title": "Navegação inferior",
   "settings.general.row.mobileTitlebarBottom.description":
     "Posicionar a barra de título e as abas da sessão na parte inferior da tela em dispositivos móveis",

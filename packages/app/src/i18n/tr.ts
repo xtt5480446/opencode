@@ -811,7 +811,8 @@ export const dict = {
   "settings.general.row.showTerminal.description": "Masaüstü başlık çubuğunda terminal düğmesini göster",
   "settings.general.row.showStatus.title": "Sunucu durumu",
   "settings.general.row.showStatus.description": "Başlık çubuğunda sunucu durumu düğmesini göster",
-  "settings.general.row.showTools.description": "Başlık çubuğunda araçlar düğmesini göster",
+  "settings.general.row.showTools.title": "Araçlar menüsü",
+  "settings.general.row.showTools.description": "Başlık çubuğunda MCP, LSP ve eklentilere hızlı erişim göster",
   "settings.general.row.mobileTitlebarBottom.title": "Alt gezinme",
   "settings.general.row.mobileTitlebarBottom.description":
     "Mobil cihazlarda başlık çubuğunu ve oturum sekmelerini ekranın altına yerleştir",

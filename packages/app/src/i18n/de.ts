@@ -753,7 +753,8 @@ export const dict = {
   "settings.general.row.showTerminal.description": "Terminal-Schaltfläche in der Desktop-Titelleiste anzeigen",
   "settings.general.row.showStatus.title": "Serverstatus",
   "settings.general.row.showStatus.description": "Serverstatus-Schaltfläche in der Titelleiste anzeigen",
-  "settings.general.row.showTools.description": "Werkzeug-Schaltfläche in der Titelleiste anzeigen",
+  "settings.general.row.showTools.title": "Werkzeugmenü",
+  "settings.general.row.showTools.description": "Schnellzugriff auf MCPs, LSPs und Plugins in der Titelleiste anzeigen",
   "settings.general.row.mobileTitlebarBottom.title": "Navigation unten",
   "settings.general.row.mobileTitlebarBottom.description":
     "Titelleiste und Sitzungs-Tabs auf Mobilgeräten am unteren Bildschirmrand platzieren",
