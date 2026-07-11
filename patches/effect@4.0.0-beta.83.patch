@@ -55,3 +55,31 @@ index f2920365cf0328146523ce2e2dba04d6a8809a4a..5482d635cdf01a72063ff683d244fab8
  /**
   * Creates a streaming `Uint8Array` success response schema.
   *
+diff --git a/dist/unstable/cli/internal/completions/zsh.js b/dist/unstable/cli/internal/completions/zsh.js
+--- a/dist/unstable/cli/internal/completions/zsh.js
++++ b/dist/unstable/cli/internal/completions/zsh.js
+@@ -102,9 +102,7 @@ const generateFunction = (descriptor, parentPath, lines) => {
+         lines.push(`    ${spec}`);
+       }
+     }
+-    for (const arg of descriptor.arguments) {
+-      lines.push(`    ${argSpec(arg)}`);
+-    }
++    // Positional specs conflict with the explicit first-position subcommand dispatcher in Zsh.
+     lines.push(`    '1:command:->command'`);
+     lines.push(`    '*::arg:->args'`);
+     lines.push(`  )`);
+diff --git a/src/unstable/cli/internal/completions/zsh.ts b/src/unstable/cli/internal/completions/zsh.ts
+--- a/src/unstable/cli/internal/completions/zsh.ts
++++ b/src/unstable/cli/internal/completions/zsh.ts
+@@ -133,9 +133,7 @@ const generateFunction = (
+         lines.push(`    ${spec}`)
+       }
+     }
+-    for (const arg of descriptor.arguments) {
+-      lines.push(`    ${argSpec(arg)}`)
+-    }
++    // Positional specs conflict with the explicit first-position subcommand dispatcher in Zsh.
+     lines.push(`    '1:command:->command'`)
+     lines.push(`    '*::arg:->args'`)
+     lines.push(`  )`)
