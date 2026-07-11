@@ -70,7 +70,8 @@ export function fromPromise(plugin: Plugin) {
           catalog: {
             provider: {
               list: (input) => run(host.catalog.provider.list(input)),
-              get: (input) => run(host.catalog.provider.get({ ...input, providerID: Provider.ID.make(input.providerID) })),
+              get: (input) =>
+                run(host.catalog.provider.get({ ...input, providerID: Provider.ID.make(input.providerID) })),
             },
             model: {
               list: (input) => run(host.catalog.model.list(input)),
@@ -96,7 +97,9 @@ export function fromPromise(plugin: Plugin) {
               ),
             connect: {
               key: (input) =>
-                run(host.integration.connect.key({ ...input, integrationID: Integration.ID.make(input.integrationID) })),
+                run(
+                  host.integration.connect.key({ ...input, integrationID: Integration.ID.make(input.integrationID) }),
+                ),
               oauth: (input) =>
                 run(
                   host.integration.connect.oauth({
@@ -206,6 +209,13 @@ export function fromPromise(plugin: Plugin) {
                   arguments: input.arguments ?? undefined,
                   delivery: input.delivery ?? undefined,
                   resume: input.resume ?? undefined,
+                }),
+              ),
+            rename: (input) =>
+              run(
+                host.session.rename({
+                  ...input,
+                  sessionID: Session.ID.make(input.sessionID),
                 }),
               ),
             interrupt: (input) => run(host.session.interrupt({ sessionID: Session.ID.make(input.sessionID) })),

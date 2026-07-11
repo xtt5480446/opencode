@@ -4,6 +4,7 @@ import { AgentV2 } from "@opencode-ai/core/agent"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { PluginPromise } from "@opencode-ai/core/plugin/promise"
+import { PluginRuntime } from "@opencode-ai/core/plugin/runtime"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
@@ -40,6 +41,37 @@ describe("fromPromise", () => {
 
       expect(seen).toHaveLength(8)
       expect(new Set(seen).size).toBe(1)
+    }),
+  )
+
+  it.effect("forwards session rename", () =>
+    Effect.gen(function* () {
+      const plugin = yield* PluginV2.Service
+      const runtime = yield* PluginRuntime.Service
+      const renamed: { sessionID: SessionV2.ID; title: string }[] = []
+      const host = yield* PluginHost.make(plugin).pipe(
+        Effect.provideService(
+          PluginRuntime.Service,
+          PluginRuntime.Service.of({
+            ...runtime,
+            session: {
+              ...runtime.session,
+              rename: (input) =>
+                Effect.sync(() => {
+                  renamed.push(input)
+                }),
+            },
+          }),
+        ),
+      )
+      const promisePlugin = Plugin.define({
+        id: "promise-session-rename",
+        setup: (ctx) => ctx.session.rename({ sessionID: "ses_plugin_rename", title: "Updated scope" }),
+      })
+
+      yield* PluginPromise.fromPromise(promisePlugin).effect(host)
+
+      expect(renamed).toEqual([{ sessionID: SessionV2.ID.make("ses_plugin_rename"), title: "Updated scope" }])
     }),
   )
 
