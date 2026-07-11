@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
+import type { FileDiffInfo } from "@opencode-ai/client/promise"
 import type { TuiPlugin, TuiPluginApi, TuiRouteCurrent } from "@opencode-ai/plugin/tui"
-import type { FileDiffInfo, SnapshotFileDiff, VcsFileDiff } from "@opencode-ai/sdk/v2"
+import type { SnapshotFileDiff, VcsFileDiff } from "@opencode-ai/sdk/v2"
 import {
   TextAttributes,
   type BorderSides,
@@ -18,6 +19,7 @@ import { DiffViewerFileTree } from "./diff-viewer-file-tree"
 import { Panel, PanelGroup, Separator } from "./diff-viewer-ui"
 import { DialogSelect } from "../../ui/dialog-select"
 import { getScrollAcceleration } from "../../util/scroll"
+import { useSDK } from "../../context/sdk"
 import {
   allExpandedFileTreeDirectories,
   buildFileTree,
@@ -89,6 +91,7 @@ function diffSourceLabel(mode: DiffMode) {
 }
 
 function DiffViewer(props: { api: TuiPluginApi }) {
+  const sdk = useSDK()
   const dimensions = useTerminalDimensions()
   const themeState = useTheme()
   const theme = () => props.api.theme.current
@@ -122,11 +125,12 @@ function DiffViewer(props: { api: TuiPluginApi }) {
       return normalizeDiffs(result.data ?? [])
     }
 
-    const result = await props.api.client.vcs.diff(
-      { directory: input.directory, mode: input.mode, context: VCS_DIFF_CONTEXT_LINES },
-      { throwOnError: true },
-    )
-    return normalizeDiffs(result.data ?? [])
+    const result = await sdk.api.vcs.diff({
+      location: { directory: input.directory },
+      mode: input.mode === "git" ? "working" : input.mode,
+      context: VCS_DIFF_CONTEXT_LINES,
+    })
+    return normalizeDiffs(result.data)
   })
   const files = createMemo(() => diff() ?? [])
   const [focus, setFocus] = createSignal<DiffViewerFocus>("patches")

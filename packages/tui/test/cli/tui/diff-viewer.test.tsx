@@ -3,9 +3,11 @@ import { expect, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { DiffRenderable, type Renderable, ScrollBoxRenderable } from "@opentui/core"
 import { testRender, useRenderer } from "@opentui/solid"
+import type { OpenCodeClient } from "@opencode-ai/client/promise"
 import type { TuiPluginApi, TuiPluginMeta, TuiRouteCurrent, TuiRouteDefinition } from "@opencode-ai/plugin/tui"
 import type { Session } from "@opencode-ai/sdk/v2"
 import { KVProvider } from "../../../src/context/kv"
+import { SDKProvider } from "../../../src/context/sdk"
 import { ThemeProvider } from "../../../src/context/theme"
 import { TuiConfigProvider } from "../../../src/config"
 import { TuiKeybind } from "../../../src/config/keybind"
@@ -22,7 +24,11 @@ test("closing the diff viewer returns to the route it opened from", async () => 
       name: "diff",
       params: { mode: "git", sessionID: "session-1", returnRoute: startRoute },
     })
-    expect(viewer.vcsDiffInput()).toEqual({ directory: "/repo/session", mode: "git", context: 12 })
+    expect(viewer.vcsDiffInput()).toEqual({
+      location: { directory: "/repo/session" },
+      mode: "working",
+      context: 12,
+    })
 
     expect(viewer.commands.has("diff.close")).toBe(true)
     viewer.commands.get("diff.close")!.run?.({} as never)
@@ -119,12 +125,6 @@ async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: 
     const base = createTuiPluginApi({
       keymap,
       client: {
-        vcs: {
-          diff: async (input: unknown) => {
-            vcsDiffInput = input
-            return { data: vcsDiff }
-          },
-        },
         session: {
           diff: async (input: unknown) => {
             sessionDiffInput = input
@@ -138,6 +138,25 @@ async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: 
         },
       },
     })
+    const next = {
+      vcs: {
+        diff: async (input: unknown) => {
+          vcsDiffInput = input
+          return {
+            location: { directory: "/repo/session", project: { id: "project-1", directory: "/repo/session" } },
+            data: vcsDiff,
+          }
+        },
+      },
+      event: {
+        subscribe() {
+          return (async function* () {
+            yield { type: "server.connected" }
+            await new Promise(() => {})
+          })()
+        },
+      },
+    } as unknown as OpenCodeClient
     const api = {
       ...base,
       route: {
@@ -159,15 +178,17 @@ async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: 
 
     return (
       <TestTuiContexts>
-        <OpencodeKeymapProvider keymap={keymap}>
-          <TuiConfigProvider config={config}>
-            <KVProvider>
-              <ThemeProvider mode="dark">
-                {renderDiff?.({ params: "params" in current ? current.params : undefined })}
-              </ThemeProvider>
-            </KVProvider>
-          </TuiConfigProvider>
-        </OpencodeKeymapProvider>
+        <SDKProvider client={api.client} api={next}>
+          <OpencodeKeymapProvider keymap={keymap}>
+            <TuiConfigProvider config={config}>
+              <KVProvider>
+                <ThemeProvider mode="dark">
+                  {renderDiff?.({ params: "params" in current ? current.params : undefined })}
+                </ThemeProvider>
+              </KVProvider>
+            </TuiConfigProvider>
+          </OpencodeKeymapProvider>
+        </SDKProvider>
       </TestTuiContexts>
     )
   }
@@ -218,7 +239,11 @@ test("branch diff source requests branch VCS diff", async () => {
       name: "diff",
       params: { mode: "branch", sessionID: "session-1", returnRoute: startRoute },
     })
-    expect(viewer.vcsDiffInput()).toEqual({ directory: "/repo/session", mode: "branch", context: 12 })
+    expect(viewer.vcsDiffInput()).toEqual({
+      location: { directory: "/repo/session" },
+      mode: "branch",
+      context: 12,
+    })
     expect(viewer.sessionDiffInput()).toBeUndefined()
   } finally {
     viewer.app.renderer.destroy()
