@@ -2,11 +2,14 @@ import { expect } from "bun:test"
 import { LLMClient, LLMEvent, Model, type LLMRequest } from "@opencode-ai/llm"
 import { OpenAIChat } from "@opencode-ai/llm/protocols"
 import { AgentV2 } from "@opencode-ai/core/agent"
+import { Catalog } from "@opencode-ai/core/catalog"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { llmClient } from "@opencode-ai/core/effect/app-node-platform"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -18,10 +21,12 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { DateTime, Effect, Layer, Stream } from "effect"
+import { Money } from "@opencode-ai/schema/money"
+import { Effect, Layer, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 
 let requests: LLMRequest[] = []
+let resolvedModels: Array<{ id: string; provider: string } | undefined> = []
 const model = Model.make({
   id: "title-model",
   provider: "test",
@@ -36,7 +41,17 @@ const client = Layer.mock(LLMClient.Service)({
   generate: () => Effect.die("unused"),
 })
 const models = Layer.mock(SessionRunnerModel.Service)({
-  resolve: () => Effect.succeed(SessionRunnerModel.resolved(model)),
+  resolve: (session) => {
+    resolvedModels.push(session.model ? { id: session.model.id, provider: session.model.providerID } : undefined)
+    const selected = session.model
+      ? Model.make({
+          id: session.model.id,
+          provider: session.model.providerID,
+          route: OpenAIChat.route.with({ limits: { context: 10_000, output: 1_000 } }),
+        })
+      : model
+    return Effect.succeed(SessionRunnerModel.resolved(selected))
+  },
 })
 const it = testEffect(
   AppNodeBuilder.build(
@@ -46,6 +61,7 @@ const it = testEffect(
       SessionProjector.node,
       SessionStore.node,
       AgentV2.node,
+      Catalog.node,
       SessionTitle.node,
     ]),
     [
@@ -55,7 +71,10 @@ const it = testEffect(
   ),
 )
 
-const insertSession = (id: SessionV2.ID) =>
+const insertSession = (
+  id: SessionV2.ID,
+  model?: { id: string; providerID: string },
+) =>
   Effect.gen(function* () {
     const { db } = yield* Database.Service
     yield* db
@@ -73,6 +92,14 @@ const insertSession = (id: SessionV2.ID) =>
         directory: "/project",
         title: "New session - fake",
         version: "test",
+        ...(model
+          ? {
+              model: {
+                id: ModelV2.ID.make(model.id),
+                providerID: ProviderV2.ID.make(model.providerID),
+              },
+            }
+          : {}),
       })
       .onConflictDoNothing()
       .run()
@@ -94,17 +121,68 @@ const prompt = (sessionID: SessionV2.ID, text: string) =>
     })
   })
 
-it.effect("generates a title from the sole user message and renames the session", () =>
+const enableTitleAgent = (model?: { id: string; providerID: string }) =>
   Effect.gen(function* () {
-    requests = []
     const agentService = yield* AgentV2.Service
     yield* agentService.transform((editor) => {
       editor.update(AgentV2.ID.make("title"), (agent) => {
         agent.mode = "primary"
         agent.hidden = true
         agent.system = "You are a title generator."
+        if (model) {
+          agent.model = {
+            id: ModelV2.ID.make(model.id),
+            providerID: ProviderV2.ID.make(model.providerID),
+          }
+        }
       })
     })
+  })
+
+const seedSmallModel = () =>
+  Effect.gen(function* () {
+    const catalog = yield* Catalog.Service
+    const providerID = ProviderV2.ID.make("test")
+    yield* catalog.transform((catalog) => {
+      catalog.provider.update(providerID, () => {})
+      catalog.model.update(providerID, ModelV2.ID.make("main"), (model) => {
+        model.capabilities.input = ["text"]
+        model.capabilities.output = ["text"]
+        model.cost = [
+          {
+            input: Money.USDPerMillionTokens.make(50),
+            output: Money.USDPerMillionTokens.make(50),
+            cache: {
+              read: Money.USDPerMillionTokens.zero,
+              write: Money.USDPerMillionTokens.zero,
+            },
+          },
+        ]
+        model.time.released = Date.now()
+      })
+      catalog.model.update(providerID, ModelV2.ID.make("mini"), (model) => {
+        model.capabilities.input = ["text"]
+        model.capabilities.output = ["text"]
+        model.cost = [
+          {
+            input: Money.USDPerMillionTokens.make(1),
+            output: Money.USDPerMillionTokens.make(1),
+            cache: {
+              read: Money.USDPerMillionTokens.zero,
+              write: Money.USDPerMillionTokens.zero,
+            },
+          },
+        ]
+        model.time.released = Date.now()
+      })
+    })
+  })
+
+it.effect("generates a title from the sole user message and renames the session", () =>
+  Effect.gen(function* () {
+    requests = []
+    resolvedModels = []
+    yield* enableTitleAgent()
     const sessionID = SessionV2.ID.make("ses_title_generate")
     yield* insertSession(sessionID)
     yield* prompt(sessionID, "Help me debug the failing build")
@@ -123,17 +201,55 @@ it.effect("generates a title from the sole user message and renames the session"
   }),
 )
 
+it.effect("prefers the catalog small model over the session model", () =>
+  Effect.gen(function* () {
+    requests = []
+    resolvedModels = []
+    yield* enableTitleAgent()
+    yield* seedSmallModel()
+    const sessionID = SessionV2.ID.make("ses_title_small_model")
+    yield* insertSession(sessionID, { id: "main", providerID: "test" })
+    yield* prompt(sessionID, "Help me debug the failing build")
+
+    const store = yield* SessionStore.Service
+    const session = yield* store
+      .get(sessionID)
+      .pipe(Effect.flatMap((session) => (session ? Effect.succeed(session) : Effect.die("session missing"))))
+    const title = yield* SessionTitle.Service
+    yield* title.generateForFirstPrompt(session)
+
+    expect(resolvedModels).toEqual([{ id: "mini", provider: "test" }])
+    expect(String(requests[0]?.model.id)).toBe("mini")
+  }),
+)
+
+it.effect("prefers the title agent model over the catalog small model", () =>
+  Effect.gen(function* () {
+    requests = []
+    resolvedModels = []
+    yield* enableTitleAgent({ id: "agent-title", providerID: "test" })
+    yield* seedSmallModel()
+    const sessionID = SessionV2.ID.make("ses_title_agent_model")
+    yield* insertSession(sessionID, { id: "main", providerID: "test" })
+    yield* prompt(sessionID, "Help me debug the failing build")
+
+    const store = yield* SessionStore.Service
+    const session = yield* store
+      .get(sessionID)
+      .pipe(Effect.flatMap((session) => (session ? Effect.succeed(session) : Effect.die("session missing"))))
+    const title = yield* SessionTitle.Service
+    yield* title.generateForFirstPrompt(session)
+
+    expect(resolvedModels).toEqual([{ id: "agent-title", provider: "test" }])
+    expect(String(requests[0]?.model.id)).toBe("agent-title")
+  }),
+)
+
 it.effect("does not generate once a second user message exists", () =>
   Effect.gen(function* () {
     requests = []
-    const agentService = yield* AgentV2.Service
-    yield* agentService.transform((editor) => {
-      editor.update(AgentV2.ID.make("title"), (agent) => {
-        agent.mode = "primary"
-        agent.hidden = true
-        agent.system = "You are a title generator."
-      })
-    })
+    resolvedModels = []
+    yield* enableTitleAgent()
     const sessionID = SessionV2.ID.make("ses_title_second_message")
     yield* insertSession(sessionID)
     yield* prompt(sessionID, "First message")
@@ -155,14 +271,8 @@ it.effect("does not generate once a second user message exists", () =>
 it.effect("does not generate for a child session", () =>
   Effect.gen(function* () {
     requests = []
-    const agentService = yield* AgentV2.Service
-    yield* agentService.transform((editor) => {
-      editor.update(AgentV2.ID.make("title"), (agent) => {
-        agent.mode = "primary"
-        agent.hidden = true
-        agent.system = "You are a title generator."
-      })
-    })
+    resolvedModels = []
+    yield* enableTitleAgent()
     const sessionID = SessionV2.ID.make("ses_title_child")
     const { db } = yield* Database.Service
     yield* db
@@ -201,6 +311,7 @@ it.effect("does not generate for a child session", () =>
 it.effect("does not generate when the title agent is removed", () =>
   Effect.gen(function* () {
     requests = []
+    resolvedModels = []
     const sessionID = SessionV2.ID.make("ses_title_no_agent")
     yield* insertSession(sessionID)
     yield* prompt(sessionID, "Help me debug the failing build")

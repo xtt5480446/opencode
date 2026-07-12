@@ -3,10 +3,12 @@ export * as SessionTitle from "./title"
 import { LLM, LLMClient, LLMError, LLMEvent, Message, type LLMRequest } from "@opencode-ai/llm"
 import { Context, DateTime, Effect, Layer, Stream } from "effect"
 import { AgentV2 } from "../agent"
+import { Catalog } from "../catalog"
 import { Database } from "../database/database"
 import { EventV2 } from "../event"
 import { makeLocationNode } from "../effect/app-node"
 import { llmClient } from "../effect/app-node-platform"
+import { ModelV2 } from "../model"
 import { SessionEvent } from "./event"
 import { SessionHistory } from "./history"
 import { SessionRunnerModel } from "./runner/model"
@@ -21,6 +23,7 @@ type Dependencies = {
   }
   readonly agents: AgentV2.Interface
   readonly models: SessionRunnerModel.Interface
+  readonly catalog: Catalog.Interface
 }
 
 export interface Interface {
@@ -33,6 +36,21 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 const truncate = (value: string) => (value.length <= MAX_LENGTH ? value : `${value.slice(0, MAX_LENGTH - 3)}...`)
 
 const make = (dependencies: Dependencies) => {
+  const resolveModel = (session: SessionSchema.Info, agent: AgentV2.Info) => {
+    if (agent.model) return dependencies.models.resolve({ ...session, model: agent.model })
+    return Effect.gen(function* () {
+      const providerID = session.model?.providerID ?? (yield* dependencies.catalog.model.default())?.providerID
+      const small = providerID ? yield* dependencies.catalog.model.small(providerID) : undefined
+      if (!small) return yield* dependencies.models.resolve(session)
+      return yield* dependencies.models
+        .resolve({
+          ...session,
+          model: ModelV2.Ref.make({ id: small.id, providerID: small.providerID }),
+        })
+        .pipe(Effect.catch(() => dependencies.models.resolve(session)))
+    })
+  }
+
   const generateForFirstPrompt = Effect.fn("SessionTitle.generateForFirstPrompt")(function* (
     db: Database.Interface["db"],
     session: SessionSchema.Info,
@@ -42,11 +60,7 @@ const make = (dependencies: Dependencies) => {
     if (!firstUser) return
     const agent = yield* dependencies.agents.get(AgentV2.ID.make("title"))
     if (!agent) return
-    const resolved = yield* (
-      agent.model
-        ? dependencies.models.resolve({ ...session, model: agent.model })
-        : dependencies.models.resolve(session)
-    ).pipe(Effect.catch(() => Effect.succeed(undefined)))
+    const resolved = yield* resolveModel(session, agent).pipe(Effect.catch(() => Effect.succeed(undefined)))
     if (!resolved) return
     const chunks: string[] = []
     let failed = false
@@ -90,8 +104,9 @@ export const layer = Layer.effect(
     const llm = yield* LLMClient.Service
     const agents = yield* AgentV2.Service
     const models = yield* SessionRunnerModel.Service
+    const catalog = yield* Catalog.Service
     const database = yield* Database.Service
-    const title = make({ events, llm, agents, models })
+    const title = make({ events, llm, agents, models, catalog })
     return Service.of({
       generateForFirstPrompt: (session) => title.generateForFirstPrompt(database.db, session),
     })
@@ -101,5 +116,5 @@ export const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [EventV2.node, llmClient, AgentV2.node, SessionRunnerModel.node, Database.node],
+  deps: [EventV2.node, llmClient, AgentV2.node, SessionRunnerModel.node, Catalog.node, Database.node],
 })
