@@ -11,11 +11,72 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { expect, test } from "bun:test"
-import { Effect, Schedule, Schema } from "effect"
+import { Cause, Effect, Exit, Schedule, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { ServiceConfig } from "../src/services/service-config"
+import { StartupError } from "../src/framework/startup-error"
+
+const RED_BOLD = "\x1b[91m\x1b[1m"
+const BOLD = "\x1b[1m"
+const RESET = "\x1b[0m"
+
+test("renders a missing registration as an actionable startup failure", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-start-"))
+  const registration = path.join(root, "server.json")
+  const script = path.join(root, "exit.ts")
+  await Bun.write(script, "process.exit(1)\n")
+
+  try {
+    const exit = await Service.start({ file: registration, command: [process.execPath, script] }).pipe(
+      Effect.provide(NodeFileSystem.layer),
+      Effect.exit,
+      Effect.runPromise,
+    )
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause)
+      expect(error).toBeInstanceOf(Service.StartError)
+      if (error instanceof Service.StartError) {
+        expect(StartupError.render(error, "opencode2")).toBe(
+          `\n${RED_BOLD}OpenCode could not start its background service${RESET}\n\nThe service exited or never became ready.\nThe expected registration file was not created.\n\n${BOLD}Try:${RESET}\n  opencode2 service restart\n  OPENCODE_LOG_LEVEL=DEBUG opencode2\n`,
+        )
+      }
+      expect(Cause.pretty(exit.cause)).toContain(
+        `[cause]: PlatformError: NotFound: FileSystem.readFile (${registration})`,
+      )
+    }
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
+test("reports a service spawn failure without losing its cause", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-spawn-"))
+  const command = path.join(os.tmpdir(), "opencode-command-that-does-not-exist")
+  try {
+    const exit = await Service.start({ file: path.join(root, "server.json"), command: [command] }).pipe(
+      Effect.provide(NodeFileSystem.layer),
+      Effect.exit,
+      Effect.runPromise,
+    )
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const error = Cause.squash(exit.cause)
+      expect(error).toBeInstanceOf(Service.StartError)
+      if (error instanceof Service.StartError) {
+        expect(error.stage).toBe("spawn")
+        expect(StartupError.render(error, "opencode2")).toContain("The service process could not be started.")
+      }
+      expect(Cause.pretty(exit.cause)).toContain(command)
+    }
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
 
 test("local channel stores service config with the local service filename", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-"))

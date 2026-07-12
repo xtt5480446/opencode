@@ -1,5 +1,6 @@
 import { Effect, FileSystem, Option, Schedule, Schema } from "effect"
 import { spawn } from "node:child_process"
+import { once } from "node:events"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -34,6 +35,11 @@ export type Options = {
 
 export type StartReason = "missing" | "version-mismatch"
 
+export class StartError extends Schema.TaggedErrorClass<StartError>()("ServiceStartError", {
+  stage: Schema.Literals(["spawn", "registration", "readiness"]),
+  cause: Schema.Defect(),
+}) {}
+
 export type StartOptions = Options & {
   // Called once when start() decides it must spawn: either no service was
   // found, or a healthy service with a different version is being replaced.
@@ -66,19 +72,23 @@ export const start = Effect.fn("service.start")(function* (options: StartOptions
   if (mismatched !== undefined) yield* kill(mismatched.info, options).pipe(Effect.ignore)
 
   const [command, ...args] = options.command ?? ["opencode", "serve", "--service"]
-  if (command === undefined) return yield* Effect.fail(new Error("Missing service command"))
-  const child = yield* Effect.try({
-    try: () => {
+  if (command === undefined)
+    return yield* Effect.fail(new StartError({ stage: "spawn", cause: new Error("Missing service command") }))
+  const child = yield* Effect.tryPromise({
+    try: async () => {
       const child = spawn(command, args, { detached: true, stdio: "ignore" })
+      await once(child, "spawn")
       child.unref()
       return child
     },
-    catch: (cause) => new Error("Failed to start server", { cause }),
+    catch: (cause) => new StartError({ stage: "spawn", cause }),
   })
 
-  return yield* discoverLocal(options).pipe(
+  return yield* awaitReady(options).pipe(
     Effect.flatMap((found) =>
-      found === undefined ? Effect.fail(new Error("Server is not ready")) : Effect.succeed(found),
+      found === undefined
+        ? Effect.fail(new StartError({ stage: "readiness", cause: new Error("Server is not ready") }))
+        : Effect.succeed(found),
     ),
     Effect.retry(poll),
     Effect.tap((found) =>
@@ -90,7 +100,6 @@ export const start = Effect.fn("service.start")(function* (options: StartOptions
     ),
     Effect.map((found) => found.endpoint),
     Effect.tapError(() => Effect.try({ try: () => child.kill("SIGTERM"), catch: () => undefined }).pipe(Effect.ignore)),
-    Effect.mapError(() => new Error("Failed to start server")),
   )
 })
 
@@ -133,6 +142,18 @@ const read = Effect.fnUntraced(function* (file?: string) {
   const text = yield* fs.readFileString(file ?? fallback()).pipe(Effect.option)
   if (Option.isNone(text)) return undefined
   return yield* decode(text.value).pipe(Effect.option, Effect.map(Option.getOrUndefined))
+})
+
+const awaitReady = Effect.fnUntraced(function* (options: Options) {
+  const fs = yield* FileSystem.FileSystem
+  const info = yield* fs.readFileString(options.file ?? fallback()).pipe(
+    Effect.mapError(
+      (cause) => new StartError({ stage: cause.reason._tag === "NotFound" ? "registration" : "readiness", cause }),
+    ),
+    Effect.flatMap(decode),
+    Effect.mapError((cause) => (cause instanceof StartError ? cause : new StartError({ stage: "readiness", cause }))),
+  )
+  return yield* probe(info, options.version)
 })
 
 type LocalService = {
