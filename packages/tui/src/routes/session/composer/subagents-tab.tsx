@@ -8,12 +8,15 @@ import { useTheme, selectedForeground } from "../../../context/theme"
 import { Locale } from "../../../util/locale"
 import { useBindings, useCommandShortcut } from "../../../keymap"
 import { useComposerTab } from "./index"
+import { Spinner } from "../../../component/spinner"
+import type { SessionMessageInfo } from "@opencode-ai/client"
 
 interface SubagentEntry {
   sessionID: string
   agent: string
   title: string
   status: string
+  background: boolean
   current: boolean
 }
 
@@ -26,6 +29,7 @@ export function SubagentsTab(props: { sessionID: string }) {
   const navigate = useRoute().navigate
   const composer = useComposerTab()
   const interruptHint = useCommandShortcut("composer.subagent.interrupt")
+  const backgroundHint = useCommandShortcut("composer.subagent.background")
 
   const session = createMemo(() => data.session.get(props.sessionID))
 
@@ -39,13 +43,18 @@ export function SubagentsTab(props: { sessionID: string }) {
       const siblings = data.session.list().filter((s) => s.parentID === current.parentID)
       for (const sibling of siblings) {
         const agentMatch = sibling.title.match(/@(\w+) subagent/)
-        const agent = sibling.agent ? Locale.titlecase(sibling.agent) : agentMatch ? Locale.titlecase(agentMatch[1]) : "Subagent"
+        const agent = sibling.agent
+          ? Locale.titlecase(sibling.agent)
+          : agentMatch
+            ? Locale.titlecase(agentMatch[1])
+            : "Subagent"
         const name = agentMatch ? sibling.title.replace(agentMatch[0], "").trim() || sibling.title : sibling.title
         result.push({
           sessionID: sibling.id,
           agent,
           title: name,
           status: data.session.status(sibling.id),
+          background: isBackgroundSubagent(data.session.message.list(current.parentID), sibling.id, sibling.title),
           current: sibling.id === route.sessionID,
         })
       }
@@ -53,13 +62,18 @@ export function SubagentsTab(props: { sessionID: string }) {
       const children = data.session.list().filter((s) => s.parentID === props.sessionID)
       for (const child of children) {
         const agentMatch = child.title.match(/@(\w+) subagent/)
-        const agent = child.agent ? Locale.titlecase(child.agent) : agentMatch ? Locale.titlecase(agentMatch[1]) : "Subagent"
+        const agent = child.agent
+          ? Locale.titlecase(child.agent)
+          : agentMatch
+            ? Locale.titlecase(agentMatch[1])
+            : "Subagent"
         const name = agentMatch ? child.title.replace(agentMatch[0], "").trim() || child.title : child.title
         result.push({
           sessionID: child.id,
           agent,
           title: name,
           status: data.session.status(child.id),
+          background: isBackgroundSubagent(data.session.message.list(props.sessionID), child.id, child.title),
           current: child.id === route.sessionID,
         })
       }
@@ -133,7 +147,10 @@ export function SubagentsTab(props: { sessionID: string }) {
       hints: () => {
         const entry = selectedEntry()
         if (!entry || entry.status !== "running") return []
-        return [{ label: "interrupt", shortcut: interruptHint() }]
+        return [
+          ...(!entry.background && backgroundHint() ? [{ label: "background", shortcut: backgroundHint() }] : []),
+          { label: "interrupt", shortcut: interruptHint() },
+        ]
       },
       onClose: () => {
         const parentID = session()?.parentID
@@ -177,6 +194,16 @@ export function SubagentsTab(props: { sessionID: string }) {
         },
       },
       {
+        name: "composer.subagent.background",
+        title: "Background blocking tools",
+        category: "Session",
+        run() {
+          const entry = selectedEntry()
+          if (!entry || entry.status !== "running" || entry.background) return
+          void sdk.api.session.background({ sessionID: session()?.parentID ?? props.sessionID })
+        },
+      },
+      {
         name: "composer.subagent.interrupt",
         title: "Interrupt subagent",
         category: "Composer",
@@ -191,25 +218,18 @@ export function SubagentsTab(props: { sessionID: string }) {
       { key: "up", desc: "Previous subagent", group: "Subagents", cmd: "composer.subagent.up" },
       { key: "down", desc: "Next subagent", group: "Subagents", cmd: "composer.subagent.down" },
       { key: "return", desc: "Navigate to subagent", group: "Subagents", cmd: "composer.subagent.select" },
+      { key: "ctrl+b", desc: "Background subagent", group: "Subagents", cmd: "composer.subagent.background" },
       { key: "ctrl+d", desc: "Interrupt subagent", group: "Subagents", cmd: "composer.subagent.interrupt" },
     ],
   }))
 
   return (
     <Show when={composer.active("subagents")}>
-      <scrollbox
-        scrollbarOptions={{ visible: false }}
-        maxHeight={5}
-        ref={(r: ScrollBoxRenderable) => (scroll = r)}
-      >
+      <scrollbox scrollbarOptions={{ visible: false }} maxHeight={5} ref={(r: ScrollBoxRenderable) => (scroll = r)}>
         <Show when={entries().length > 0} fallback={<text fg={theme.textMuted}> No subagents</text>}>
           <For each={entries()}>
             {(entry, index) => {
               const active = createMemo(() => index() === selected())
-              const status = createMemo(() => {
-                if (entry.status === "running") return "Running"
-                return ""
-              })
               return (
                 <box
                   flexDirection="row"
@@ -222,18 +242,30 @@ export function SubagentsTab(props: { sessionID: string }) {
                     navigate({ type: "session", sessionID: entry.sessionID })
                   }}
                 >
+                  <box width={2} flexShrink={0}>
+                    <Show when={entry.status === "running" && !entry.background}>
+                      <Spinner color={active() ? fg : theme.textMuted} />
+                    </Show>
+                  </box>
                   <box flexGrow={1} minWidth={0} flexDirection="row">
+                    <text
+                      fg={active() ? fg : theme.textMuted}
+                      attributes={active() ? TextAttributes.BOLD : undefined}
+                      wrapMode="none"
+                    >
+                      {entry.agent}{" "}
+                    </text>
                     <text
                       fg={active() ? fg : entry.current ? theme.primary : theme.text}
                       attributes={active() ? TextAttributes.BOLD : undefined}
                       wrapMode="none"
                     >
-                      {entry.agent}: {entry.title}
+                      {entry.title}
                     </text>
                   </box>
-                  <Show when={status()}>
+                  <Show when={entry.status === "running" && entry.background}>
                     <text fg={active() ? fg : theme.textMuted} wrapMode="none">
-                      {status()}
+                      background
                     </text>
                   </Show>
                 </box>
@@ -243,5 +275,18 @@ export function SubagentsTab(props: { sessionID: string }) {
         </Show>
       </scrollbox>
     </Show>
+  )
+}
+
+function isBackgroundSubagent(messages: SessionMessageInfo[], sessionID: string, title: string) {
+  return messages.some((message) =>
+    message.type === "assistant"
+      ? message.content.some((part) => {
+          if (part.type !== "tool" || part.name !== "subagent" || part.state.status === "streaming") return false
+          if (part.state.input.background === true && part.state.input.description === title) return true
+          if (part.state.status === "running") return false
+          return part.state.structured.sessionID === sessionID && part.state.structured.status === "running"
+        })
+      : false,
   )
 }
