@@ -57,6 +57,8 @@ import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
+import { Identifier } from "@opencode-ai/core/id/id"
+import { createQuickUndo } from "./quick-undo"
 
 registerOpencodeSpinner()
 
@@ -296,6 +298,7 @@ export function Prompt(props: PromptProps) {
     extmarkToPartIndex: new Map(),
     interrupt: 0,
   })
+  const quickUndo = createQuickUndo<PromptInfo>()
 
   createEffect(
     on(
@@ -394,7 +397,7 @@ export function Prompt(props: PromptProps) {
         category: "Session",
         hidden: true,
         enabled: status().type !== "idle",
-        run: () => {
+        run: async () => {
           if (auto()?.visible) return
           if (!input.focused) return
           // TODO: this should be its own command
@@ -403,6 +406,18 @@ export function Prompt(props: PromptProps) {
             return
           }
           if (!props.sessionID) return
+
+          const recent = quickUndo.escape()
+          if (recent) {
+            await sdk.client.session.abort({ sessionID: props.sessionID }).catch(() => {})
+            await sdk.client.session.revert({ sessionID: props.sessionID, messageID: recent.messageID })
+            input.setText(recent.value.input)
+            setStore("prompt", recent.value)
+            restoreExtmarksFromParts(recent.value.parts)
+            input.gotoBufferEnd()
+            input.focus()
+            return
+          }
 
           setStore("interrupt", store.interrupt + 1)
 
@@ -1089,11 +1104,17 @@ export function Prompt(props: PromptProps) {
         parts: nonTextParts.filter((x) => x.type === "file"),
       })
     } else {
+      const messageID = Identifier.ascending("message")
+      quickUndo.submitted(messageID, {
+        input: store.prompt.input,
+        parts: [...unwrap(store.prompt.parts)],
+      })
       move.startSubmit()
       sdk.client.session
         .prompt(
           {
             sessionID,
+            messageID,
             ...selectedModel,
             agent: agent.name,
             model: selectedModel,
