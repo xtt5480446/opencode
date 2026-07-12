@@ -1284,6 +1284,7 @@ function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
         <text fg={color()}>
           {state() === "completed" ? "↳" : "!"} {agent()} {status()}
         </text>
+        <text fg={theme.textMuted}> · {text()}</text>
       </box>
     </Show>
   )
