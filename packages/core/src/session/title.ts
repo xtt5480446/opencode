@@ -36,21 +36,6 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 const truncate = (value: string) => (value.length <= MAX_LENGTH ? value : `${value.slice(0, MAX_LENGTH - 3)}...`)
 
 const make = (dependencies: Dependencies) => {
-  const resolveModel = (session: SessionSchema.Info, agent: AgentV2.Info) => {
-    if (agent.model) return dependencies.models.resolve({ ...session, model: agent.model })
-    return Effect.gen(function* () {
-      const providerID = session.model?.providerID ?? (yield* dependencies.catalog.model.default())?.providerID
-      const small = providerID ? yield* dependencies.catalog.model.small(providerID) : undefined
-      if (!small) return yield* dependencies.models.resolve(session)
-      return yield* dependencies.models
-        .resolve({
-          ...session,
-          model: ModelV2.Ref.make({ id: small.id, providerID: small.providerID }),
-        })
-        .pipe(Effect.catch(() => dependencies.models.resolve(session)))
-    })
-  }
-
   const generateForFirstPrompt = Effect.fn("SessionTitle.generateForFirstPrompt")(function* (
     db: Database.Interface["db"],
     session: SessionSchema.Info,
@@ -60,7 +45,21 @@ const make = (dependencies: Dependencies) => {
     if (!firstUser) return
     const agent = yield* dependencies.agents.get(AgentV2.ID.make("title"))
     if (!agent) return
-    const resolved = yield* resolveModel(session, agent).pipe(Effect.catch(() => Effect.succeed(undefined)))
+    const resolved = yield* (
+      agent.model
+        ? dependencies.models.resolve({ ...session, model: agent.model })
+        : Effect.gen(function* () {
+            const providerID = session.model?.providerID ?? (yield* dependencies.catalog.model.default())?.providerID
+            const small = providerID ? yield* dependencies.catalog.model.small(providerID) : undefined
+            if (!small) return yield* dependencies.models.resolve(session)
+            return yield* dependencies.models
+              .resolve({
+                ...session,
+                model: ModelV2.Ref.make({ id: small.id, providerID: small.providerID }),
+              })
+              .pipe(Effect.catch(() => dependencies.models.resolve(session)))
+          })
+    ).pipe(Effect.catch(() => Effect.succeed(undefined)))
     if (!resolved) return
     const chunks: string[] = []
     let failed = false
