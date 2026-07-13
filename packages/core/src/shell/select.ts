@@ -181,6 +181,10 @@ export function args(file: string, command: string) {
       "[Console]::OutputEncoding = $utf8",
       "$OutputEncoding = $utf8",
       `& ([scriptblock]::Create([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${payload}'))))`,
+      "$success = $?",
+      "$code = $LASTEXITCODE",
+      "if ($null -ne $code) { exit $code }",
+      "if (-not $success) { exit 1 }",
     ].join("; ")
     return [
       "-NoLogo",

@@ -69,7 +69,7 @@ describe("shell", () => {
     const args = ShellSelect.args("pwsh", 'Write-Output "你好"')
     expect(args.slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
     expect(Buffer.from(args[4], "base64").toString("utf16le")).toBe(
-      "$utf8 = [System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding = $utf8; [Console]::OutputEncoding = $utf8; $OutputEncoding = $utf8; & ([scriptblock]::Create([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('V3JpdGUtT3V0cHV0ICLkvaDlpb0i'))))",
+      "$utf8 = [System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding = $utf8; [Console]::OutputEncoding = $utf8; $OutputEncoding = $utf8; & ([scriptblock]::Create([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('V3JpdGUtT3V0cHV0ICLkvaDlpb0i')))); $success = $?; $code = $LASTEXITCODE; if ($null -ne $code) { exit $code }; if (-not $success) { exit 1 }",
     )
   })
 
