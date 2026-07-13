@@ -1439,7 +1439,7 @@ test("models.dev reasoning options normalize to known shapes", () => {
         reasoning: true,
         reasoning_options: [
           { type: "future_control", value: true },
-          { type: "effort", values: ["high", null, 42] },
+          { type: "effort", values: [null, "high", 42] },
           { type: "toggle" },
           { type: "budget_tokens", min: 1024, max: "invalid" },
         ],
@@ -1449,7 +1449,7 @@ test("models.dev reasoning options normalize to known shapes", () => {
   } as unknown as ModelsDev.Provider)
 
   expect(provider.models.reasoner.reasoning_options).toEqual([
-    { type: "effort", values: ["high", null] },
+    { type: "effort", values: ["none", "high"] },
     { type: "toggle" },
     { type: "budget_tokens", min: 1024 },
   ])
