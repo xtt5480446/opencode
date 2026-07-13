@@ -21,7 +21,6 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { Money } from "@opencode-ai/schema/money"
 import { Effect, Layer, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 
@@ -146,33 +145,10 @@ const seedSmallModel = () =>
     yield* catalog.transform((catalog) => {
       catalog.provider.update(providerID, () => {})
       catalog.model.update(providerID, ModelV2.ID.make("main"), (model) => {
-        model.capabilities.input = ["text"]
-        model.capabilities.output = ["text"]
-        model.cost = [
-          {
-            input: Money.USDPerMillionTokens.make(50),
-            output: Money.USDPerMillionTokens.make(50),
-            cache: {
-              read: Money.USDPerMillionTokens.zero,
-              write: Money.USDPerMillionTokens.zero,
-            },
-          },
-        ]
         model.time.released = Date.now()
       })
       catalog.model.update(providerID, ModelV2.ID.make("mini"), (model) => {
-        model.capabilities.input = ["text"]
-        model.capabilities.output = ["text"]
-        model.cost = [
-          {
-            input: Money.USDPerMillionTokens.make(1),
-            output: Money.USDPerMillionTokens.make(1),
-            cache: {
-              read: Money.USDPerMillionTokens.zero,
-              write: Money.USDPerMillionTokens.zero,
-            },
-          },
-        ]
+        model.family = ModelV2.Family.make("gpt-nano")
         model.time.released = Date.now()
       })
     })

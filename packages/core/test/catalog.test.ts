@@ -290,45 +290,144 @@ describe("CatalogV2", () => {
     }),
   )
 
-  it.effect("small model prefers small keyword candidates before cost scoring", () =>
+  it.effect("small model selects the latest model in the preferred family", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service
       const providerID = ProviderV2.ID.make("test")
       yield* catalog.transform((catalog) => {
         catalog.provider.update(providerID, () => {})
-        catalog.model.update(providerID, ModelV2.ID.make("cheap-large"), (model) => {
-          model.capabilities.input = ["text"]
-          model.capabilities.output = ["text"]
-          model.cost = [
-            {
-              input: Money.USDPerMillionTokens.make(1),
-              output: Money.USDPerMillionTokens.make(1),
-              cache: {
-                read: Money.USDPerMillionTokens.zero,
-                write: Money.USDPerMillionTokens.zero,
-              },
-            },
-          ]
+        catalog.model.update(providerID, ModelV2.ID.make("old-flash"), (model) => {
+          model.family = ModelV2.Family.make("gemini-flash")
+          model.time.released = Date.now() - 1000
+        })
+        catalog.model.update(providerID, ModelV2.ID.make("new-flash"), (model) => {
+          model.family = ModelV2.Family.make("gemini-flash")
           model.time.released = Date.now()
         })
-        catalog.model.update(providerID, ModelV2.ID.make("expensive-mini"), (model) => {
-          model.capabilities.input = ["text"]
-          model.capabilities.output = ["text"]
-          model.cost = [
-            {
-              input: Money.USDPerMillionTokens.make(10),
-              output: Money.USDPerMillionTokens.make(10),
-              cache: {
-                read: Money.USDPerMillionTokens.zero,
-                write: Money.USDPerMillionTokens.zero,
-              },
-            },
-          ]
+        catalog.model.update(providerID, ModelV2.ID.make("newer-haiku"), (model) => {
+          model.family = ModelV2.Family.make("claude-haiku")
+          model.time.released = Date.now() + 1000
+        })
+      })
+
+      expect((yield* catalog.model.small(providerID))?.id).toBe(ModelV2.ID.make("new-flash"))
+    }),
+  )
+
+  it.effect("small model matches exact model families", () =>
+    Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const providerID = ProviderV2.ID.make("test")
+      yield* catalog.transform((catalog) => {
+        catalog.provider.update(providerID, () => {})
+        catalog.model.update(providerID, ModelV2.ID.make("glm-flash"), (model) => {
+          model.family = ModelV2.Family.make("glm-flash")
+          model.time.released = Date.now() + 1000
+        })
+        catalog.model.update(providerID, ModelV2.ID.make("claude-haiku"), (model) => {
+          model.family = ModelV2.Family.make("claude-haiku")
           model.time.released = Date.now()
         })
       })
 
-      expect((yield* catalog.model.small(providerID))?.id).toMatch("expensive-mini")
+      expect((yield* catalog.model.small(providerID))?.id).toBe(ModelV2.ID.make("claude-haiku"))
+    }),
+  )
+
+  it.effect("small model ignores model IDs without family metadata", () =>
+    Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const providerID = ProviderV2.ID.make("test")
+      yield* catalog.transform((catalog) => {
+        catalog.provider.update(providerID, () => {})
+        catalog.model.update(providerID, ModelV2.ID.make("gpt-5-nano"), (model) => {
+          model.time.released = Date.now()
+        })
+      })
+
+      expect(yield* catalog.model.small(providerID)).toBeUndefined()
+    }),
+  )
+
+  it.effect("small model prefers gpt-nano family for opencode providers", () =>
+    Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const providerID = ProviderV2.ID.opencode
+      yield* catalog.transform((catalog) => {
+        catalog.provider.update(providerID, () => {})
+        catalog.model.update(providerID, ModelV2.ID.make("old-nano"), (model) => {
+          model.family = ModelV2.Family.make("gpt-nano")
+          model.time.released = Date.now() - 1000
+        })
+        catalog.model.update(providerID, ModelV2.ID.make("new-nano"), (model) => {
+          model.family = ModelV2.Family.make("gpt-nano")
+          model.time.released = Date.now()
+        })
+        catalog.model.update(providerID, ModelV2.ID.make("flash"), (model) => {
+          model.family = ModelV2.Family.make("gemini-flash")
+          model.time.released = Date.now() + 1000
+        })
+      })
+
+      expect((yield* catalog.model.small(providerID))?.id).toBe(ModelV2.ID.make("new-nano"))
+    }),
+  )
+
+  it.effect("small model prefers gpt-mini family for github-copilot providers", () =>
+    Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const providerID = ProviderV2.ID.githubCopilot
+      yield* catalog.transform((catalog) => {
+        catalog.provider.update(providerID, () => {})
+        catalog.model.update(providerID, ModelV2.ID.make("flash"), (model) => {
+          model.family = ModelV2.Family.make("gemini-flash")
+          model.time.released = Date.now()
+        })
+        catalog.model.update(providerID, ModelV2.ID.make("mini"), (model) => {
+          model.family = ModelV2.Family.make("gpt-mini")
+          model.time.released = Date.now() - 1000
+        })
+      })
+
+      expect((yield* catalog.model.small(providerID))?.id).toBe(ModelV2.ID.make("mini"))
+    }),
+  )
+
+  it.effect("small model prefers global bedrock deployments before regional ones", () =>
+    Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const providerID = ProviderV2.ID.amazonBedrock
+      yield* catalog.transform((catalog) => {
+        catalog.provider.update(providerID, (provider) => {
+          provider.settings = { region: "us-west-2" }
+        })
+        catalog.model.update(providerID, ModelV2.ID.make("us.claude-haiku"), (model) => {
+          model.family = ModelV2.Family.make("claude-haiku")
+          model.time.released = Date.now()
+        })
+        catalog.model.update(providerID, ModelV2.ID.make("global.claude-haiku"), (model) => {
+          model.family = ModelV2.Family.make("claude-haiku")
+          model.time.released = Date.now() - 1000
+        })
+      })
+
+      expect((yield* catalog.model.small(providerID))?.id).toBe(ModelV2.ID.make("global.claude-haiku"))
+    }),
+  )
+
+  it.effect("small model skips inferred models for Azure providers", () =>
+    Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      for (const providerID of [ProviderV2.ID.azure, ProviderV2.ID.make("azure-cognitive-services")]) {
+        yield* catalog.transform((catalog) => {
+          catalog.provider.update(providerID, () => {})
+          catalog.model.update(providerID, ModelV2.ID.make("small"), (model) => {
+            model.family = ModelV2.Family.make("gemini-flash")
+            model.time.released = Date.now()
+          })
+        })
+        expect(yield* catalog.model.small(providerID)).toBeUndefined()
+      }
     }),
   )
 })

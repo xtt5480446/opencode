@@ -1,7 +1,7 @@
 export * as Catalog from "./catalog"
 
 import { makeLocationNode } from "./effect/app-node"
-import { Array, Context, Effect, Layer, Option, Order, pipe } from "effect"
+import { Array, Context, Effect, Layer, Order, pipe } from "effect"
 import { Catalog } from "@opencode-ai/schema/catalog"
 import { ModelV2 } from "./model"
 import { ProviderV2 } from "./provider"
@@ -217,48 +217,41 @@ const layer = Layer.effect(
             return
           }
 
-          if (providerID === ProviderV2.ID.opencode) {
-            const gpt5Nano = record.models.get(ModelV2.ID.make("gpt-5-nano"))
-            if (gpt5Nano?.enabled && gpt5Nano.status === "active") return projectModel(gpt5Nano, provider)
-          }
+          const priority = providerID.startsWith("opencode")
+            ? ["gpt-nano"]
+            : providerID.startsWith("github-copilot")
+              ? ["gpt-mini", ...SMALL_MODEL_FAMILY_PRIORITY]
+              : SMALL_MODEL_FAMILY_PRIORITY
 
-          const candidates = pipe(
+          const models = pipe(
             Array.fromIterable(record.models.values()),
-            Array.filter(
-              (model) =>
-                model.providerID === providerID &&
-                model.enabled &&
-                model.status === "active" &&
-                model.capabilities.input.some((item) => item.startsWith("text")) &&
-                model.capabilities.output.some((item) => item.startsWith("text")),
-            ),
-            Array.map((model) => ({
-              model,
-              cost: model.cost[0] ? model.cost[0].input + model.cost[0].output : 999,
-              age: (Date.now() - model.time.released) / (1000 * 60 * 60 * 24 * 30),
-              small: SMALL_MODEL_RE.test(`${model.id} ${model.family ?? ""} ${model.name}`.toLowerCase()),
-            })),
-            Array.filter((item) => item.cost > 0 && item.age <= 18),
+            Array.filter((model) => model.enabled && model.status === "active"),
+            Array.sortWith((model) => model.id, Order.flip(Order.String)),
+            Array.sortWith((model) => model.time.released, Order.flip(Order.Number)),
           )
 
-          const pick = (items: typeof candidates) => {
-            const maxCost = Math.max(...items.map((item) => item.cost), 0.01)
-            const maxAge = Math.max(...items.map((item) => item.age), 0.01)
-            return pipe(
-              items,
-              Array.sortWith((item) => (item.cost / maxCost) * 0.8 + (item.age / maxAge) * 0.2, Order.Number),
-              Array.map((item) => projectModel(item.model, provider)),
-              Array.head,
-            )
+          for (const family of priority) {
+            const candidates = models.filter((model) => model.family === family)
+            if (providerID === ProviderV2.ID.amazonBedrock) {
+              const crossRegionPrefixes = ["global.", "us.", "eu."]
+              const globalMatch = candidates.find((model) => model.id.startsWith("global."))
+              if (globalMatch) return projectModel(globalMatch, provider)
+
+              const region = typeof provider.settings?.region === "string" ? provider.settings.region : undefined
+              if (region) {
+                const regionPrefix = region.split("-")[0]
+                if (regionPrefix === "us" || regionPrefix === "eu") {
+                  const regionalMatch = candidates.find((model) => model.id.startsWith(`${regionPrefix}.`))
+                  if (regionalMatch) return projectModel(regionalMatch, provider)
+                }
+              }
+
+              const unprefixed = candidates.find((model) => !crossRegionPrefixes.some((prefix) => model.id.startsWith(prefix)))
+              if (unprefixed) return projectModel(unprefixed, provider)
+              continue
+            }
+            if (candidates[0]) return projectModel(candidates[0], provider)
           }
-
-          return Option.getOrUndefined(
-            pipe(
-              candidates,
-              Array.filter((item) => item.small),
-              (items) => (items.length > 0 ? pick(items) : pick(candidates)),
-            ),
-          )
         }),
       },
     }
@@ -267,6 +260,6 @@ const layer = Layer.effect(
   }),
 )
 
-const SMALL_MODEL_RE = /\b(nano|flash|lite|mini|haiku|small|fast)\b/
+const SMALL_MODEL_FAMILY_PRIORITY = ["gemini-flash", "gpt-nano", "claude-haiku"]
 
 export const node = makeLocationNode({ service: Service, layer, deps: [EventV2.node, Integration.node] })

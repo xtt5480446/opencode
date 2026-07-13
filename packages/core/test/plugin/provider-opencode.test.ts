@@ -481,30 +481,38 @@ describe("OpencodePlugin", () => {
     ),
   )
 
-  it.effect("prefers gpt-5-nano as the opencode small model", () =>
+  it.effect("prefers the newest gpt-nano family model for opencode", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service
       const providerID = ProviderV2.ID.opencode
 
       yield* catalog.transform((catalog) => {
         catalog.provider.update(providerID, () => {})
-        catalog.model.update(providerID, ModelV2.ID.make("cheap-mini"), (model) => {
+        catalog.model.update(providerID, ModelV2.ID.make("gpt-5-nano"), (model) => {
+          model.family = ModelV2.Family.make("gpt-nano")
+          model.capabilities.input = ["text"]
+          model.capabilities.output = ["text"]
+          model.cost = [...cost(10, 10)]
+          model.time.released = Date.now() - 1000
+        })
+        catalog.model.update(providerID, ModelV2.ID.make("gpt-5.4-nano"), (model) => {
+          model.family = ModelV2.Family.make("gpt-nano")
           model.capabilities.input = ["text"]
           model.capabilities.output = ["text"]
           model.cost = [...cost(1, 1)]
           model.time.released = Date.now()
         })
-        catalog.model.update(providerID, ModelV2.ID.make("gpt-5-nano"), (model) => {
+        catalog.model.update(providerID, ModelV2.ID.make("cheap-mini"), (model) => {
           model.capabilities.input = ["text"]
           model.capabilities.output = ["text"]
-          model.cost = [...cost(10, 10)]
-          model.time.released = Date.now()
+          model.cost = [...cost(1, 1)]
+          model.time.released = Date.now() + 1000
         })
       })
 
       const selected = yield* catalog.model.small(providerID)
 
-      expect(selected?.id).toBe(ModelV2.ID.make("gpt-5-nano"))
+      expect(selected?.id).toBe(ModelV2.ID.make("gpt-5.4-nano"))
     }),
   )
 })
