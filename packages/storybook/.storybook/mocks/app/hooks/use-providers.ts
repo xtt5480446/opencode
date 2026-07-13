@@ -23,12 +23,21 @@ const provider = {
   },
 }
 
+const popular = [
+  { id: "opencode", name: "OpenCode Zen", models: {} },
+  { id: "opencode-go", name: "OpenCode Go", models: {} },
+  { id: "openai", name: "OpenAI", models: {} },
+  provider,
+  { id: "google", name: "Google", models: {} },
+  { id: "github-copilot", name: "GitHub Copilot", models: {} },
+]
+
 export function useProviders() {
   return {
-    all: () => [provider],
+    all: () => popular,
     default: () => ({ anthropic: model_id }),
     connected: () => [provider],
     paid: () => [provider],
-    popular: () => [provider],
+    popular: () => popular,
   }
 }
