@@ -35,6 +35,7 @@ export interface Settings {
     mobileTitlebarPosition: "top" | "bottom"
     newLayoutDesigns?: boolean
     layoutTransitionEligible?: boolean
+    layoutTransitionSettingsPresent?: boolean
     newInterfaceNoticeDismissed?: boolean
   }
   appearance: {
@@ -78,17 +79,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-export function migrateSettings(value: unknown, legacyDefault = legacyNewLayoutDesignsDefault) {
+export function migrateSettings(value: unknown) {
   if (!isRecord(value)) return value
   const general = isRecord(value.general) ? value.general : {}
-  if (typeof general.layoutTransitionEligible === "boolean") return value
-  // Only persisted profiles pass through migration; fresh profiles retain the non-eligible defaults below.
+  if (
+    typeof general.layoutTransitionEligible === "boolean" ||
+    typeof general.layoutTransitionSettingsPresent === "boolean"
+  )
+    return value
   return {
     ...value,
     general: {
       ...general,
-      newLayoutDesigns: typeof general.newLayoutDesigns === "boolean" ? general.newLayoutDesigns : legacyDefault,
-      layoutTransitionEligible: true,
+      layoutTransitionSettingsPresent: true,
     },
   }
 }
@@ -100,9 +103,30 @@ export function layoutTransitionState(scheduled: boolean, eligible: boolean, ret
   }
 }
 
+export const maximumSunsetTimeout = 2_147_483_647
+
+export function nextSunsetCheckDelay(sunset: number, now: number) {
+  return Math.min(Math.max(0, sunset - now), maximumSunsetTimeout)
+}
+
 export function resolveNewLayoutDesigns(retired: boolean, preference: boolean | undefined, fallback = true) {
   if (retired) return true
   return preference ?? fallback
+}
+
+export function hasMeaningfulLayoutData(input: {
+  settings: boolean
+  server: boolean
+  wsl: boolean
+  projects: boolean
+  sessions: boolean
+}) {
+  return input.settings || input.server || input.wsl || input.projects || input.sessions
+}
+
+export function resolveLayoutTransitionClassification(current: boolean | undefined, existing: boolean) {
+  if (current === true || existing) return true
+  return false
 }
 
 const monoFallback =
@@ -169,8 +193,6 @@ const defaultSettings: Settings = {
     editToolPartsExpanded: false,
     showCustomAgents: false,
     mobileTitlebarPosition: "top",
-    newLayoutDesigns: newLayoutDesignsDefault,
-    layoutTransitionEligible: false,
   },
   appearance: {
     fontSize: 14,
@@ -218,20 +240,44 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
     )
     const sunset = oldInterfaceSunset
     const [oldInterfaceRetired, setOldInterfaceRetired] = createSignal(sunset ? Date.now() >= sunset.getTime() : false)
+    const layoutTransitionClassified = createMemo(
+      () => typeof store.general?.layoutTransitionEligible === "boolean",
+    )
     const layoutTransitionEligible = withFallback(() => store.general?.layoutTransitionEligible, false)
+    const layoutTransitionSettingsPresent = withFallback(
+      () => store.general?.layoutTransitionSettingsPresent,
+      false,
+    )
     const newInterfaceNoticeDismissed = withFallback(() => store.general?.newInterfaceNoticeDismissed, false)
     const layoutTransition = createMemo(() =>
       layoutTransitionState(!!sunset, layoutTransitionEligible(), oldInterfaceRetired(), newInterfaceNoticeDismissed()),
     )
     const newLayoutDesigns = createMemo(() => {
       if (!ready() && !oldInterfaceRetired()) return legacyNewLayoutDesignsDefault
-      return resolveNewLayoutDesigns(oldInterfaceRetired(), store.general?.newLayoutDesigns, newLayoutDesignsDefault)
+      if (!layoutTransitionClassified()) {
+        return resolveNewLayoutDesigns(oldInterfaceRetired(), store.general?.newLayoutDesigns, legacyNewLayoutDesignsDefault)
+      }
+      return resolveNewLayoutDesigns(
+        oldInterfaceRetired(),
+        store.general?.newLayoutDesigns,
+        layoutTransitionEligible() ? legacyNewLayoutDesignsDefault : newLayoutDesignsDefault,
+      )
     })
     const visible = (preference: () => boolean) => createMemo(() => !newLayoutDesigns() || preference())
 
     if (sunset && !oldInterfaceRetired()) {
-      const timeout = setTimeout(() => setOldInterfaceRetired(true), Math.max(0, sunset.getTime() - Date.now()))
-      onCleanup(() => clearTimeout(timeout))
+      const timeout = { current: undefined as ReturnType<typeof setTimeout> | undefined }
+      const checkSunset = () => {
+        if (Date.now() >= sunset.getTime()) {
+          setOldInterfaceRetired(true)
+          return
+        }
+        timeout.current = setTimeout(checkSunset, nextSunsetCheckDelay(sunset.getTime(), Date.now()))
+      }
+      checkSunset()
+      onCleanup(() => {
+        if (timeout.current !== undefined) clearTimeout(timeout.current)
+      })
     }
 
     createEffect(() => {
@@ -328,6 +374,14 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
         newLayoutDesigns,
         setNewLayoutDesigns(value: boolean) {
           setStore("general", "newLayoutDesigns", oldInterfaceRetired() ? true : value)
+        },
+        layoutTransitionClassified,
+        layoutTransitionSettingsPresent,
+        classifyLayoutTransition(existing: boolean) {
+          const current = store.general?.layoutTransitionEligible
+          const next = resolveLayoutTransitionClassification(current, existing)
+          if (current === next) return
+          setStore("general", "layoutTransitionEligible", next)
         },
         layoutTransitionAvailable: createMemo(() => ready() && layoutTransition().available),
         newInterfaceNoticeVisible: createMemo(() => ready() && layoutTransition().notice),
