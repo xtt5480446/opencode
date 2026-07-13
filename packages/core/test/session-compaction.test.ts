@@ -96,6 +96,20 @@ test("compaction prompt requires the checkpoint headings in order", () => {
   expect(prompt).toContain("Keep every section, even when empty.")
 })
 
+it.effect("requires compaction before a request reaches the inference body limit", () =>
+  Effect.gen(function* () {
+    const compaction = yield* SessionCompaction.Service
+    expect(
+      compaction.required({
+        sessionID: SessionV2.ID.make("ses_request_body_compaction"),
+        messages: [],
+        model,
+        requestBytes: 8 * 1024 * 1024,
+      }),
+    ).toBe(true)
+  }),
+)
+
 it.effect("manual compaction summarizes short context instead of no-op", () =>
   Effect.gen(function* () {
     requests = []

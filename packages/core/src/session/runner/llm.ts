@@ -186,12 +186,6 @@ const layer = Layer.effect(
       const providerMetadataKey = model.route.providerMetadataKey ?? model.provider
       const history = yield* SessionHistory.entriesForRunner(db, session.id, instructions)
       const context = history.entries.map((entry) => entry.message)
-      const compactionInput = { sessionID: session.id, messages: context, model }
-      if (compaction.required(compactionInput) && !(yield* SessionPending.compaction(db, session.id))) {
-        const compacted = yield* compaction.compact(compactionInput)
-        if (compacted.status === "completed") return { _tag: "RestartAfterCompaction", step: currentStep } as const
-        return yield* new StepFailedError({ error: compacted.error })
-      }
       const isLastStep = agentInfo.steps !== undefined && currentStep >= agentInfo.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agentInfo.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
@@ -208,6 +202,19 @@ const layer = Layer.effect(
         tools: toolMaterialization?.definitions ?? [],
         toolChoice: isLastStep ? "none" : undefined,
       })
+      const compactionInput = {
+        sessionID: session.id,
+        messages: context,
+        model,
+        requestBytes: new TextEncoder().encode(
+          JSON.stringify({ system: request.system, messages: request.messages, tools: request.tools }),
+        ).length,
+      }
+      if (compaction.required(compactionInput) && !(yield* SessionPending.compaction(db, session.id))) {
+        const compacted = yield* compaction.compact(compactionInput)
+        if (compacted.status === "completed") return { _tag: "RestartAfterCompaction", step: currentStep } as const
+        return yield* new StepFailedError({ error: compacted.error })
+      }
       const toolFibers = yield* FiberSet.make<void, ToolOutputStore.Error>()
       const ownedToolFibers: Array<Fiber.Fiber<void, ToolOutputStore.Error>> = []
       let needsContinuation = false
@@ -323,8 +330,7 @@ const layer = Layer.effect(
             recoverOverflow &&
             !publisher.hasRetryEvidence() &&
             isContextOverflowFailure(overflowFailure ?? streamFailure) &&
-            (yield* restore(recoverOverflow({ sessionID: session.id, messages: context, model }))).status ===
-              "completed"
+            (yield* restore(recoverOverflow(compactionInput))).status === "completed"
           )
             return { _tag: "RestartAfterOverflowCompaction", step: currentStep } as const
 

@@ -19,6 +19,7 @@ const DEFAULT_KEEP_TOKENS = 8_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const COMPACTION_CHUNK_TOKENS = 32_000
 const SUMMARY_OUTPUT_TOKENS = 4_096
+const REQUEST_BODY_COMPACTION_BYTES = 8 * 1024 * 1024
 const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
 <template>
 ## Objective
@@ -70,6 +71,7 @@ export type AutoInput = {
   readonly sessionID: SessionSchema.ID
   readonly messages: readonly SessionMessage.Info[]
   readonly model: Model
+  readonly requestBytes: number
 }
 
 export type ManualInput = {
@@ -327,6 +329,7 @@ const make = (dependencies: Dependencies) => {
   })
   const required = (input: AutoInput) => {
     if (!config.auto) return false
+    if (input.requestBytes >= REQUEST_BODY_COMPACTION_BYTES) return true
     const context = input.model.route.defaults.limits?.context
     if (context === undefined || context <= 0) return false
     const last = input.messages.findLast(
