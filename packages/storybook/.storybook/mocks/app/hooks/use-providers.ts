@@ -13,6 +13,7 @@ export const popularProviders = [
 
 const provider = {
   id: "anthropic",
+  name: "Anthropic",
   models: {
     [model_id]: {
       id: model_id,
@@ -32,9 +33,21 @@ const popular = [
   { id: "github-copilot", name: "GitHub Copilot", models: {} },
 ]
 
+const catalog = [
+  ...popular,
+  { id: "openrouter", name: "OpenRouter", models: {} },
+  { id: "vercel", name: "Vercel AI Gateway", models: {} },
+  { id: "302ai", name: "302.AI", models: {} },
+  { id: "abacus", name: "Abacus", models: {} },
+  { id: "abliteration", name: "abliteration.ai", models: {} },
+  { id: "alibaba", name: "Alibaba", models: {} },
+  { id: "alibaba-cn", name: "Alibaba (China)", models: {} },
+  { id: "alibaba-coding-plan", name: "Alibaba Coding Plan", models: {} },
+]
+
 export function useProviders() {
   return {
-    all: () => popular,
+    all: () => new Map(catalog.map((item) => [item.id, item])),
     default: () => ({ anthropic: model_id }),
     connected: () => [provider],
     paid: () => [provider],
