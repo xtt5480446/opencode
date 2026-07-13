@@ -4,7 +4,7 @@ import { testRender, useRenderer } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import { onCleanup } from "solid-js"
+import { createSignal, onCleanup, Show } from "solid-js"
 import { ClipboardProvider } from "../../../src/context/clipboard"
 import type { FormWithLocation } from "../../../src/context/data"
 import { KVProvider } from "../../../src/context/kv"
@@ -18,12 +18,13 @@ import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { createApi, createClient, createEventStream, createFetch } from "../../fixture/tui-sdk"
 
-async function mountForm(root: string, width = 80) {
+async function mountForm(root: string, width = 80, missing = false) {
   const state = path.join(root, "state")
   await mkdir(state, { recursive: true })
   await Bun.write(path.join(state, "kv.json"), "{}")
 
   const replies: unknown[] = []
+  const notFound: string[] = []
   const copied: string[] = []
   const events = createEventStream()
   const transport = createFetch(
@@ -31,6 +32,11 @@ async function mountForm(root: string, width = 80) {
       url.pathname === "/api/session/ses_test/form/frm_test/reply"
         ? request.json().then((answer) => {
             replies.push(answer)
+            if (missing)
+              return Response.json(
+                { _tag: "FormNotFoundError", id: "frm_test", message: "Form not found: frm_test" },
+                { status: 404 },
+              )
             return new Response(null, { status: 204 })
           })
         : undefined,
@@ -57,6 +63,7 @@ async function mountForm(root: string, width = 80) {
     const keymap = createDefaultOpenTuiKeymap(renderer)
     const off = registerOpencodeKeymap(keymap, renderer, config)
     onCleanup(off)
+    const [visible, setVisible] = createSignal(true)
 
     return (
       <TestTuiContexts
@@ -81,7 +88,16 @@ async function mountForm(root: string, width = 80) {
                 <KVProvider>
                   <ThemeProvider mode="dark" source={{ discover: () => Promise.resolve({}) }}>
                     <ToastProvider>
-                      <FormPrompt form={form} />
+                      <Show when={visible()}>
+                        <FormPrompt
+                          form={form}
+                          onNotFound={() => {
+                            notFound.push(form.id)
+                            setVisible(false)
+                            return Promise.resolve()
+                          }}
+                        />
+                      </Show>
                     </ToastProvider>
                   </ThemeProvider>
                 </KVProvider>
@@ -96,8 +112,27 @@ async function mountForm(root: string, width = 80) {
   const app = await testRender(() => <Harness />, { width, height: 20, kittyKeyboard: true })
   app.renderer.start()
   await app.waitForFrame((frame) => frame.includes("Authorization required"))
-  return { app, copied, replies }
+  return { app, copied, notFound, replies }
 }
+
+test("dismisses a form that no longer exists when submitting", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountForm(tmp.path, 80, true)
+  try {
+    prompt.app.mockInput.pressKey("right")
+    prompt.app.mockInput.pressKey("left")
+    prompt.app.mockInput.pressKey("c")
+    await prompt.app.waitForFrame((frame) => frame.includes("press enter to confirm"))
+    prompt.app.mockInput.pressEnter()
+    await prompt.app.waitForFrame((frame) => frame.includes("Acknowledged"))
+    prompt.app.mockInput.pressEnter()
+
+    await prompt.app.waitForFrame((frame) => !frame.includes("Authorization required"))
+    expect(prompt.notFound).toEqual(["frm_test"])
+  } finally {
+    prompt.app.renderer.destroy()
+  }
+})
 
 test("requires explicit acknowledgement before submitting an external field", async () => {
   await using tmp = await tmpdir()

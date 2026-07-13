@@ -4,7 +4,7 @@ import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
 import open from "open"
 import { selectedForeground, tint, useTheme } from "../../context/theme"
-import type { FormField, FormValue } from "@opencode-ai/client"
+import { isFormNotFoundError, type FormField, type FormValue } from "@opencode-ai/client"
 import type { FormWithLocation } from "../../context/data"
 import { useSDK } from "../../context/sdk"
 import { useClipboard } from "../../context/clipboard"
@@ -144,7 +144,7 @@ function requestOptions(form: FormWithLocation) {
   }
 }
 
-export function FormPrompt(props: { form: FormWithLocation }) {
+export function FormPrompt(props: { form: FormWithLocation; onNotFound: () => Promise<void> }) {
   const sdk = useSDK()
   const { theme } = useTheme()
   const renderer = useRenderer()
@@ -295,6 +295,19 @@ export function FormPrompt(props: { form: FormWithLocation }) {
     setStore("error", "")
   }
 
+  function replyFailed(error: unknown) {
+    if (isFormNotFoundError(error)) {
+      void props.onNotFound().catch(() => setStore("error", error.message))
+      return
+    }
+    setStore(
+      "error",
+      typeof error === "object" && error !== null && "message" in error && typeof error.message === "string"
+        ? error.message
+        : "Invalid answer",
+    )
+  }
+
   function replySingle(field: Field, value: FormValue) {
     sdk.api.form
       .reply(
@@ -305,14 +318,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
         },
         requestOptions(props.form),
       )
-      .catch((error: unknown) => {
-        setStore(
-          "error",
-          typeof error === "object" && error !== null && "message" in error && typeof error.message === "string"
-            ? error.message
-            : "Invalid answer",
-        )
-      })
+      .catch(replyFailed)
   }
 
   function pick(value: FormValue, customValue?: string) {
@@ -544,14 +550,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
         },
         requestOptions(props.form),
       )
-      .catch((error: unknown) => {
-        setStore(
-          "error",
-          typeof error === "object" && error !== null && "message" in error && typeof error.message === "string"
-            ? error.message
-            : "Invalid answer",
-        )
-      })
+      .catch(replyFailed)
   }
 
   onMount(() => onCleanup(modeStack.push(FORM_MODE)))

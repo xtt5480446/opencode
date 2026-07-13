@@ -918,7 +918,12 @@ export function Session() {
                     <Show when={forms()[0]?.id} keyed>
                       {(_) => {
                         const form = forms()[0]
-                        return form ? <FormPrompt form={form} /> : null
+                        return form ? (
+                          <FormPrompt
+                            form={form}
+                            onNotFound={() => data.session.form.refresh(form.sessionID, form.location)}
+                          />
+                        ) : null
                       }}
                     </Show>
                   </Match>
