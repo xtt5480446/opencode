@@ -4,6 +4,7 @@ import { describe, expect } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
 import { FastCheck } from "effect/testing"
 import { Config } from "@opencode-ai/core/config"
+import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 import { ConfigProvider } from "@opencode-ai/core/config/provider"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -52,6 +53,16 @@ const provider = {
 }
 
 describe("Config", () => {
+  it.effect("accepts token and percentage compaction buffers", () =>
+    Effect.sync(() => {
+      expect(Schema.decodeUnknownSync(ConfigCompaction.Info)({ buffer: 20_000 }).buffer).toBe(20_000)
+      expect(Schema.decodeUnknownSync(ConfigCompaction.Info)({ buffer: { percent: 10 } }).buffer).toEqual({
+        percent: 10,
+      })
+      expect(() => Schema.decodeUnknownSync(ConfigCompaction.Info)({ buffer: { percent: 101 } })).toThrow()
+    }),
+  )
+
   it.effect("returns the latest defined scalar from priority-ordered documents", () =>
     Effect.sync(() => {
       const entries = [

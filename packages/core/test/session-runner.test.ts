@@ -217,7 +217,7 @@ const config = Layer.succeed(
           type: "document",
           info: new Config.Info({
             compaction: new ConfigCompaction.Info({
-              buffer: 3_000,
+              buffer: new ConfigCompaction.BufferPercent({ percent: 75 }),
               keep: new ConfigCompaction.Keep({ tokens: 1_000 }),
             }),
           }),

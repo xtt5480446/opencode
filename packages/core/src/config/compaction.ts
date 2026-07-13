@@ -7,9 +7,13 @@ export class Keep extends Schema.Class<Keep>("ConfigV2.Compaction.Keep")({
   tokens: NonNegativeInt.pipe(Schema.optional),
 }) {}
 
+export class BufferPercent extends Schema.Class<BufferPercent>("ConfigV2.Compaction.BufferPercent")({
+  percent: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(100)),
+}) {}
+
 export class Info extends Schema.Class<Info>("ConfigV2.Compaction")({
   auto: Schema.Boolean.pipe(Schema.optional),
   prune: Schema.Boolean.pipe(Schema.optional),
   keep: Keep.pipe(Schema.optional),
-  buffer: NonNegativeInt.pipe(Schema.optional),
+  buffer: Schema.Union([NonNegativeInt, BufferPercent]).pipe(Schema.optional),
 }) {}

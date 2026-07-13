@@ -52,7 +52,7 @@ type Entry = {
 
 type Settings = {
   readonly auto: boolean
-  readonly buffer: number
+  readonly buffer: number | { readonly percent: number }
   readonly tokens: number
 }
 
@@ -227,9 +227,10 @@ export const make = (dependencies: Dependencies) => {
     const context = input.model.route.defaults.limits?.context
     if (context === undefined || context <= 0) return false
     const output = input.request.generation?.maxTokens ?? input.model.route.defaults.limits?.output ?? 0
+    const buffer = typeof config.buffer === "number" ? config.buffer : context * (config.buffer.percent / 100)
     if (
       estimate({ system: input.request.system, messages: input.request.messages, tools: input.request.tools }) <=
-      context - Math.max(output, config.buffer)
+      context - Math.max(output, buffer)
     )
       return false
     return yield* compactAfterOverflow(input)
