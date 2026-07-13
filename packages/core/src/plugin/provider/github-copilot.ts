@@ -119,6 +119,8 @@ function shouldUseResponses(modelID: string) {
   return Number(match[1]) >= 5 && !modelID.startsWith("gpt-5-mini")
 }
 
+const UTILITY_MODELS = ["gpt-5.4-nano", "gpt-4.1", "gpt-4o", "gpt-4o-mini"]
+
 export const GithubCopilotPlugin = define({
   id: "opencode.provider.github-copilot",
   effect: Effect.fn(function* (ctx) {
@@ -192,6 +194,13 @@ export const GithubCopilotPlugin = define({
           model.enabled = false
         })
       }
+      // GitHub exposes utility models for title generation without including them in the picker.
+      const utility = UTILITY_MODELS.map((id) => ModelV2.ID.make(id)).find((id) => {
+        const model = evt.model.get(item.provider.id, id)
+        return model?.status === "active"
+      })
+      if (utility) evt.model.small.set(item.provider.id, utility)
+      else evt.model.small.remove(item.provider.id)
     })
     const refresh = () => loading.withPermit(load().pipe(Effect.andThen(ctx.catalog.reload())))
     yield* events.subscribe(Integration.Event.ConnectionUpdated).pipe(

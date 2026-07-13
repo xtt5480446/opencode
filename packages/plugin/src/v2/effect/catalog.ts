@@ -23,6 +23,11 @@ export interface CatalogDraft {
       get(): { providerID: string; modelID: string } | undefined
       set(providerID: string, modelID: string): void
     }
+    readonly small: {
+      get(providerID: string): string | undefined
+      set(providerID: string, modelID: string): void
+      remove(providerID: string): void
+    }
   }
 }
 

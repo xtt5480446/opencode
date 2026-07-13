@@ -178,6 +178,12 @@ export function catalogHost(catalog: Catalog.Interface): PluginContext["catalog"
               set: (providerID, modelID) =>
                 draft.model.default.set(ProviderV2.ID.make(providerID), ModelV2.ID.make(modelID)),
             },
+            small: {
+              get: (providerID) => draft.model.small.get(ProviderV2.ID.make(providerID)),
+              set: (providerID, modelID) =>
+                draft.model.small.set(ProviderV2.ID.make(providerID), ModelV2.ID.make(modelID)),
+              remove: (providerID) => draft.model.small.remove(ProviderV2.ID.make(providerID)),
+            },
           },
         }),
       ),

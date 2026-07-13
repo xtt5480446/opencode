@@ -21,6 +21,7 @@ export const Event = Catalog.Event
 type Data = {
   providers: Map<ProviderV2.ID, ProviderRecord>
   defaultModel?: DefaultModel
+  smallModels: Map<ProviderV2.ID, ModelV2.ID>
 }
 
 export type Draft = {
@@ -37,6 +38,11 @@ export type Draft = {
     default: {
       get: () => DefaultModel | undefined
       set: (providerID: ProviderV2.ID, modelID: ModelV2.ID) => void
+    }
+    small: {
+      get: (providerID: ProviderV2.ID) => ModelV2.ID | undefined
+      set: (providerID: ProviderV2.ID, modelID: ModelV2.ID) => void
+      remove: (providerID: ProviderV2.ID) => void
     }
   }
 }
@@ -83,7 +89,7 @@ const layer = Layer.effect(
 
     const state = State.create<Data, Draft>({
       name: "catalog",
-      initial: () => ({ providers: new Map() }),
+      initial: () => ({ providers: new Map(), smallModels: new Map() }),
       draft: (draft) => {
         const result: Draft = {
           provider: {
@@ -129,6 +135,15 @@ const layer = Layer.effect(
               get: () => draft.defaultModel,
               set: (providerID, modelID) => {
                 draft.defaultModel = { providerID, modelID }
+              },
+            },
+            small: {
+              get: (providerID) => draft.smallModels.get(providerID),
+              set: (providerID, modelID) => {
+                draft.smallModels.set(providerID, modelID)
+              },
+              remove: (providerID) => {
+                draft.smallModels.delete(providerID)
               },
             },
           },
@@ -217,13 +232,11 @@ const layer = Layer.effect(
             return
           }
 
-          // GitHub exposes utility models for title generation without including them in the picker.
-          // They remain in the catalog with enabled=false, so prefer them before family selection.
-          if (providerID.startsWith("github-copilot")) {
-            for (const id of COPILOT_UTILITY_MODELS) {
-              const model = record.models.get(ModelV2.ID.make(id))
-              if (model?.status === "active") return projectModel(model, provider)
-            }
+          // Plugin transforms may pin a small model (for example picker-disabled utility models).
+          const configured = state.get().smallModels.get(providerID)
+          if (configured) {
+            const model = record.models.get(configured)
+            if (model?.status === "active") return projectModel(model, provider)
           }
 
           const priority = providerID.startsWith("opencode")
@@ -272,6 +285,5 @@ const layer = Layer.effect(
 )
 
 const SMALL_MODEL_FAMILY_PRIORITY = ["gemini-flash", "gpt-nano", "claude-haiku"]
-const COPILOT_UTILITY_MODELS = ["gpt-5.4-nano", "gpt-4.1", "gpt-4o", "gpt-4o-mini"]
 
 export const node = makeLocationNode({ service: Service, layer, deps: [EventV2.node, Integration.node] })

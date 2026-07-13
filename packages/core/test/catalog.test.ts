@@ -393,7 +393,7 @@ describe("CatalogV2", () => {
     }),
   )
 
-  it.effect("small model prefers picker-disabled copilot utility models", () =>
+  it.effect("small model prefers a plugin-configured small model override", () =>
     Effect.gen(function* () {
       const catalog = yield* Catalog.Service
       const providerID = ProviderV2.ID.githubCopilot
@@ -403,14 +403,11 @@ describe("CatalogV2", () => {
           model.family = ModelV2.Family.make("gpt-mini")
           model.time.released = Date.now()
         })
-        catalog.model.update(providerID, ModelV2.ID.make("gpt-4o-mini"), (model) => {
-          model.enabled = false
-          model.time.released = Date.now() - 1000
-        })
         catalog.model.update(providerID, ModelV2.ID.make("gpt-5.4-nano"), (model) => {
           model.enabled = false
           model.time.released = Date.now() - 2000
         })
+        catalog.model.small.set(providerID, ModelV2.ID.make("gpt-5.4-nano"))
       })
 
       expect((yield* catalog.model.small(providerID))?.id).toBe(ModelV2.ID.make("gpt-5.4-nano"))
