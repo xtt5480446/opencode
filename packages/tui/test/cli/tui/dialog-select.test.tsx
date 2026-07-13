@@ -104,14 +104,19 @@ async function mountSelect(root: string, initial: DialogSelectOption<string>[]) 
 
   const selected: string[] = []
   const moved: string[] = []
+  const globals: number[] = []
+  const rows: string[] = []
   let replaceOptions!: (options: DialogSelectOption<string>[]) => void
+  let disableRow!: () => void
 
   function Harness() {
     const renderer = useRenderer()
     const keymap = createDefaultOpenTuiKeymap(renderer)
     const off = registerOpencodeKeymap(keymap, renderer, config)
     const [options, setOptions] = createSignal(initial)
+    const [rowEnabled, setRowEnabled] = createSignal(true)
     replaceOptions = setOptions
+    disableRow = () => setRowEnabled(false)
     onCleanup(off)
 
     function Fixture() {
@@ -123,6 +128,20 @@ async function mountSelect(root: string, initial: DialogSelectOption<string>[]) 
             options={options()}
             onMove={(option) => moved.push(option.value)}
             onSelect={(option) => selected.push(option.value)}
+            actions={[
+              {
+                command: "dialog.move_session.delete",
+                title: "delete",
+                disabled: !rowEnabled(),
+                onTrigger: (option) => rows.push(option.value),
+              },
+              {
+                command: "dialog.move_session.new",
+                title: "new",
+                selection: "none",
+                onTrigger: () => globals.push(1),
+              },
+            ]}
           />
         )),
       )
@@ -150,7 +169,7 @@ async function mountSelect(root: string, initial: DialogSelectOption<string>[]) 
   app.renderer.start()
   await app.waitForFrame((frame) => frame.includes("Mutable options"))
   await app.waitFor(() => app.renderer.currentFocusedEditor instanceof InputRenderable)
-  return { app, moved, replaceOptions, selected }
+  return { app, disableRow, globals, moved, replaceOptions, rows, selected }
 }
 
 test("dialog actions run without options while row actions still require a selection", async () => {
@@ -198,6 +217,23 @@ test("footer actions run when filtering leaves no selected row", async () => {
     expect(rows).toEqual([])
   } finally {
     app.renderer.destroy()
+  }
+})
+
+test("does not move focus when the focused action becomes disabled", async () => {
+  await using tmp = await tmpdir()
+  const select = await mountSelect(tmp.path, [{ title: "Alpha", value: "alpha" }])
+
+  try {
+    select.app.mockInput.pressTab()
+    select.disableRow()
+    select.app.mockInput.pressEnter()
+
+    expect(select.globals).toEqual([])
+    expect(select.rows).toEqual([])
+    expect(select.selected).toEqual(["alpha"])
+  } finally {
+    select.app.renderer.destroy()
   }
 })
 
