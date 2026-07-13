@@ -6,7 +6,6 @@ import { useToast } from "../../ui/toast"
 import { useSDK } from "../../context/sdk"
 import { errorMessage } from "../../util/error"
 import { DialogFork } from "./dialog-fork"
-import { revertedPrompt } from "../../util/revert-prompt"
 import type { PromptInfo } from "../../prompt/history"
 
 export function DialogMessage(props: {
@@ -30,7 +29,22 @@ export function DialogMessage(props: {
           description: "undo messages and file changes",
           onSelect: (dialog) => {
             const value = message()
-            if (value?.type === "user") props.setPrompt?.(revertedPrompt(value))
+            if (value?.type === "user") {
+              props.setPrompt?.({
+                text: value.text,
+                files: value.files?.map((file) => ({
+                  uri: file.source.type === "uri" ? file.source.uri : `data:${file.mime};base64,${file.data}`,
+                  name: file.name,
+                  description: file.description,
+                  mention: file.mention ? { ...file.mention } : undefined,
+                })),
+                agents: value.agents?.map((agent) => ({
+                  name: agent.name,
+                  mention: agent.mention ? { ...agent.mention } : undefined,
+                })),
+                pasted: [],
+              })
+            }
             void sdk.api.session.revert
               .stage({ sessionID: props.sessionID, messageID: props.messageID })
               .catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))

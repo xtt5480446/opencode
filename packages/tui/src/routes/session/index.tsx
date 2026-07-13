@@ -75,7 +75,6 @@ import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
 import { createSessionRows, resolvePart, type PartRef, type SessionRow } from "./rows"
 import { switchLabel } from "../../util/model"
-import { revertedPrompt } from "../../util/revert-prompt"
 
 addDefaultParsers(parsers.parsers)
 
@@ -425,7 +424,20 @@ export function Session() {
         void sdk.api.session.revert
           .stage({ sessionID: route.sessionID, messageID: message.id })
           .catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
-        prompt?.set(revertedPrompt(message))
+        prompt?.set({
+          text: message.text,
+          files: message.files?.map((file) => ({
+            uri: file.source.type === "uri" ? file.source.uri : `data:${file.mime};base64,${file.data}`,
+            name: file.name,
+            description: file.description,
+            mention: file.mention ? { ...file.mention } : undefined,
+          })),
+          agents: message.agents?.map((agent) => ({
+            name: agent.name,
+            mention: agent.mention ? { ...agent.mention } : undefined,
+          })),
+          pasted: [],
+        })
         dialog.clear()
       },
     },
