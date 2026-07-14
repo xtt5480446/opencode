@@ -120,6 +120,35 @@ test("explicit restart replaces an unresponsive registered process", async () =>
   }
 }, 15_000)
 
+test("restart waits for accepted shutdown before starting a replacement", async () => {
+  const directory = await temp()
+  const registration = join(directory, "service.json")
+  const existing = spawn(registration, "graceful")
+  await waitForFile(registration)
+  const original = await Bun.file(registration).json()
+
+  const endpoint = await run(
+    Service.restart({
+      file: registration,
+      version: "test",
+      command: [process.execPath, fixture, registration, "ready"],
+    }),
+  )
+  await existing.exited
+  const info = await Bun.file(registration).json()
+
+  try {
+    expect(endpoint.url).toBe(info.url)
+    expect(info.pid).not.toBe(existing.pid)
+    expect(await Bun.file(registration + ".stop").json()).toEqual({
+      instanceID: original.id,
+      targetVersion: "test",
+    })
+  } finally {
+    await run(Service.stop({ file: registration }))
+  }
+})
+
 test("restart recovers when a healthy owner stops responding during shutdown", async () => {
   const directory = await temp()
   const registration = join(directory, "service.json")

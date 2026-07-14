@@ -141,6 +141,19 @@ export const { use: useClient, provider: ClientProvider } = createSimpleContext(
       events.clear()
     })
 
+    const reloadService = props.reload
+    const reload =
+      reloadService === undefined
+        ? undefined
+        : async (signal?: AbortSignal) => {
+            stream?.abort()
+            try {
+              await reloadService(signal)
+            } finally {
+              if (!abort.signal.aborted) start()
+            }
+          }
+
     return {
       get api() {
         return api
@@ -168,7 +181,7 @@ export const { use: useClient, provider: ClientProvider } = createSimpleContext(
           },
         },
       },
-      reload: props.reload,
+      reload,
     }
   },
 })

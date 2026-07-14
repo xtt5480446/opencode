@@ -87,6 +87,10 @@ const discoverLocal = Effect.fnUntraced(function* (options: Options) {
 // version-mismatched one, and otherwise spawns small contenders until a server
 // becomes discoverable. A contender is never killed merely for slow startup.
 export const start = Effect.fn("service.start")(function* (options: StartOptions = {}) {
+  return yield* startInternal(options)
+})
+
+const startInternal = Effect.fnUntraced(function* (options: StartOptions, stale?: Info) {
   const contenders = new Set<Contender>()
   let announced = false
   let reported: Status | undefined
@@ -139,7 +143,10 @@ export const start = Effect.fn("service.start")(function* (options: StartOptions
       yield* kill(service, options, options.version).pipe(Effect.ignore)
       lastSpawn = 0
       return Option.none<LocalService>()
-    } else if (lastSpawn === 0 && info !== undefined) lastSpawn = Date.now()
+    } else if (lastSpawn === 0 && info !== undefined) {
+      // A process observed exiting cannot still own its unchanged registration.
+      if (stale === undefined || !same(info, stale)) lastSpawn = Date.now()
+    }
 
     const failure = [...contenders].map(contenderFailure).find((error): error is Error => error !== undefined)
     if (failure !== undefined) return yield* Effect.fail(failure)
@@ -203,16 +210,16 @@ export const stop = Effect.fn("service.stop")(function* (options: Options = {}, 
 // registered process that no longer answers authenticated health checks.
 export const restart = Effect.fn("service.restart")(function* (options: StartOptions = {}) {
   const existing = yield* registered(options.file, true)
-  if (existing.service !== undefined) {
-    const result = yield* kill(existing.service, options, options.version)
-    if (result === "rejected") return yield* Effect.fail(new Error("Background service rejected restart"))
-    if (result === "changed") {
-      const current = yield* read(options.file)
-      if (current !== undefined && same(current, existing.info))
-        yield* terminate(existing.info, read(options.file), true)
-    }
-  } else if (existing.info !== undefined) yield* terminate(existing.info, read(options.file), true)
-  return yield* start(options)
+  if (existing.info === undefined) return yield* startInternal(options)
+
+  const requested = existing.service === undefined ? "unsupported" : yield* requestStop(existing.service, options.version)
+  if (requested === "rejected") return yield* Effect.fail(new Error("Background service rejected restart"))
+  const result = yield* terminate(
+    existing.info,
+    read(options.file),
+    requested === "unsupported" ? "signal" : "requested",
+  )
+  return yield* startInternal(options, result === "stopped" ? existing.info : undefined)
 })
 
 function fallback() {
@@ -264,10 +271,10 @@ const probe = Effect.fnUntraced(function* (info: Info, allowLegacy = false) {
         ? undefined
         : { type: "basic" as const, username: "opencode", password: info.password },
   } satisfies Endpoint
-  const response = yield* Effect.tryPromise(() =>
+  const response = yield* Effect.tryPromise((signal) =>
     fetch(new URL("/api/health", info.url), {
       headers: headers(endpoint),
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(2_000)]),
     }),
   ).pipe(Effect.option, Effect.map(Option.getOrUndefined))
   if (response === undefined) return undefined
@@ -325,9 +332,9 @@ const stopped = Effect.fnUntraced(function* (pid: number) {
 const terminate = Effect.fnUntraced(function* (
   info: Info,
   current: Effect.Effect<Info | undefined, never, FileSystem.FileSystem>,
-  graceful: boolean,
+  mode: "requested" | "signal",
 ) {
-  if (graceful) {
+  if (mode === "signal") {
     const owner = yield* current
     if (owner === undefined || !same(owner, info)) return "changed" as const
     yield* signal(info.pid, "SIGTERM")
@@ -348,7 +355,7 @@ const kill = Effect.fnUntraced(function* (service: LocalService, options: Option
   return yield* terminate(
     service.info,
     registered(options.file, true).pipe(Effect.map((result) => result.service?.info)),
-    requested === "unsupported",
+    requested === "unsupported" ? "signal" : "requested",
   )
 })
 
@@ -356,12 +363,12 @@ const decodeStopResponse = Schema.decodeUnknownOption(ServiceStatus.StopResponse
 
 const requestStop = Effect.fnUntraced(function* (service: LocalService, targetVersion?: string) {
   if (service.info.id === undefined || service.legacy) return "unsupported" as const
-  const response = yield* Effect.tryPromise(() =>
+  const response = yield* Effect.tryPromise((signal) =>
     fetch(new URL("/api/service/stop", service.info.url), {
       method: "POST",
       headers: { ...headers(service.endpoint), "content-type": "application/json" },
       body: JSON.stringify({ instanceID: service.info.id, targetVersion }),
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(2_000)]),
     }),
   ).pipe(Effect.option, Effect.map(Option.getOrUndefined))
   if (response === undefined || response.status === 404 || response.status === 405) return "unsupported" as const

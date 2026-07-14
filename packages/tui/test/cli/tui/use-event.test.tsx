@@ -56,6 +56,7 @@ function update(version: string): OpenCodeEvent {
 async function mount(
   reconnect?: (onStatus: (status: Service.Status) => void, signal: AbortSignal) => Promise<{ api: OpenCodeClient }>,
   log?: LogSink,
+  reload?: (signal?: AbortSignal) => Promise<void>,
 ) {
   const events = createEventStream()
   const calls = createFetch(undefined, events)
@@ -70,7 +71,7 @@ async function mount(
 
   const app = await testRender(() => (
     <TestTuiContexts log={log}>
-      <ClientProvider api={createApi(calls.fetch)} reconnect={reconnect}>
+      <ClientProvider api={createApi(calls.fetch)} reconnect={reconnect} reload={reload}>
         <ProjectProvider>
           <Probe
             onReady={async (ctx) => {
@@ -348,5 +349,39 @@ describe("useEvent", () => {
     await wait(() => client.connection.status() === "reconnecting")
     app.renderer.destroy()
     await wait(() => aborted)
+  })
+
+  test("cancels pending endpoint resolution before explicit restart", async () => {
+    let aborted = false
+    let restarts = 0
+    const { app, events, client } = await mount(
+      (_onStatus, signal) =>
+        new Promise((_, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true
+              reject(signal.reason)
+            },
+            { once: true },
+          )
+        }),
+      undefined,
+      async () => {
+        restarts += 1
+      },
+    )
+
+    try {
+      await wait(() => client.connection.status() === "connected")
+      events.disconnect()
+      await wait(() => client.connection.status() === "reconnecting")
+      await client.reload?.()
+      await wait(() => aborted && client.connection.status() === "connected")
+
+      expect(restarts).toBe(1)
+    } finally {
+      app.renderer.destroy()
+    }
   })
 })
