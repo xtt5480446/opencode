@@ -10,6 +10,7 @@ import { useServerSDK } from "@/context/server-sdk"
 import { useSync } from "@/context/sync"
 import { useGlobal } from "@/context/global"
 import { ToolsMenuIcon } from "./tools-menu"
+import { hasNonBlockingServiceIssue, serverStatusDotClass } from "./status-popover-indicator"
 
 const Body = lazy(() => import("./status-popover-body").then((x) => ({ default: x.StatusPopoverBody })))
 const ServerBody = lazy(() => import("./status-popover-body").then((x) => ({ default: x.StatusPopoverServerBody })))
@@ -20,16 +21,14 @@ export function StatusPopover() {
   const global = useGlobal()
   const sync = useSync()
   const [shown, setShown] = createSignal(false)
-  const ready = createMemo(() => global.servers.health[server.key]?.healthy === false || sync().data.mcp_ready)
-  const mcpIssue = createMemo(() => {
-    const mcp = Object.values(sync().data.mcp ?? {})
-    const failed = mcp.some((item) => item.status === "failed" || item.status === "needs_client_registration")
-    const warn = mcp.some((item) => item.status === "needs_auth")
-    if (failed) return "critical" as const
-    if (warn) return "warning" as const
-  })
-  const serverHealthy = () => global.servers.health[server.key]?.healthy === true
-  const healthy = createMemo(() => global.servers.health[server.key]?.healthy === true && !mcpIssue())
+  const serverHealth = () => global.servers.health[server.key]?.healthy
+  const ready = createMemo(() => serverHealth() === false || (sync().data.mcp_ready && sync().data.lsp_ready))
+  const issue = createMemo(() =>
+    hasNonBlockingServiceIssue({
+      mcp: Object.values(sync().data.mcp ?? {}).map((item) => item.status),
+      lsp: (sync().data.lsp ?? []).map((item) => item.status),
+    }),
+  )
 
   return (
     <Popover
@@ -48,13 +47,11 @@ export function StatusPopover() {
             <Icon name={shown() ? "status-active" : "status"} size="small" />
           </div>
           <div
-            classList={{
-              "absolute -top-px -right-px size-1.5 rounded-full": true,
-              "bg-icon-success-base": ready() && healthy(),
-              "bg-icon-warning-base": ready() && serverHealthy() && mcpIssue() === "warning",
-              "bg-icon-critical-base": serverHealthy() || (ready() && serverHealthy() && mcpIssue() === "critical"),
-              "bg-border-weak-base": serverHealthy() || !ready(),
-            }}
+            class={`absolute -top-px -right-px size-1.5 rounded-full ${serverStatusDotClass({
+              ready: ready(),
+              serverHealth: serverHealth(),
+              issue: issue(),
+            })}`}
           />
         </div>
       }
@@ -88,24 +85,21 @@ function DirectoryStatusPopover() {
   const sync = useSync()
   const [shown, setShown] = createSignal(false)
   const serverHealth = () => global.servers.health[ServerConnection.key(server().server)]?.healthy
-  const ready = createMemo(() => serverHealth() === false || sync().data.mcp_ready)
-  const mcpIssue = createMemo(() => {
-    const mcp = Object.keys(sync().data.config.mcp ?? {}).flatMap((name) => {
-      const status = sync().data.mcp?.[name]
-      return status ? [status] : []
-    })
-    const failed = mcp.some((item) => item.status === "failed" || item.status === "needs_client_registration")
-    const warn = mcp.some((item) => item.status === "needs_auth")
-    if (failed) return "critical" as const
-    if (warn) return "warning" as const
-  })
-  const healthy = createMemo(() => serverHealth() === true && !mcpIssue())
+  const ready = createMemo(() => serverHealth() === false || (sync().data.mcp_ready && sync().data.lsp_ready))
+  const issue = createMemo(() =>
+    hasNonBlockingServiceIssue({
+      mcp: Object.keys(sync().data.config.mcp ?? {}).flatMap((name) => {
+        const status = sync().data.mcp?.[name]
+        return status ? [status.status] : []
+      }),
+      lsp: (sync().data.lsp ?? []).map((item) => item.status),
+    }),
+  )
   const state = createMemo<StatusPopoverState>(() => ({
     shown: shown(),
     ready: ready(),
-    healthy: healthy(),
     serverHealth: serverHealth(),
-    issue: mcpIssue(),
+    issue: issue(),
     label: language.t("status.popover.tools.trigger"),
     onOpenChange: setShown,
     body: () => (
@@ -127,8 +121,8 @@ function ServerStatusPopover() {
   const state = createMemo<StatusPopoverState>(() => ({
     shown: shown(),
     ready: serverHealth() !== undefined,
-    healthy: serverHealth() === true,
     serverHealth: serverHealth(),
+    issue: false,
     label: language.t("status.popover.trigger"),
     onOpenChange: setShown,
     body: () => (
@@ -144,9 +138,8 @@ function ServerStatusPopover() {
 type StatusPopoverState = {
   shown: boolean
   ready: boolean
-  healthy: boolean
   serverHealth: boolean | undefined
-  issue?: "critical" | "warning"
+  issue: boolean
   label: string
   onOpenChange: (value: boolean) => void
   body: () => JSX.Element
@@ -165,8 +158,6 @@ function StatusPopoverBody(props: { shown: boolean; children: JSX.Element }) {
 }
 
 function StatusPopoverView(props: { state: StatusPopoverState }) {
-  const warning = () => props.state.issue !== undefined
-
   const popoverProps = {
     class:
       "[&_[data-slot=popover-body]]:p-0 w-[360px] max-w-[calc(100vw-40px)] bg-transparent border-0 shadow-none rounded-xl",
@@ -187,7 +178,7 @@ function StatusPopoverView(props: { state: StatusPopoverState }) {
         state: props.state.shown ? "pressed" : undefined,
         "aria-label": props.state.label,
       }}
-      trigger={<ToolsMenuIcon warning={warning()} />}
+      trigger={<ToolsMenuIcon warning={props.state.issue} />}
       {...popoverProps}
     >
       {props.state.body()}
