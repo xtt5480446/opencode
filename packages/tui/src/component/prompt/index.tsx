@@ -15,12 +15,13 @@ import path from "path"
 import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { tint, useTheme } from "../../context/theme"
+import { useTheme } from "../../context/theme"
+import { tint } from "../../theme/color"
 import { EmptyBorder, SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
 import { Spinner } from "../spinner"
-import { useSDK } from "../../context/sdk"
+import { useClient } from "../../context/client"
 import { useRoute } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useEvent } from "../../context/event"
@@ -147,7 +148,7 @@ export function Prompt(props: PromptProps) {
   const paths = useTuiPaths()
   const terminalEnvironment = useTuiTerminalEnvironment()
   const clipboard = useClipboard()
-  const sdk = useSDK()
+  const client = useClient()
   const editor = useEditorContext()
   const route = useRoute()
   const project = useProject()
@@ -420,7 +421,7 @@ export function Prompt(props: PromptProps) {
           }, 5000)
 
           if (store.interrupt >= 2) {
-            void sdk.api.session.interrupt({
+            void client.api.session.interrupt({
               sessionID: props.sessionID,
             })
             setStore("interrupt", 0)
@@ -439,7 +440,7 @@ export function Prompt(props: PromptProps) {
           if (!input.focused) return
           if (!props.sessionID) return
 
-          void sdk.api.session.background({
+          void client.api.session.background({
             sessionID: props.sessionID,
           })
           dialog.clear()
@@ -449,7 +450,7 @@ export function Prompt(props: PromptProps) {
         title: "Open editor",
         category: "Session",
         name: "prompt.editor",
-        slashName: "editor",
+        slash: { name: "editor" },
         run: async () => {
           dialog.clear()
 
@@ -497,7 +498,7 @@ export function Prompt(props: PromptProps) {
         title: "Skills",
         name: "prompt.skills",
         category: "Prompt",
-        slashName: "skills",
+        slash: { name: "skills" },
         run: () => {
           dialog.replace(() => (
             <DialogSkill
@@ -519,7 +520,7 @@ export function Prompt(props: PromptProps) {
         desc: "Move to another project dir",
         name: "session.move",
         category: "Session",
-        slashName: "move",
+        slash: { name: "move" },
         run: () => {
           move.open()
         },
@@ -536,7 +537,7 @@ export function Prompt(props: PromptProps) {
 
   useBindings(() => ({
     mode: OPENCODE_BASE_MODE,
-    bindings: config.keybinds.gather("prompt.palette", [
+    bindings: [
       "prompt.submit",
       "prompt.editor",
       "prompt.editor_context.clear",
@@ -547,7 +548,7 @@ export function Prompt(props: PromptProps) {
       "session.interrupt",
       "session.background",
       "session.move",
-    ]),
+    ].flatMap((command) => config.keybinds.get(command)),
   }))
 
   const ref: PromptRef = {
@@ -964,7 +965,7 @@ export function Prompt(props: PromptProps) {
       finishMoveProgress = Boolean(move.progress())
       const location = data.location.default()
 
-      const created = await sdk.api.session
+      const created = await client.api.session
         .create({
           location: directory ? { directory } : location,
           agent: agent.id,
@@ -1008,7 +1009,7 @@ export function Prompt(props: PromptProps) {
 
     if (store.mode === "shell") {
       move.startSubmit()
-      void sdk.api.session.shell({
+      void client.api.session.shell({
         sessionID,
         command: inputText,
       })
@@ -1027,7 +1028,7 @@ export function Prompt(props: PromptProps) {
       const restOfInput = firstLineEnd === -1 ? "" : inputText.slice(firstLineEnd + 1)
       const args = firstLineArgs.join(" ") + (restOfInput ? "\n" + restOfInput : "")
 
-      void sdk.api.session
+      void client.api.session
         .command({
           sessionID,
           command: command.slice(1),
@@ -1047,7 +1048,7 @@ export function Prompt(props: PromptProps) {
       )
     ) {
       move.startSubmit()
-      void sdk.api.session.skill({
+      void client.api.session.skill({
         sessionID,
         skill: inputText.split("\n")[0].split(" ")[0].slice(1),
       })
@@ -1058,20 +1059,20 @@ export function Prompt(props: PromptProps) {
         session = data.session.get(sessionID)
       }
       if (session?.agent !== agent.id) {
-        await sdk.api.session.switchAgent({ sessionID, agent: agent.id })
+        await client.api.session.switchAgent({ sessionID, agent: agent.id })
       }
       if (
         session?.model?.providerID !== selectedModel.providerID ||
         session.model.id !== selectedModel.modelID ||
         session.model.variant !== variant
       ) {
-        await sdk.api.session.switchModel({
+        await client.api.session.switchModel({
           sessionID,
           model: { providerID: selectedModel.providerID, id: selectedModel.modelID, variant },
         })
       }
       if (session?.revert) {
-        const error = await sdk.api.session.revert.commit({ sessionID }).then(
+        const error = await client.api.session.revert.commit({ sessionID }).then(
           () => undefined,
           (error) => error,
         )
@@ -1082,7 +1083,7 @@ export function Prompt(props: PromptProps) {
       }
       if (pendingEditorSelection) {
         // Keep editor context hidden while admitting it before the corresponding user prompt.
-        const error = await sdk.api.session
+        const error = await client.api.session
           .synthetic({
             sessionID,
             text: formatEditorContext(pendingEditorSelection),
@@ -1097,7 +1098,7 @@ export function Prompt(props: PromptProps) {
           return false
         }
       }
-      const error = await sdk.api.session
+      const error = await client.api.session
         .prompt({
           sessionID,
           text: inputText,
@@ -1187,10 +1188,7 @@ export function Prompt(props: PromptProps) {
     }
 
     const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
-    if (
-      (lineCount >= 3 || pastedContent.length > 150) &&
-      config.prompt?.paste !== "full"
-    ) {
+    if ((lineCount >= 3 || pastedContent.length > 150) && config.prompt?.paste !== "full") {
       pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
       return
     }
@@ -1297,10 +1295,7 @@ export function Prompt(props: PromptProps) {
   })
 
   const spinnerDef = createMemo(() => {
-    const agent =
-      status() === "running"
-        ? local.agent.current()
-        : local.agent.current()
+    const agent = status() === "running" ? local.agent.current() : local.agent.current()
     const color = agent ? local.agent.color(agent.id) : theme.border
     return {
       frames: createFrames({

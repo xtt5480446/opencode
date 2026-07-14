@@ -1,13 +1,14 @@
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode-ai/client"
-import type { OpencodeClient } from "@opencode-ai/sdk/v2"
+import type { Service } from "@opencode-ai/client/effect"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
-import { onCleanup, onMount } from "solid-js"
+import { createSignal, onCleanup, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
+import { errorMessage } from "../util/error"
 import { createSimpleContext } from "./helper"
 import { useLog } from "./log"
 
-export type SDKConnectionStatus = "connected" | "connecting" | "reconnecting"
-export type SDKConnectionEvent = {
+export type ClientConnectionStatus = "connected" | "connecting" | "reconnecting"
+export type ClientConnectionEvent = {
   readonly type: "client.connection"
   readonly created: number
   readonly data: {
@@ -17,36 +18,35 @@ export type SDKConnectionEvent = {
   }
 }
 
-type SDKEventMap = { [Type in OpenCodeEvent["type"]]: Extract<OpenCodeEvent, { type: Type }> }
+type ClientEventMap = { [Type in OpenCodeEvent["type"]]: Extract<OpenCodeEvent, { type: Type }> }
 const connectTimeout = 2_000
 const connectionHistoryLimit = 50
 
-export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
-  name: "SDK",
+export const { use: useClient, provider: ClientProvider } = createSimpleContext({
+  name: "Client",
   init: (props: {
-    client: OpencodeClient
     api: OpenCodeClient
-    reconnect?: (attempt: number) => Promise<{ client: OpencodeClient; api: OpenCodeClient }>
+    reconnect?: (onStatus: (status: Service.Status) => void, signal: AbortSignal) => Promise<{ api: OpenCodeClient }>
     // Stops and starts the managed service; present only in service mode.
     reload?: () => Promise<void>
   }) => {
-    const log = useLog({ component: "sdk" })
+    const log = useLog({ component: "client" })
     const abort = new AbortController()
-    const history: SDKConnectionEvent[] = []
-    let client = props.client
+    const history: ClientConnectionEvent[] = []
     let api = props.api
-    const events = createGlobalEmitter<SDKEventMap>()
+    const events = createGlobalEmitter<ClientEventMap>()
     const [connection, setConnection] = createStore<{
-      status: SDKConnectionStatus
+      status: ClientConnectionStatus
       attempt: number
       error?: string
     }>({
       status: "connecting",
       attempt: 0,
     })
+    const [service, setService] = createSignal<Service.Status>()
     let stream: AbortController | undefined
 
-    function record(status: SDKConnectionEvent["data"]["status"], attempt: number, error?: string) {
+    function record(status: ClientConnectionEvent["data"]["status"], attempt: number, error?: string) {
       history.push({ type: "client.connection", created: Date.now(), data: { status, attempt, error } })
       if (history.length > connectionHistoryLimit) history.shift()
     }
@@ -54,43 +54,37 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     function start() {
       stream?.abort()
       const controller = new AbortController()
-      let connected!: () => void
-      const ready = new Promise<void>((resolve) => {
-        connected = resolve
-      })
       stream = controller
       void (async () => {
         let attempt = 0
         while (!abort.signal.aborted && !controller.signal.aborted) {
-          const connection = new AbortController()
-          const cancel = () => connection.abort(controller.signal.reason)
-          const timeout = setTimeout(
-            () => connection.abort(new Error("Timed out connecting to server")),
-            connectTimeout,
-          )
+          let connectedAt: number | undefined
+          const request = new AbortController()
+          const cancel = () => request.abort(controller.signal.reason)
+          const timeout = setTimeout(() => request.abort(new Error("Timed out connecting to server")), connectTimeout)
           controller.signal.addEventListener("abort", cancel, { once: true })
           const error = await (async () => {
             record(attempt === 0 ? "connecting" : "reconnecting", attempt)
             log.info("event stream connecting", { attempt })
-            const iterator = api.event.subscribe({ signal: connection.signal })[Symbol.asyncIterator]()
+            const iterator = api.event.subscribe({ signal: request.signal })[Symbol.asyncIterator]()
             const first = await iterator.next()
-            if (abort.signal.aborted || controller.signal.aborted) return
+            if (abort.signal.aborted || controller.signal.aborted) return undefined
             if (first.done)
-              return connection.signal.reason instanceof Error
-                ? connection.signal.reason
+              return request.signal.reason instanceof Error
+                ? request.signal.reason
                 : new Error("Event stream disconnected")
             if (first.value.type !== "server.connected")
               return new Error("Event stream did not start with server.connected")
             clearTimeout(timeout)
             record("connected", attempt)
-            attempt = 0
+            connectedAt = Date.now()
             log.info("event stream connected")
             events.emit(first.value.type, first.value)
             setConnection({ status: "connected", attempt: 0, error: undefined })
-            connected()
+            setService(undefined)
             while (!abort.signal.aborted && !controller.signal.aborted) {
               const event = await iterator.next()
-              if (abort.signal.aborted || controller.signal.aborted) return
+              if (abort.signal.aborted || controller.signal.aborted) return undefined
               if (event.done) return new Error("Event stream disconnected")
               if ("durable" in event.value)
                 log.debug("event", {
@@ -100,43 +94,47 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
                 })
               events.emit(event.value.type, event.value)
             }
+            return undefined
           })()
             .catch((error) => error)
             .finally(() => {
+              request.abort()
               clearTimeout(timeout)
               controller.signal.removeEventListener("abort", cancel)
             })
           if (abort.signal.aborted || controller.signal.aborted) return
+          if (connectedAt !== undefined && Date.now() - connectedAt >= 1_000) attempt = 0
           attempt += 1
-          const message = error instanceof Error ? error.message : String(error)
+          const message = errorMessage(error)
           record("disconnected", attempt, message)
           log.info("event stream disconnected", {
             attempt,
             error: message,
           })
+          setConnection({ status: "reconnecting", attempt, error: message })
           // Re-resolve the transport before retrying: the server may have
           // moved (service restarted on a new port) or need starting. Static
           // transports (--server, standalone) resolve to the same address.
           if (props.reconnect) {
-            const next = await props.reconnect(attempt).catch(() => undefined)
+            const next = await props.reconnect(setService, controller.signal).catch((error) => {
+              if (!controller.signal.aborted)
+                log.info("server resolution failed", {
+                  attempt,
+                  error: errorMessage(error),
+                })
+            })
             if (abort.signal.aborted || controller.signal.aborted) return
             if (next) {
-              client = next.client
               api = next.api
+              if (attempt === 1) continue
             }
           }
-          setConnection({
-            status: "reconnecting",
-            attempt,
-            error: message,
-          })
           await wait(1_000, controller.signal)
         }
       })()
-      return ready
     }
 
-    onMount(() => void start())
+    onMount(start)
     onCleanup(() => {
       abort.abort()
       stream?.abort()
@@ -144,9 +142,6 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     })
 
     return {
-      get client() {
-        return client
-      },
       get api() {
         return api
       },
@@ -163,6 +158,9 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         },
         error() {
           return connection.error
+        },
+        service() {
+          return service()
         },
         internal: {
           history() {

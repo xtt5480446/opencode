@@ -50,33 +50,23 @@ export const isContextOverflowFailure = (failure: unknown) =>
     ? failure._tag === "LLM.ContextOverflow"
     : Schema.is(ProviderErrorEvent)(failure) && failure.classification === "context-overflow"
 
+const decodeJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
 const OVERFLOW_CODES = new Set(["context_length_exceeded", "model_context_window_exceeded"])
 const QUOTA_CODES = new Set(["insufficient_quota", "usage_not_included", "billing_error"])
+const SERVER_CODES = new Set([
+  "api_error",
+  "internal_error",
+  "internalserverexception",
+  "modelstreamerrorexception",
+  "overloaded_error",
+  "server_error",
+  "server_is_overloaded",
+  "serviceunavailableexception",
+])
+const INVALID_REQUEST_CODES = new Set(["invalid_prompt", "invalid_request_error", "validationexception"])
+const RATE_LIMIT_TEXT = /rate increased too quickly|rate[-_\s]?limit|too[_\s]?many[_\s]?requests/i
 const QUOTA_TEXT = /insufficient[-_\s]?quota|quota[-_\s]?exceeded/i
 const CONTENT_POLICY_TEXT = /content[-_\s]?policy|content_filter|safety/i
-const SERVER_ERROR_STATUS = (status: number) => status >= 500 || status === 529
-const decodeBodyJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
-
-const CODE_CLASSIFICATION: Record<string, (input: ApiFailure, common: CommonFields) => LLMError> = {
-  overloaded_error: serverError,
-  api_error: serverError,
-  server_error: serverError,
-  internal_error: serverError,
-  server_is_overloaded: serverError,
-  internalServerException: serverError,
-  serviceUnavailableException: serverError,
-  modelStreamErrorException: serverError,
-  rate_limit_error: rateLimit,
-  rate_limit_exceeded: rateLimit,
-  too_many_requests: rateLimit,
-  throttlingException: rateLimit,
-  authentication_error: (_input, common) => new Authentication(common),
-  permission_error: (_input, common) => new PermissionDenied(common),
-  not_found_error: (_input, common) => new NotFound(common),
-  invalid_request_error: (_input, common) => new BadRequest(common),
-  invalid_prompt: (_input, common) => new BadRequest(common),
-  validationException: (_input, common) => new BadRequest(common),
-}
 
 export interface ApiFailure {
   readonly message: string
@@ -107,18 +97,7 @@ function rateLimit(input: ApiFailure, common: CommonFields) {
   return new RateLimit({ ...common, retryAfterMs: input.retryAfterMs, rateLimit: input.rateLimit })
 }
 
-export const extractApiFailureCode = (input: unknown): string | undefined => {
-  const decoded =
-    typeof input === "string" ? Option.getOrUndefined(decodeBodyJson(input)) : input
-  if (typeof decoded !== "object" || decoded === null) return undefined
-  const nested = (decoded as Record<string, unknown>).error
-  const fields = typeof nested === "object" && nested !== null ? nested : decoded
-  const code = (fields as Record<string, unknown>).code
-  if (typeof code === "string" || typeof code === "number") return String(code)
-  const type = (fields as Record<string, unknown>).type
-  if (typeof type === "string") return type
-  return undefined
-}
+export const extractApiFailureCode = (input: unknown): string | undefined => providerCodes(input)[0]
 
 /**
  * One classifier for every failure a remote API deliberately reports.
@@ -127,41 +106,72 @@ export const extractApiFailureCode = (input: unknown): string | undefined => {
  * three surfaces produce identical `LLMError` tags.
  *
  * Precedence: context overflow (most specific, 4xx-scoped), content policy,
- * HTTP status, provider code, then the generic `APIError` fallback.
+ * provider signals, HTTP status, then the generic `APIError` fallback.
  */
 export const classifyApiFailure = (input: ApiFailure): LLMError => {
   const body = input.http?.body ?? ""
-  const code = input.code ?? extractApiFailureCode(body)
+  const codes = [input.code, ...providerCodes(body), ...providerCodes(input.message)].filter(
+    (code): code is string => code !== undefined,
+  )
+  const normalizedCodes = codes.map((code) => code.toLowerCase())
+  const text = body || input.message
   const common: CommonFields = {
     message: input.message,
     status: input.status,
-    code,
+    code: codes[0],
     requestID: input.requestID,
     http: input.http,
     providerMetadata: input.providerMetadata,
   }
   const clientScoped = input.status === undefined || (input.status >= 400 && input.status < 500)
+
   if (
     clientScoped &&
-    ((code !== undefined && OVERFLOW_CODES.has(code)) ||
-      isContextOverflow(input.message) ||
-      (body.length > 0 && isContextOverflow(body)))
+    (normalizedCodes.some((code) => OVERFLOW_CODES.has(code)) || isContextOverflow(text))
   )
     return new ContextOverflow(common)
   if (input.status === 408) return new TimeoutError({ message: input.message, http: input.http })
-  if (CONTENT_POLICY_TEXT.test(body.length > 0 ? body : input.message)) return new ContentPolicy(common)
-  if (code !== undefined && QUOTA_CODES.has(code)) return new QuotaExceeded(common)
-  if (input.status === 401) return new Authentication(common)
-  if (input.status === 403) return new PermissionDenied(common)
-  if (input.status === 404) return new NotFound(common)
-  if (input.status === 429) {
-    if (QUOTA_TEXT.test(body.length > 0 ? body : input.message)) return new QuotaExceeded(common)
+  if (CONTENT_POLICY_TEXT.test(text)) return new ContentPolicy(common)
+  if (normalizedCodes.some((code) => QUOTA_CODES.has(code)) || (input.status === 429 && QUOTA_TEXT.test(text)))
+    return new QuotaExceeded(common)
+  if (input.status === 401 || normalizedCodes.includes("authentication_error")) return new Authentication(common)
+  if (input.status === 403 || normalizedCodes.includes("permission_error")) return new PermissionDenied(common)
+  if (input.status === 404 || normalizedCodes.includes("not_found_error")) return new NotFound(common)
+  if (
+    normalizedCodes.some(
+      (code) => code.includes("rate_limit") || code === "too_many_requests" || code === "throttlingexception",
+    ) ||
+    RATE_LIMIT_TEXT.test(text)
+  )
     return rateLimit(input, common)
-  }
-  if (input.status !== undefined && SERVER_ERROR_STATUS(input.status)) return serverError(input, common)
-  if (input.status === 400 || input.status === 409 || input.status === 413 || input.status === 422)
+  if (
+    normalizedCodes.some(
+      (code) => SERVER_CODES.has(code) || code.includes("exhausted") || code.includes("unavailable"),
+    )
+  )
+    return serverError(input, common)
+  if (input.status === 429) return rateLimit(input, common)
+  if (input.status !== undefined && input.status >= 500) return serverError(input, common)
+  if (
+    normalizedCodes.some((code) => INVALID_REQUEST_CODES.has(code)) ||
+    input.status === 400 ||
+    input.status === 409 ||
+    input.status === 413 ||
+    input.status === 422
+  )
     return new BadRequest(common)
-  const byCode = code === undefined ? undefined : CODE_CLASSIFICATION[code]
-  if (byCode) return byCode(input, common)
   return new APIError(common)
+}
+
+function providerCodes(value: unknown) {
+  const decoded = typeof value === "string" ? Option.getOrUndefined(decodeJson(value)) : value
+  if (!isRecord(decoded)) return []
+  const error = isRecord(decoded.error) ? decoded.error : undefined
+  return [error?.code, error?.type, decoded.code]
+    .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
+    .map(String)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
 }

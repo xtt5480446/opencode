@@ -17,7 +17,7 @@ import {
   type ToolResultPart,
 } from "../schema"
 import { BedrockEventStream } from "./bedrock-event-stream"
-import { isContextOverflow } from "../provider-error"
+import { classifyApiFailure } from "../provider-error"
 import { JsonObject, optionalArray, ProviderShared } from "./shared"
 import { BedrockAuth } from "./utils/bedrock-auth"
 import { BedrockCache } from "./utils/bedrock-cache"
@@ -586,27 +586,20 @@ const step = (state: ParserState, event: BedrockEvent) =>
       return [{ ...state, pendingFinish: { reason: state.pendingFinish?.reason ?? "stop", usage } }, []] as const
     }
 
-    if (event.internalServerException || event.modelStreamErrorException || event.serviceUnavailableException) {
-      const message =
-        event.internalServerException?.message ??
-        event.modelStreamErrorException?.message ??
-        event.serviceUnavailableException?.message ??
-        "Bedrock Converse stream error"
-      return [state, [LLMEvent.providerError({ message })]] as const
-    }
-
-    if (event.validationException || event.throttlingException) {
-      const message =
-        event.validationException?.message ?? event.throttlingException?.message ?? "Bedrock Converse error"
-      return [
-        state,
-        [
-          LLMEvent.providerError({
-            message,
-            classification: event.validationException && isContextOverflow(message) ? "context-overflow" : undefined,
-          }),
-        ],
+    const exception = (
+      [
+        ["internalServerException", event.internalServerException],
+        ["modelStreamErrorException", event.modelStreamErrorException],
+        ["serviceUnavailableException", event.serviceUnavailableException],
+        ["throttlingException", event.throttlingException],
+        ["validationException", event.validationException],
       ] as const
+    ).find((entry) => entry[1] !== undefined)
+    if (exception) {
+      return yield* classifyApiFailure({
+        message: exception[1]?.message ?? "Bedrock Converse stream error",
+        code: exception[0],
+      })
     }
 
     return [state, []] as const

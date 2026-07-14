@@ -6,10 +6,10 @@ import { SessionMessage } from "@opencode-ai/core/session/message"
 import { EventV2 } from "@opencode-ai/core/event"
 import { onMount } from "solid-js"
 import { ProjectProvider } from "../../../src/context/project"
-import { SDKProvider, useSDK } from "../../../src/context/sdk"
+import { ClientProvider, useClient } from "../../../src/context/client"
 import { DataProvider, useData } from "../../../src/context/data"
 import { createSessionRows, type SessionRow } from "../../../src/routes/session/rows"
-import { createApi, createClient, createEventStream, createFetch, directory, json } from "../../fixture/tui-sdk"
+import { createApi, createEventStream, createFetch, directory, json } from "../../fixture/tui-client"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 
 const formFields = [{ key: "authorization", type: "external", url: "https://example.com" }] satisfies [
@@ -41,6 +41,90 @@ function durable<const Version extends number>(
 function durable(sessionID: string, seq = 0, version = 1) {
   return { aggregateID: sessionID, seq, version }
 }
+
+test("bootstraps MCP data for the TUI location", async () => {
+  const events = createEventStream()
+  const requests: URL[] = []
+  const calls = createFetch((url) => {
+    if (url.pathname === "/api/mcp" || url.pathname === "/api/mcp/resource") requests.push(url)
+    return undefined
+  }, events)
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <box />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => requests.length === 2)
+    expect(requests.map((url) => url.searchParams.get("location[directory]"))).toEqual([
+      process.cwd(),
+      process.cwd(),
+    ])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("refreshes MCP status when a connection settles during bootstrap", async () => {
+  const events = createEventStream()
+  let mcpRequests = 0
+  let resolveModels!: (response: Response) => void
+  const calls = createFetch((url) => {
+    if (url.pathname === "/api/mcp") {
+      mcpRequests++
+      return json({
+        location: { directory, project: { id: "proj_test", directory } },
+        data: [{ name: "context7", status: { status: mcpRequests === 1 ? "pending" : "connected" } }],
+      })
+    }
+    if (url.pathname === "/api/model")
+      return new Promise<Response>((resolve) => {
+        resolveModels = resolve
+      })
+    return undefined
+  }, events)
+  let data!: ReturnType<typeof useData>
+
+  function Probe() {
+    data = useData()
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => data.location.mcp.server.list()?.[0]?.status.status === "pending")
+    emitEvent(events, {
+      id: "evt_mcp_connected",
+      created: 1,
+      type: "mcp.status.changed",
+      data: { server: "context7" },
+    })
+    await wait(() => data.location.mcp.server.list()?.[0]?.status.status === "connected")
+    expect(mcpRequests).toBe(2)
+    resolveModels(json({ location: { directory, project: { id: "proj_test", directory } }, data: [] }))
+  } finally {
+    app.renderer.destroy()
+  }
+})
 
 test("refreshes resources into reactive getters", async () => {
   const events = createEventStream()
@@ -90,13 +174,13 @@ test("refreshes resources into reactive getters", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -148,13 +232,13 @@ test("applies absolute usage events to session info", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -233,13 +317,13 @@ test("truncates committed revert messages without changing lifetime usage", asyn
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -371,13 +455,13 @@ test("updates session location when moved", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -430,13 +514,13 @@ test("restores running manual compaction before applying live deltas", async () 
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -514,23 +598,23 @@ test("reconnects the event stream and bootstraps fresh data", async () => {
     })
   }, events)
   let data!: ReturnType<typeof useData>
-  let sdk!: ReturnType<typeof useSDK>
+  let client!: ReturnType<typeof useClient>
 
   function Probe() {
     data = useData()
-    sdk = useSDK()
+    client = useClient()
     return <box />
   }
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -539,15 +623,15 @@ test("reconnects the event stream and bootstraps fresh data", async () => {
     await wait(() => data.session.status("session-stale") === "running")
     await data.session.message.refresh("session-stale")
     expect(data.session.message.get("session-stale", "message-stale")?.id).toBe("message-stale")
-    expect(sdk.connection.status()).toBe("connected")
-    expect(sdk.connection.attempt()).toBe(0)
+    expect(client.connection.status()).toBe("connected")
+    expect(client.connection.attempt()).toBe(0)
 
     events.disconnect()
-    await wait(() => sdk.connection.status() === "reconnecting")
-    expect(sdk.connection.attempt()).toBe(1)
-    expect(sdk.connection.error()).toBe("Event stream disconnected")
+    await wait(() => client.connection.status() === "reconnecting")
+    expect(client.connection.attempt()).toBe(1)
+    expect(client.connection.error()).toBe("Event stream disconnected")
 
-    await wait(() => requests.active === 2 && sdk.connection.status() === "connected", 4000)
+    await wait(() => requests.active === 2 && client.connection.status() === "connected", 4000)
     resolveActive(json({ data: { "session-new": { type: "running" } } }))
 
     await wait(() => data.location.model.list()?.[0]?.id === "model-2", 4000)
@@ -565,9 +649,9 @@ test("reconnects the event stream and bootstraps fresh data", async () => {
     await wait(() => data.session.status("session-new") === "running")
     expect(requests.event).toBe(2)
     expect(requests.message).toBe(2)
-    expect(sdk.connection.status()).toBe("connected")
-    expect(sdk.connection.attempt()).toBe(0)
-    expect(sdk.connection.error()).toBeUndefined()
+    expect(client.connection.status()).toBe("connected")
+    expect(client.connection.attempt()).toBe(0)
+    expect(client.connection.error()).toBeUndefined()
   } finally {
     app.renderer.destroy()
   }
@@ -588,13 +672,13 @@ test("completes exploration when a queued prompt is promoted", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -653,6 +737,52 @@ test("completes exploration when a queued prompt is promoted", async () => {
   }
 })
 
+test("classifies live tool rows independently of their call ID", async () => {
+  const events = createEventStream()
+  const sessionID = "session-tool-call-id"
+  const calls = createFetch((url) => {
+    if (url.pathname === `/api/session/${sessionID}/message`) return json({ data: [], cursor: {} })
+  }, events)
+  let rows!: ReturnType<typeof createSessionRows>
+
+  function Probe() {
+    rows = createSessionRows(() => sessionID)
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    emitEvent(events, {
+      id: "evt_tool_started",
+      created: 1,
+      type: "session.tool.input.started",
+      durable: durable(sessionID),
+      data: {
+        sessionID,
+        assistantMessageID: "message-assistant",
+        callID: "reasoning:0",
+        name: "bash",
+      },
+    })
+
+    await wait(() => rows.length > 0)
+    expect(rows).toEqual([{ type: "part", ref: { messageID: "message-assistant", partID: "reasoning:0" } }])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("removes committed revert messages from local state", async () => {
   const events = createEventStream()
   const sessionID = "session-revert"
@@ -668,13 +798,13 @@ test("removes committed revert messages from local state", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -733,34 +863,34 @@ test("distinguishes initial connection from reconnection", async () => {
   const calls = createFetch((url) => {
     if (url.pathname === "/api/event") return eventResponse()
   })
-  let sdk!: ReturnType<typeof useSDK>
+  let client!: ReturnType<typeof useClient>
 
   function Probe() {
-    sdk = useSDK()
+    client = useClient()
     return <box />
   }
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
   try {
     await wait(() => stream !== undefined)
-    expect(sdk.connection.status()).toBe("connecting")
+    expect(client.connection.status()).toBe("connecting")
 
     connect()
-    await wait(() => sdk.connection.status() === "connected")
+    await wait(() => client.connection.status() === "connected")
 
     disconnect()
-    await wait(() => sdk.connection.status() === "reconnecting")
+    await wait(() => client.connection.status() === "reconnecting")
   } finally {
     app.renderer.destroy()
   }
@@ -811,13 +941,13 @@ test("tracks session status from active sessions and execution events", async ()
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -1180,13 +1310,13 @@ test("restores queued compaction from durable pending input", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -1295,13 +1425,13 @@ test("refreshes integrations after integration updates", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -1351,13 +1481,13 @@ test("refreshes MCP resources after catalog updates", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -1400,13 +1530,13 @@ test("refreshes effective catalog data after catalog updates", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <box />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -1448,13 +1578,13 @@ test("refreshes agents after agent updates", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -1492,13 +1622,13 @@ test("refreshes references after updates", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -1547,13 +1677,13 @@ test("keeps shell state scoped to location", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -1593,28 +1723,28 @@ test("adds and dismisses permission requests from live events", async () => {
   const events = createEventStream()
   const calls = createFetch(undefined, events)
   let data!: ReturnType<typeof useData>
-  let sdk!: ReturnType<typeof useSDK>
+  let client!: ReturnType<typeof useClient>
 
   function Probe() {
     data = useData()
-    sdk = useSDK()
+    client = useClient()
     return <box />
   }
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
   try {
-    await wait(() => sdk.connection.status() === "connected")
+    await wait(() => client.connection.status() === "connected")
     emitEvent(events, {
       id: "evt_permission_asked_1",
       created: 0,
@@ -1681,13 +1811,13 @@ test("reconciles all pending permission requests when the event stream reconnect
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(fetch.fetch)} api={createApi(fetch.fetch)}>
+      <ClientProvider api={createApi(fetch.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -1715,28 +1845,28 @@ test("adds, dismisses, and refreshes form requests", async () => {
     })
   }, events)
   let data!: ReturnType<typeof useData>
-  let sdk!: ReturnType<typeof useSDK>
+  let client!: ReturnType<typeof useClient>
 
   function Probe() {
     data = useData()
-    sdk = useSDK()
+    client = useClient()
     return <box />
   }
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
   try {
-    await wait(() => sdk.connection.status() === "connected")
+    await wait(() => client.connection.status() === "connected")
     emitEvent(events, {
       id: "evt_form_created_1",
       created: 0,
@@ -1785,28 +1915,28 @@ test("tracks global forms by location", async () => {
   const calls = createFetch(undefined, events)
   const other = { directory: "/tmp/opencode-other", workspaceID: "wrk_other" }
   let data!: ReturnType<typeof useData>
-  let sdk!: ReturnType<typeof useSDK>
+  let client!: ReturnType<typeof useClient>
 
   function Probe() {
     data = useData()
-    sdk = useSDK()
+    client = useClient()
     return <box />
   }
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
   try {
-    await wait(() => sdk.connection.status() === "connected")
+    await wait(() => client.connection.status() === "connected")
     events.emit({
       id: "evt_form_created_global_other",
       created: 0,
@@ -1871,28 +2001,28 @@ test("refreshes global forms for the requested location", async () => {
     })
   }, events)
   let data!: ReturnType<typeof useData>
-  let sdk!: ReturnType<typeof useSDK>
+  let client!: ReturnType<typeof useClient>
 
   function Probe() {
     data = useData()
-    sdk = useSDK()
+    client = useClient()
     return <box />
   }
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
   try {
-    await wait(() => sdk.connection.status() === "connected" && requests.length > 0)
+    await wait(() => client.connection.status() === "connected" && requests.length > 0)
     requests.length = 0
 
     await data.session.form.refresh("global", { directory })
@@ -1957,13 +2087,13 @@ test("refreshes global forms once per loaded location after reconnect", async ()
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -2025,13 +2155,13 @@ test("reconciles all pending form requests when the event stream reconnects", as
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(fetch.fetch)} api={createApi(fetch.fetch)}>
+      <ClientProvider api={createApi(fetch.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -2078,13 +2208,13 @@ test("settles pending tools when a live failure arrives", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -2146,10 +2276,34 @@ test("settles pending tools when a live failure arrives", async () => {
       },
     })
     emitEvent(events, {
+      id: "evt_progress_1",
+      created: 0,
+      type: "session.tool.progress",
+      durable: durable("session-1", 5),
+      data: {
+        sessionID: "session-1",
+        assistantMessageID: "msg_explicit_assistant_9",
+        callID: "call-1",
+        structured: { sessionID: "session-child", status: "running" },
+        content: [],
+      },
+    })
+
+    await wait(() => {
+      const assistant = sync.session.message.get("session-1", "msg_explicit_assistant_9")
+      return (
+        assistant?.type === "assistant" &&
+        assistant.content[0]?.type === "tool" &&
+        assistant.content[0].state.status === "running" &&
+        assistant.content[0].state.structured.sessionID === "session-child"
+      )
+    })
+
+    emitEvent(events, {
       id: "evt_failed_1",
       created: 0,
       type: "session.tool.failed",
-      durable: durable("session-1", 5),
+      durable: durable("session-1", 6),
       data: {
         sessionID: "session-1",
         assistantMessageID: "msg_explicit_assistant_9",
@@ -2180,7 +2334,7 @@ test("settles pending tools when a live failure arrives", async () => {
     if (tool.state.status !== "error") return
     expect(tool.state.error).toEqual({ type: "unknown", message: "aborted" })
     expect(tool.state.input).toEqual({})
-    expect(tool.state.structured).toEqual({})
+    expect(tool.state.structured).toEqual({ sessionID: "session-child", status: "running" })
     expect(tool.state.content).toEqual([])
     expect(tool.executed).toBe(false)
     expect(tool.providerState).toEqual({ call: true })
@@ -2225,13 +2379,13 @@ test("renders admitted prompts immediately and tracks them until promoted", asyn
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -2301,7 +2455,7 @@ test("renders admitted prompts immediately and tracks them until promoted", asyn
   }
 })
 
-test("projects live instruction updates with their message ID", async () => {
+test("skips initial instruction state and projects later updates with their message ID", async () => {
   const events = createEventStream()
   const calls = createFetch(undefined, events)
   let sync!: ReturnType<typeof useData>
@@ -2318,13 +2472,13 @@ test("projects live instruction updates with their message ID", async () => {
 
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
 
@@ -2335,18 +2489,30 @@ test("projects live instruction updates with their message ID", async () => {
       created: 0,
       type: "session.instructions.updated",
       durable: durable("session-1", 0, 2),
+      metadata: { instructions: { initial: true } },
       data: {
         sessionID: "session-1",
         delta: { "core/date": "0".repeat(64) },
       },
     })
+    emitEvent(events, {
+      id: "evt_instructions_2",
+      created: 1,
+      type: "session.instructions.updated",
+      durable: durable("session-1", 1, 2),
+      data: {
+        sessionID: "session-1",
+        delta: { "core/date": "1".repeat(64) },
+      },
+    })
 
-    await wait(() => sync.session.message.list("session-1")?.length === 1)
+    await wait(() => sync.session.message.list("session-1")?.some((message) => message.time.created === 1))
+    expect(sync.session.message.list("session-1")).toHaveLength(1)
     expect(sync.session.message.list("session-1")?.[0]).toMatchObject({
-      id: SessionMessage.ID.fromEvent(EventV2.ID.make("evt_instructions_1")),
+      id: SessionMessage.ID.fromEvent(EventV2.ID.make("evt_instructions_2")),
       type: "system",
       text: "Instructions updated: core/date",
-      time: { created: 0 },
+      time: { created: 1 },
     })
   } finally {
     app.renderer.destroy()
@@ -2387,13 +2553,13 @@ async function mountData(parents: Record<string, string>, costs: Record<string, 
   }
   const app = await testRender(() => (
     <TestTuiContexts>
-      <SDKProvider client={createClient(calls.fetch)} api={createApi(calls.fetch)}>
+      <ClientProvider api={createApi(calls.fetch)}>
         <ProjectProvider>
           <DataProvider>
             <Probe />
           </DataProvider>
         </ProjectProvider>
-      </SDKProvider>
+      </ClientProvider>
     </TestTuiContexts>
   ))
   await mounted
