@@ -244,6 +244,39 @@ describe("SessionRunCoordinator", () => {
     ),
   )
 
+  it.effect("suppresses a stale wake registered during interruption cleanup", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstStarted = yield* Deferred.make<void>()
+        const cleanupStarted = yield* Deferred.make<void>()
+        const cleanupGate = yield* Deferred.make<void>()
+        let runs = 0
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () =>
+            Effect.sync(() => ++runs).pipe(
+              Effect.andThen(Deferred.succeed(firstStarted, undefined)),
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() =>
+                Deferred.succeed(cleanupStarted, undefined).pipe(Effect.andThen(Deferred.await(cleanupGate))),
+              ),
+            ),
+        })
+
+        yield* coordinator.wake("session", 1)
+        yield* Deferred.await(firstStarted)
+        const interrupt = yield* coordinator.interrupt("session", 2).pipe(Effect.forkChild)
+        yield* Deferred.await(cleanupStarted)
+        yield* coordinator.wake("session", 1)
+        yield* Deferred.succeed(cleanupGate, undefined)
+        yield* Fiber.join(interrupt)
+        yield* Effect.yieldNow
+
+        expect(runs).toBe(1)
+        expect(Array.from(yield* coordinator.active)).toEqual([])
+      }),
+    ),
+  )
+
   it.effect("runs a wake registered during interruption cleanup", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -268,11 +301,11 @@ describe("SessionRunCoordinator", () => {
             ),
         })
 
-        yield* coordinator.wake("session")
+        yield* coordinator.wake("session", 1)
         yield* Deferred.await(firstStarted)
-        const interrupt = yield* coordinator.interrupt("session").pipe(Effect.forkChild)
+        const interrupt = yield* coordinator.interrupt("session", 2).pipe(Effect.forkChild)
         yield* Deferred.await(cleanupStarted)
-        yield* coordinator.wake("session")
+        yield* coordinator.wake("session", 3)
         yield* Deferred.succeed(cleanupGate, undefined)
         yield* Fiber.join(interrupt)
         yield* Deferred.await(secondStarted)

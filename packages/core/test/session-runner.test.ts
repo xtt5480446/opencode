@@ -1898,6 +1898,24 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("does not wake an admitted prompt older than an interrupt", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const id = SessionMessage.ID.create()
+      const prompt = Prompt.make({ text: "Remain stopped" })
+      requests.length = 0
+      streamGate = yield* Deferred.make<void>()
+
+      yield* session.prompt({ id, sessionID, prompt, resume: false })
+      yield* session.interrupt(sessionID)
+      yield* session.prompt({ id, sessionID, prompt })
+
+      expect(Array.from(yield* session.active)).not.toContain(sessionID)
+      expect(requests).toHaveLength(0)
+    }),
+  )
+
   it.effect("preserves durable queued input for a later wake after interruption", () =>
     Effect.gen(function* () {
       yield* setup

@@ -379,7 +379,7 @@ const layer = Layer.effect(
             )
             if (!SessionInput.equivalent(admitted, expected))
               return yield* new PromptConflictError({ sessionID: input.sessionID, messageID })
-            if (input.resume !== false) yield* execution.wake(admitted.sessionID)
+            if (input.resume !== false) yield* execution.wake(admitted.sessionID, admitted.admittedSeq)
             return admitted
           }),
         ),
@@ -428,7 +428,12 @@ const layer = Layer.effect(
         yield* execution.resume(sessionID)
       }),
       interrupt: Effect.fn("V2Session.interrupt")((sessionID) =>
-        Effect.uninterruptible(execution.interrupt(sessionID)),
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            if (!(yield* store.get(sessionID))) return yield* execution.interrupt(sessionID)
+            yield* execution.interrupt(sessionID, yield* EventV2.latestSequence(db, sessionID))
+          }),
+        ),
       ),
       revert: {
         stage: Effect.fn("V2Session.revert.stage")(function* (input) {
