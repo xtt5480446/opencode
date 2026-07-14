@@ -53,6 +53,12 @@ export const isContextOverflowFailure = (failure: unknown) =>
 const decodeJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
 const OVERFLOW_CODES = new Set(["context_length_exceeded", "model_context_window_exceeded"])
 const QUOTA_CODES = new Set(["insufficient_quota", "usage_not_included", "billing_error"])
+const CONTENT_POLICY_CODES = new Set([
+  "content_filter",
+  "content_policy_error",
+  "content_policy_violation",
+  "responsibleaipolicyviolation",
+])
 const SERVER_CODES = new Set([
   "api_error",
   "internal_error",
@@ -66,7 +72,6 @@ const SERVER_CODES = new Set([
 const INVALID_REQUEST_CODES = new Set(["invalid_prompt", "invalid_request_error", "validationexception"])
 const RATE_LIMIT_TEXT = /rate increased too quickly|rate[-_\s]?limit|too[_\s]?many[_\s]?requests/i
 const QUOTA_TEXT = /insufficient[-_\s]?quota|quota[-_\s]?exceeded/i
-const CONTENT_POLICY_TEXT = /content[-_\s]?policy|content_filter|safety/i
 
 export interface ApiFailure {
   readonly message: string
@@ -131,7 +136,7 @@ export const classifyApiFailure = (input: ApiFailure): LLMError => {
   )
     return new ContextOverflow(common)
   if (input.status === 408) return new TimeoutError({ message: input.message, http: input.http })
-  if (clientScoped && CONTENT_POLICY_TEXT.test(text)) return new ContentPolicy(common)
+  if (clientScoped && normalizedCodes.some((code) => CONTENT_POLICY_CODES.has(code))) return new ContentPolicy(common)
   if (normalizedCodes.some((code) => QUOTA_CODES.has(code)) || (input.status === 429 && QUOTA_TEXT.test(text)))
     return new QuotaExceeded(common)
   if (input.status === 401 || normalizedCodes.includes("authentication_error")) return new Authentication(common)
@@ -167,7 +172,12 @@ function providerCodes(value: unknown) {
   const decoded = typeof value === "string" ? Option.getOrUndefined(decodeJson(value)) : value
   if (!isRecord(decoded)) return []
   const error = isRecord(decoded.error) ? decoded.error : undefined
-  return [error?.code, error?.type, decoded.code]
+  const innerError = isRecord(error?.inner_error)
+    ? error.inner_error
+    : isRecord(error?.innererror)
+      ? error.innererror
+      : undefined
+  return [error?.code, error?.type, innerError?.code, decoded.code]
     .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
     .map(String)
 }

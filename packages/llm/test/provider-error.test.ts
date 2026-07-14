@@ -38,6 +38,34 @@ describe("provider error classification", () => {
     ).toMatchObject({ _tag: "LLM.ServerError" })
   })
 
+  test("classifies only structured content-policy signals", () => {
+    expect(
+      [
+        "content_policy_violation",
+        "content_policy_error",
+        "content_filter",
+        "ResponsibleAIPolicyViolation",
+      ].map((code) => classifyApiFailure({ message: "Request rejected", status: 400, code })._tag),
+    ).toEqual(["LLM.ContentPolicy", "LLM.ContentPolicy", "LLM.ContentPolicy", "LLM.ContentPolicy"])
+    expect(classifyApiFailure({ message: "Request rejected by a safety check", status: 400 })).toMatchObject({
+      _tag: "LLM.BadRequest",
+    })
+  })
+
+  test("extracts nested Azure content-policy codes", () => {
+    expect(
+      classifyApiFailure({
+        message: JSON.stringify({
+          error: {
+            code: "invalid_request_error",
+            inner_error: { code: "ResponsibleAIPolicyViolation" },
+          },
+        }),
+        status: 400,
+      }),
+    ).toMatchObject({ _tag: "LLM.ContentPolicy" })
+  })
+
   test("retains the Cerebras no-body overflow heuristic", () => {
     expect(classifyApiFailure({ message: "413 status code (no body)", status: 413 })).toMatchObject({
       _tag: "LLM.ContextOverflow",
