@@ -69,6 +69,7 @@ export type AutoInput = {
   readonly sessionID: SessionSchema.ID
   readonly messages: readonly SessionMessage.Info[]
   readonly model: Model
+  readonly ref: SessionMessage.Assistant["model"]
 }
 
 export type ManualInput = {
@@ -80,6 +81,7 @@ export type ManualInput = {
 type Plan = {
   readonly sessionID: SessionSchema.ID
   readonly model: Model
+  readonly ref: SessionMessage.Assistant["model"]
   readonly reason: SessionMessage.Compaction["reason"]
   readonly prompt: string
   readonly recent: string
@@ -291,6 +293,7 @@ const make = (dependencies: Dependencies) => {
     yield* dependencies.events.publish(SessionEvent.Compaction.Ended, {
       sessionID: plan.sessionID,
       reason: plan.reason,
+      model: plan.ref,
       text: summary,
       recent: plan.recent,
     })
@@ -302,6 +305,7 @@ const make = (dependencies: Dependencies) => {
       return yield* execute({
         sessionID: input.sessionID,
         model: input.model,
+        ref: input.ref,
         reason: "auto",
         ...content,
       })
@@ -350,6 +354,7 @@ const make = (dependencies: Dependencies) => {
     return yield* execute({
       sessionID: input.session.id,
       model: resolved.model,
+      ref: resolved.ref,
       reason: "manual",
       inputID: input.inputID,
       ...content,

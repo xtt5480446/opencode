@@ -117,17 +117,6 @@ export type SessionMessageCompactionRunning = {
   recent: string
 }
 
-export type SessionMessageCompactionCompleted = {
-  type: "compaction"
-  id: string
-  metadata?: { [x: string]: JsonValue }
-  time: { created: number }
-  status: "completed"
-  reason: "auto" | "manual"
-  summary: string
-  recent: string
-}
-
 export type InstructionEntryKey = string
 
 export type SessionPendingSyntheticData1 = { text: string; description?: string; metadata?: { [x: string]: any } }
@@ -507,6 +496,18 @@ export type SessionMessageModelSelected = {
   previous?: ModelRef
 }
 
+export type SessionMessageCompactionCompleted = {
+  type: "compaction"
+  id: string
+  metadata?: { [x: string]: JsonValue }
+  time: { created: number }
+  status: "completed"
+  reason: "auto" | "manual"
+  model?: ModelRef
+  summary: string
+  recent: string
+}
+
 export type CommandInfo = {
   name: string
   template: string
@@ -749,7 +750,7 @@ export type SessionCompactionEnded = {
   type: "session.compaction.ended"
   durable: { aggregateID: string; seq: number; version: 1 }
   location?: LocationRef
-  data: { sessionID: string; reason: "auto" | "manual"; text: string; recent: string }
+  data: { sessionID: string; reason: "auto" | "manual"; model?: ModelRef; text: string; recent: string }
 }
 
 export type SessionRevertCleared = {

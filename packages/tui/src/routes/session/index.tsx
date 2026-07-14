@@ -73,7 +73,7 @@ import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut } from "../../keyma
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
 import { createSessionRows, resolvePart, type PartRef, type SessionRow } from "./rows"
-import { switchLabel } from "../../util/model"
+import { compactionMarker, switchLabel } from "../../util/model"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1306,10 +1306,14 @@ function SessionSkillMessage(props: { message: Extract<SessionMessageInfo, { typ
 
 function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type: "compaction" }> }) {
   const ctx = use()
+  const local = useLocal()
   const { theme, syntax } = useTheme()
   const status = () => props.message.status
   const text = () => (props.message.status === "failed" ? props.message.error.message : props.message.summary)
   const content = createMemo(() => text().trim())
+  const marker = createMemo(() =>
+    compactionMarker(props.message.status === "completed" ? props.message.model : undefined, ctx.models()),
+  )
   const color = () => (status() === "failed" ? theme.error : theme.textMuted)
   return (
     <box>
@@ -1343,6 +1347,16 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
             bg={theme.background}
           />
         </box>
+      </Show>
+      <Show when={marker()}>
+        {(value) => (
+          <box paddingLeft={3} marginTop={1}>
+            <text>
+              <span style={{ fg: local.agent.color(value().agent) }}>{Locale.titlecase(value().agent)}</span>
+              <span style={{ fg: theme.textMuted }}> · {value().model}</span>
+            </text>
+          </box>
+        )}
       </Show>
     </box>
   )

@@ -7,6 +7,18 @@ export function formatRef(model: { providerID: string; id: string; variant?: str
   return [model.providerID, model.id, model.variant].filter((value) => value !== undefined).join("/")
 }
 
+export function compactionMarker(
+  model: { providerID: string; id: string; variant?: string } | undefined,
+  models?: readonly { providerID: string; id: string; name: string }[],
+) {
+  if (!model) return
+  return {
+    agent: "compaction",
+    model:
+      models?.find((item) => item.providerID === model.providerID && item.id === model.id)?.name ?? formatRef(model),
+  }
+}
+
 export function switchLabel(
   model: { providerID: string; id: string; variant?: string },
   models?: readonly { providerID: string; id: string; name: string }[],

@@ -1126,7 +1126,13 @@ test("tracks session status from active sessions and execution events", async ()
       created: 0,
       type: "session.compaction.ended",
       durable: durable("session-live", 5),
-      data: { sessionID: "session-live", reason: "auto", text: "Live summary", recent: "recent" },
+      data: {
+        sessionID: "session-live",
+        reason: "auto",
+        model: { providerID: "anthropic", id: "claude-sonnet" },
+        text: "Live summary",
+        recent: "recent",
+      },
     })
     await wait(() => {
       const message = data.session.message.get("session-live", "msg_compaction_started")
@@ -1135,6 +1141,7 @@ test("tracks session status from active sessions and execution events", async ()
     expect(data.session.message.get("session-live", "msg_compaction_started")).toMatchObject({
       type: "compaction",
       status: "completed",
+      model: { providerID: "anthropic", id: "claude-sonnet" },
       summary: "Live summary",
     })
     expect(rows.find((row) => row.type === "message" && row.messageID === "msg_compaction_started")).toBe(

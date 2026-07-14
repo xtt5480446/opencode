@@ -187,7 +187,7 @@ const layer = Layer.effect(
       const providerMetadataKey = model.route.providerMetadataKey ?? model.provider
       const history = yield* SessionHistory.entriesForRunner(db, session.id, instructions)
       const context = history.entries.map((entry) => entry.message)
-      const compactionInput = { sessionID: session.id, messages: context, model }
+      const compactionInput = { sessionID: session.id, messages: context, model, ref: resolved.ref }
       if (compaction.required(compactionInput) && !(yield* SessionPending.compaction(db, session.id))) {
         const compacted = yield* compaction.compact(compactionInput)
         if (compacted.status === "completed") return { _tag: "RestartAfterCompaction", step: currentStep } as const
@@ -331,8 +331,8 @@ const layer = Layer.effect(
             recoverOverflow &&
             !publisher.hasRetryEvidence() &&
             isContextOverflowFailure(overflowFailure ?? streamFailure) &&
-            (yield* restore(recoverOverflow({ sessionID: session.id, messages: context, model }))).status ===
-              "completed"
+            (yield* restore(recoverOverflow({ sessionID: session.id, messages: context, model, ref: resolved.ref })))
+              .status === "completed"
           )
             return { _tag: "RestartAfterOverflowCompaction", step: currentStep } as const
 

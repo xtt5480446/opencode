@@ -154,7 +154,13 @@ it.effect("manual compaction summarizes short context instead of no-op", () =>
     expect(requests[0]?.generation).toBeUndefined()
     expect(JSON.stringify(requests[0]?.messages)).toContain("Manual compaction should include this short conversation.")
     expect(yield* store.context(sessionID)).toMatchObject([
-      { type: "compaction", reason: "manual", summary: "manual summary", recent: "" },
+      {
+        type: "compaction",
+        reason: "manual",
+        model: { id: "summary-model", providerID: "test" },
+        summary: "manual summary",
+        recent: "",
+      },
     ])
     expect(
       yield* db

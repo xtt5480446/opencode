@@ -470,6 +470,7 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
               ...current,
               status: "completed",
               reason: event.data.reason,
+              model: event.data.model,
               summary: event.data.text,
               recent: event.data.recent,
             })
@@ -482,6 +483,7 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
               status: "completed",
               metadata: event.metadata,
               reason: event.data.reason,
+              model: event.data.model,
               summary: event.data.text,
               recent: event.data.recent,
               time: { created: event.created },

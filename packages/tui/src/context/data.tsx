@@ -732,6 +732,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               Object.assign(current, {
                 status: "completed",
                 reason: event.data.reason,
+                model: event.data.model,
                 summary: event.data.text,
                 recent: event.data.recent,
               })
@@ -742,6 +743,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               type: "compaction",
               status: "completed",
               reason: event.data.reason,
+              model: event.data.model,
               summary: event.data.text,
               recent: event.data.recent,
               time: { created: event.created },

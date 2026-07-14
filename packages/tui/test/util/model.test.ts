@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { formatRef, parse, switchLabel } from "../../src/util/model"
+import { compactionMarker, formatRef, parse, switchLabel } from "../../src/util/model"
 
 describe("util.model", () => {
   test("splits provider from a nested model identifier", () => {
@@ -10,6 +10,20 @@ describe("util.model", () => {
   test("includes the selected variant in model refs", () => {
     expect(formatRef({ providerID: "anthropic", id: "sonnet", variant: "thinking" })).toBe("anthropic/sonnet/thinking")
     expect(formatRef({ providerID: "anthropic", id: "sonnet" })).toBe("anthropic/sonnet")
+  })
+
+  test("labels completed compactions with their actual model", () => {
+    const models = [{ providerID: "anthropic", id: "sonnet", name: "Claude Sonnet" }]
+
+    expect(compactionMarker({ providerID: "anthropic", id: "sonnet" }, models)).toEqual({
+      agent: "compaction",
+      model: "Claude Sonnet",
+    })
+    expect(compactionMarker({ providerID: "removed", id: "gone", variant: "high" }, models)).toEqual({
+      agent: "compaction",
+      model: "removed/gone/high",
+    })
+    expect(compactionMarker(undefined, models)).toBeUndefined()
   })
 
   test("includes the selected variant in model switch notices", () => {

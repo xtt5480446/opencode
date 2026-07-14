@@ -488,6 +488,7 @@ export namespace Compaction {
     schema: {
       ...Base,
       reason: Started.data.fields.reason,
+      model: Model.Ref.pipe(optional),
       text: Schema.String,
       recent: Schema.String,
     },
