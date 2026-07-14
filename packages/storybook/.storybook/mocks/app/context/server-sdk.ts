@@ -21,8 +21,17 @@ const client = {
       data: Object.fromEntries(providers.map((provider) => [provider, [{ type: "api", label: "API key" }]])),
     }),
     oauth: {
-      authorize: async () => ({ data: undefined }),
-      callback: async () => ({ data: undefined }),
+      authorize: async (input: { method?: number }) => ({
+        data: {
+          url: "https://example.com/oauth",
+          method: input.method === 1 ? ("code" as const) : ("auto" as const),
+          instructions: input.method === 1 ? "Paste the authorization code" : "Confirmation code: ABCD-EFGH",
+        },
+      }),
+      callback: async (input: { method?: number }) => {
+        if (input.method === 0) return new Promise<never>(() => {})
+        return { data: undefined }
+      },
     },
   },
   auth: {

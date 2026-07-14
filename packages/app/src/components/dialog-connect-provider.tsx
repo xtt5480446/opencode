@@ -9,6 +9,7 @@ import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { Spinner } from "@opencode-ai/ui/spinner"
 import { Tag } from "@opencode-ai/ui/tag"
 import { TextField } from "@opencode-ai/ui/text-field"
+import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { DialogBody, DialogHeader, DialogTitle, DialogV2 } from "@opencode-ai/ui/v2/dialog-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import { showToast } from "@/utils/toast"
@@ -511,6 +512,16 @@ function ProviderConnection(props: {
     return value.label ?? ""
   }
 
+  const methodDetails = (value?: { type?: string; label?: string }) => {
+    const label = methodLabel(value)
+    const suffix = value?.label?.match(/\s+\((browser|headless)\)$/i)
+    const hint = suffix?.[1]
+    return {
+      label: suffix ? label.slice(0, -suffix[0].length) : label,
+      hint: hint ? hint[0].toUpperCase() + hint.slice(1) : value?.type === "api" ? "Browser" : undefined,
+    }
+  }
+
   function formatError(value: unknown, fallback: string): string {
     if (value && typeof value === "object" && "data" in value) {
       const data = (value as { data?: { message?: unknown } }).data
@@ -751,6 +762,37 @@ function ProviderConnection(props: {
   props.setBack(goBack)
 
   function MethodSelection() {
+    if (props.v2)
+      return (
+        <div class="flex flex-col gap-2">
+          <div class="px-3 text-[13px] font-[440] leading-5 tracking-[-0.04px] text-v2-text-text-muted">
+            {language.t("provider.connect.selectMethod", { provider: provider().name })}
+          </div>
+          <div class="flex flex-col">
+            <For each={methods()}>
+              {(item, index) => {
+                const details = () => methodDetails(item)
+                return (
+                  <button
+                    type="button"
+                    class="group flex h-9 w-full items-center gap-2 rounded-md px-3 text-left text-[13px] leading-5 tracking-[-0.04px] hover:bg-v2-overlay-simple-overlay-hover focus-visible:bg-v2-overlay-simple-overlay-hover focus-visible:outline-none"
+                    onClick={() => void selectMethod(index())}
+                  >
+                    <span class="flex h-2 w-4 shrink-0 items-center justify-center rounded-[1px] bg-v2-background-bg-base shadow-[var(--v2-elevation-button-neutral)]">
+                      <span class="hidden h-0.5 w-2.5 bg-v2-icon-icon-base group-hover:block group-focus-visible:block" />
+                    </span>
+                    <span class="font-[530] text-v2-text-text-base">{details().label}</span>
+                    <Show when={details().hint}>
+                      {(hint) => <span class="font-[440] text-v2-text-text-muted">{hint()}</span>}
+                    </Show>
+                  </button>
+                )
+              }}
+            </For>
+          </div>
+        </div>
+      )
+
     return (
       <>
         <div class="text-14-regular text-text-base">
@@ -785,6 +827,7 @@ function ProviderConnection(props: {
 
   function ApiAuthView() {
     let apiKey: HTMLInputElement | undefined
+    const errorID = `provider-${props.provider}-api-key-error`
     const [formStore, setFormStore] = createStore({
       value: "",
       error: undefined as string | undefined,
@@ -818,6 +861,58 @@ function ProviderConnection(props: {
       })
       await complete()
     }
+
+    if (props.v2)
+      return (
+        <div class="flex flex-col gap-5 px-3 text-[13px] font-[440] leading-5 tracking-[-0.04px] text-v2-text-text-muted">
+          <Show
+            when={provider().id === "opencode"}
+            fallback={language.t("provider.connect.apiKey.description", { provider: provider().name })}
+          >
+            <div class="flex flex-col gap-5">
+              <div>{language.t("provider.connect.opencodeZen.line1")}</div>
+              <div>{language.t("provider.connect.opencodeZen.line2")}</div>
+              <div>
+                {language.t("provider.connect.opencodeZen.visit.prefix")}
+                <Link
+                  href="https://opencode.ai/zen"
+                  class="text-v2-text-text-base focus-visible:rounded-xs focus-visible:outline-2 focus-visible:outline-v2-border-border-focus"
+                >
+                  {language.t("provider.connect.opencodeZen.visit.link")}
+                </Link>
+                {language.t("provider.connect.opencodeZen.visit.suffix")}
+              </div>
+            </div>
+          </Show>
+          <form onSubmit={handleSubmit} class="flex flex-col items-start gap-5 self-stretch">
+            <label class="flex w-full flex-col gap-1 font-[530] leading-4 text-v2-text-text-base">
+              {language.t("provider.connect.apiKey.label", { provider: provider().name })}
+              <TextInputV2
+                ref={apiKey}
+                class="!w-full"
+                name="apiKey"
+                placeholder={language.t("provider.connect.apiKey.placeholder")}
+                value={formStore.value}
+                invalid={formStore.error !== undefined}
+                aria-describedby={formStore.error ? errorID : undefined}
+                autocomplete="off"
+                spellcheck={false}
+                onInput={(event) => setFormStore("value", event.currentTarget.value)}
+              />
+            </label>
+            <Show when={formStore.error}>
+              {(error) => (
+                <div id={errorID} role="alert" class="-mt-4 text-xs text-v2-state-fg-danger">
+                  {error()}
+                </div>
+              )}
+            </Show>
+            <ButtonV2 type="submit" variant="contrast">
+              {language.t("common.continue")}
+            </ButtonV2>
+          </form>
+        </div>
+      )
 
     return (
       <div class="flex flex-col gap-6">
@@ -864,6 +959,7 @@ function ProviderConnection(props: {
 
   function OAuthCodeView() {
     let codeInput: HTMLInputElement | undefined
+    const errorID = `provider-${props.provider}-oauth-code-error`
     const [formStore, setFormStore] = createStore({
       value: "",
       error: undefined as string | undefined,
@@ -901,6 +997,46 @@ function ProviderConnection(props: {
       }
       setFormStore("error", formatError(result.error, language.t("provider.connect.oauth.code.invalid")))
     }
+
+    if (props.v2)
+      return (
+        <div class="flex flex-col gap-5 px-3 text-[13px] font-[440] leading-5 tracking-[-0.04px] text-v2-text-text-muted">
+          <div>
+            {language.t("provider.connect.oauth.code.visit.prefix")}
+            <Link href={store.authorization!.url} class="text-v2-text-text-base">
+              {language.t("provider.connect.oauth.code.visit.link")}
+            </Link>
+            {language.t("provider.connect.oauth.code.visit.suffix", { provider: provider().name })}
+          </div>
+          <form onSubmit={handleSubmit} class="flex flex-col items-start gap-5 self-stretch">
+            <label class="flex w-full flex-col gap-1 font-[530] leading-4 text-v2-text-text-base">
+              {language.t("provider.connect.oauth.code.label", { method: method()?.label ?? "" })}
+              <TextInputV2
+                ref={codeInput}
+                class="!w-full"
+                name="code"
+                placeholder={language.t("provider.connect.oauth.code.placeholder")}
+                value={formStore.value}
+                invalid={formStore.error !== undefined}
+                aria-describedby={formStore.error ? errorID : undefined}
+                autocomplete="off"
+                spellcheck={false}
+                onInput={(event) => setFormStore("value", event.currentTarget.value)}
+              />
+            </label>
+            <Show when={formStore.error}>
+              {(error) => (
+                <div id={errorID} role="alert" class="-mt-4 text-xs text-v2-state-fg-danger">
+                  {error()}
+                </div>
+              )}
+            </Show>
+            <ButtonV2 type="submit" variant="contrast">
+              {language.t("common.continue")}
+            </ButtonV2>
+          </form>
+        </div>
+      )
 
     return (
       <div class="flex flex-col gap-6">
@@ -984,10 +1120,19 @@ function ProviderConnection(props: {
   }
 
   return (
-    <div class="flex flex-col gap-6 px-2.5 pb-3">
-      <div class="px-2.5 flex gap-4 items-center">
-        <ProviderIcon id={props.provider} class="size-5 shrink-0 icon-strong-base" />
-        <div class="text-16-medium text-text-strong">
+    <div class={props.v2 ? "flex min-h-0 flex-1 flex-col" : "flex flex-col gap-6 px-2.5 pb-3"}>
+      <div class={props.v2 ? "flex h-10 shrink-0 items-start gap-2 px-3" : "flex items-center gap-4 px-2.5"}>
+        <ProviderIcon
+          id={props.provider}
+          class={props.v2 ? "mt-0.5 size-4 shrink-0 text-v2-icon-icon-base" : "size-5 shrink-0 icon-strong-base"}
+        />
+        <div
+          class={
+            props.v2
+              ? "text-[15px] font-[530] leading-5 tracking-[-0.13px] text-v2-text-text-base"
+              : "text-16-medium text-text-strong"
+          }
+        >
           <Switch>
             <Match when={props.provider === "anthropic" && method()?.label?.toLowerCase().includes("max")}>
               {language.t("provider.connect.title.anthropicProMax")}
@@ -996,10 +1141,10 @@ function ProviderConnection(props: {
           </Switch>
         </div>
       </div>
-      <div class="px-2.5 pb-10 flex flex-col gap-6">
+      <div class={props.v2 ? "flex min-h-0 flex-1 flex-col" : "flex flex-col gap-6 px-2.5 pb-10"}>
         <div
           onKeyDown={handleKey}
-          tabIndex={0}
+          tabIndex={props.v2 ? undefined : 0}
           autofocus={!props.v2 && store.methodIndex === undefined ? true : undefined}
         >
           <Switch>
