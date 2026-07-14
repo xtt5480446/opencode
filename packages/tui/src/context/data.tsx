@@ -1044,7 +1044,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               return store.location[locationKey(location ?? defaultLocation())]?.mcp?.server
             },
             async refresh(ref?: LocationRef) {
-              const result = await client.api.mcp.list({ location: locationQuery(ref) })
+              const result = await client.api.mcp.list({ location: locationQuery(ref ?? defaultLocation()) })
               const key = locationKey(result.location)
               setStore("location", key, {
                 ...store.location[key],
@@ -1057,7 +1057,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               return store.location[locationKey(location ?? defaultLocation())]?.mcp?.resource
             },
             async refresh(ref?: LocationRef) {
-              const result = await client.api.mcp.resource.catalog({ location: locationQuery(ref) })
+              const result = await client.api.mcp.resource.catalog({ location: locationQuery(ref ?? defaultLocation()) })
               const key = locationKey(result.location)
               setStore("location", key, {
                 ...store.location[key],
