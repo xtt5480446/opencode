@@ -2350,7 +2350,7 @@ function Shell(props: ToolProps) {
             )
           }
         >
-          <box flexDirection="row" gap={1} minWidth={0}>
+          <box flexDirection="row" gap={1} minWidth={0} paddingRight={1}>
             <Show when={isRunning()}>
               <Spinner color={color()} />
             </Show>
