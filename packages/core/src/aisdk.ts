@@ -30,6 +30,7 @@ import {
   ProviderID,
   ProviderMetadata,
   ToolResultValue,
+  TimeoutError,
   classifyApiFailure,
   isLLMError,
   type LLMError,
@@ -52,7 +53,7 @@ import {
   TypeValidationError,
   UnsupportedFunctionalityError,
 } from "@ai-sdk/provider"
-import { Auth, Endpoint, type AnyRoute } from "@opencode-ai/llm/route"
+import { Auth, Endpoint, RequestExecutor, type AnyRoute } from "@opencode-ai/llm/route"
 import { Cause, Context, Effect, Layer, Option, Schema, Scope, Stream } from "effect"
 import { ModelV2 } from "./model"
 import { ProviderV2 } from "./provider"
@@ -62,6 +63,8 @@ type SDK = any
 type UserContent = Extract<LanguageModelV3Message, { role: "user" }>["content"]
 type AssistantContent = Extract<LanguageModelV3Message, { role: "assistant" }>["content"]
 type ToolResultContent = Extract<AssistantContent[number], { type: "tool-result" }>
+
+class ChunkTimeoutError extends Error {}
 
 export interface SDKEvent {
   readonly model: ModelV2.Info
@@ -87,7 +90,7 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
     async pull(ctrl) {
       const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
         const id = setTimeout(() => {
-          const err = new Error("SSE read timed out")
+          const err = new ChunkTimeoutError("SSE read timed out")
           ctl.abort(err)
           void reader.cancel(err)
           reject(err)
@@ -689,8 +692,6 @@ function messageValue(input: unknown) {
   }
 }
 
-const BODY_LIMIT = 16_384
-
 const headerRetryAfterMs = (headers: Record<string, string> | undefined) => {
   if (!headers) return undefined
   const millis = Number(headers["retry-after-ms"])
@@ -710,20 +711,24 @@ const headerRetryAfterMs = (headers: Record<string, string> | undefined) => {
 // network-level failure (connect refused, reset, DNS), not an API rejection.
 function llmError(error: unknown): LLMError {
   if (isLLMError(error)) return error
+  if (error instanceof ChunkTimeoutError) return new TimeoutError({ message: error.message })
   if (APICallError.isInstance(error)) {
     if (error.statusCode === undefined) {
-      return new ConnectionError({ message: error.message, url: error.url, cause: error })
+      return new ConnectionError({ message: error.message, url: RequestExecutor.redactUrl(error.url) })
     }
+    const body = RequestExecutor.redactResponseBody(error.responseBody, { url: error.url })
     return classifyApiFailure({
       message: error.message,
       status: error.statusCode,
       retryAfterMs: headerRetryAfterMs(error.responseHeaders),
       requestID: error.responseHeaders?.["x-request-id"] ?? error.responseHeaders?.["request-id"],
       http: new HttpContext({
-        request: new HttpRequestDetails({ method: "POST", url: error.url, headers: {} }),
-        response: new HttpResponseDetails({ status: error.statusCode, headers: error.responseHeaders ?? {} }),
-        body: error.responseBody === undefined ? undefined : error.responseBody.slice(0, BODY_LIMIT),
-        bodyTruncated: error.responseBody !== undefined && error.responseBody.length > BODY_LIMIT ? true : undefined,
+        request: new HttpRequestDetails({ method: "POST", url: RequestExecutor.redactUrl(error.url), headers: {} }),
+        response: new HttpResponseDetails({
+          status: error.statusCode,
+          headers: RequestExecutor.redactHeaders(error.responseHeaders ?? {}),
+        }),
+        ...body,
       }),
     })
   }

@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 import {
   APIError,
   Authentication,
@@ -54,6 +54,7 @@ const QUOTA_CODES = new Set(["insufficient_quota", "usage_not_included", "billin
 const QUOTA_TEXT = /insufficient[-_\s]?quota|quota[-_\s]?exceeded/i
 const CONTENT_POLICY_TEXT = /content[-_\s]?policy|content_filter|safety/i
 const SERVER_ERROR_STATUS = (status: number) => status >= 500 || status === 529
+const decodeBodyJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 
 const CODE_CLASSIFICATION: Record<string, (input: ApiFailure, common: CommonFields) => LLMError> = {
   overloaded_error: serverError,
@@ -105,6 +106,17 @@ function rateLimit(input: ApiFailure, common: CommonFields) {
   return new RateLimit({ ...common, retryAfterMs: input.retryAfterMs, rateLimit: input.rateLimit })
 }
 
+const providerCode = (body: string) => {
+  const decoded = Option.getOrUndefined(decodeBodyJson(body))
+  if (typeof decoded !== "object" || decoded === null) return undefined
+  const error = (decoded as Record<string, unknown>).error
+  if (typeof error !== "object" || error === null) return undefined
+  const fields = error as Record<string, unknown>
+  if (typeof fields.code === "string") return fields.code
+  if (typeof fields.type === "string") return fields.type
+  return undefined
+}
+
 /**
  * One classifier for every failure a remote API deliberately reports.
  * Protocols call it with in-stream error payloads, the request executor with
@@ -115,25 +127,26 @@ function rateLimit(input: ApiFailure, common: CommonFields) {
  * HTTP status, provider code, then the generic `APIError` fallback.
  */
 export const classifyApiFailure = (input: ApiFailure): LLMError => {
+  const body = input.http?.body ?? ""
+  const code = input.code ?? providerCode(body)
   const common: CommonFields = {
     message: input.message,
     status: input.status,
-    code: input.code,
+    code,
     requestID: input.requestID,
     http: input.http,
     providerMetadata: input.providerMetadata,
   }
-  const body = input.http?.body ?? ""
   const clientScoped = input.status === undefined || (input.status >= 400 && input.status < 500)
   if (
     clientScoped &&
-    ((input.code !== undefined && OVERFLOW_CODES.has(input.code)) ||
+    ((code !== undefined && OVERFLOW_CODES.has(code)) ||
       isContextOverflow(input.message) ||
       (body.length > 0 && isContextOverflow(body)))
   )
     return new ContextOverflow(common)
   if (CONTENT_POLICY_TEXT.test(body.length > 0 ? body : input.message)) return new ContentPolicy(common)
-  if (input.code !== undefined && QUOTA_CODES.has(input.code)) return new QuotaExceeded(common)
+  if (code !== undefined && QUOTA_CODES.has(code)) return new QuotaExceeded(common)
   if (input.status === 401) return new Authentication(common)
   if (input.status === 403) return new PermissionDenied(common)
   if (input.status === 404) return new NotFound(common)
@@ -144,7 +157,7 @@ export const classifyApiFailure = (input: ApiFailure): LLMError => {
   if (input.status !== undefined && SERVER_ERROR_STATUS(input.status)) return serverError(input, common)
   if (input.status === 400 || input.status === 409 || input.status === 413 || input.status === 422)
     return new BadRequest(common)
-  const byCode = input.code === undefined ? undefined : CODE_CLASSIFICATION[input.code]
+  const byCode = code === undefined ? undefined : CODE_CLASSIFICATION[code]
   if (byCode) return byCode(input, common)
   return new APIError(common)
 }

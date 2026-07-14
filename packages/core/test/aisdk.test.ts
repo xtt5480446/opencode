@@ -1,11 +1,11 @@
-import type { LanguageModelV3CallOptions } from "@ai-sdk/provider"
+import { APICallError, type LanguageModelV3CallOptions } from "@ai-sdk/provider"
 import { AISDK } from "@opencode-ai/core/aisdk"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { LLM, Message } from "@opencode-ai/llm"
 import { LLMClient } from "@opencode-ai/llm/route"
 import { expect } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(AISDK.locationLayer)
@@ -116,5 +116,53 @@ it.effect("projects replay metadata onto AI SDK prompt parts", () =>
         ],
       },
     ])
+  }),
+)
+
+it.effect("redacts and classifies AI SDK API failures", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    const apiError = new APICallError({
+      message: "Billing failed",
+      url: "https://provider.test/v1?key=url-secret",
+      requestBodyValues: { apiKey: "request-secret" },
+      statusCode: 400,
+      responseHeaders: { "x-api-key": "header-secret" },
+      responseBody: JSON.stringify({ error: { code: "billing_error", api_key: "body-secret" } }),
+    })
+    yield* aisdk.hook.sdk((event) => {
+      event.sdk = {}
+    })
+    yield* aisdk.hook.language((event) => {
+      event.language = {
+        specificationVersion: "v3",
+        provider: "test-provider",
+        modelId: "api-model",
+        supportedUrls: {},
+        doGenerate: async () => {
+          throw apiError
+        },
+        doStream: async () => {
+          throw apiError
+        },
+      }
+    })
+
+    const resolved = yield* aisdk.model(model("@ai-sdk/openai"))
+    const request = LLM.request({ model: resolved, prompt: "Hello" })
+    const prepared = yield* LLMClient.prepare<LanguageModelV3CallOptions>(request)
+    const error = yield* resolved.route
+      .streamPrepared(prepared.body, request, { http: { execute: () => Effect.die("unused") } })
+      .pipe(Stream.runDrain, Effect.flip)
+
+    expect(error).toMatchObject({
+      _tag: "LLM.QuotaExceeded",
+      code: "billing_error",
+      http: {
+        request: { url: "https://provider.test/v1?key=%3Credacted%3E" },
+        response: { headers: { "x-api-key": "<redacted>" } },
+      },
+    })
+    expect("http" in error ? error.http?.body : undefined).not.toContain("body-secret")
   }),
 )

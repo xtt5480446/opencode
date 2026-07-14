@@ -1,4 +1,4 @@
-import { Cause, Context, Effect, Layer, Option, Schema } from "effect"
+import { Cause, Context, Effect, Layer } from "effect"
 import {
   FetchHttpClient,
   Headers,
@@ -48,15 +48,14 @@ const isSensitiveHeaderName = (name: string) => SENSITIVE_NAME.test(name)
 
 const isSensitiveQueryName = (name: string) => isSensitiveHeaderName(name) || SHORT_QUERY_NAME.test(name)
 
-const redactHeaders = (headers: Headers.Headers, redactedNames: ReadonlyArray<string | RegExp>) =>
+export const redactHeaders = (headers: Headers.Input, redactedNames: ReadonlyArray<string | RegExp> = []) =>
   Object.fromEntries(
-    Object.entries(Headers.redact(headers, [...redactedNames, SENSITIVE_NAME])).map(([name, value]) => [
-      name,
-      String(value),
-    ]),
+    Object.entries(Headers.redact(Headers.fromInput(headers), [...redactedNames, SENSITIVE_NAME])).map(
+      ([name, value]) => [name, String(value)],
+    ),
   )
 
-const redactUrl = (value: string) => {
+export const redactUrl = (value: string) => {
   if (!URL.canParse(value)) return REDACTED
   const url = new URL(value)
   url.searchParams.forEach((_, key) => {
@@ -152,7 +151,12 @@ const responseDetails = (
     headers: redactHeaders(response.headers, redactedNames),
   })
 
-const secretValues = (request: HttpClientRequest.HttpClientRequest) => {
+interface RedactionRequest {
+  readonly url: string
+  readonly headers?: Headers.Input | undefined
+}
+
+const secretValues = (request: RedactionRequest) => {
   const values = new Set<string>()
   const add = (value: string) => {
     if (value.length < 4) return
@@ -160,7 +164,7 @@ const secretValues = (request: HttpClientRequest.HttpClientRequest) => {
     values.add(encodeURIComponent(value))
   }
 
-  Object.entries(request.headers).forEach(([name, value]) => {
+  Object.entries(Headers.fromInput(request.headers)).forEach(([name, value]) => {
     if (!isSensitiveHeaderName(name)) return
     add(value)
     const bearer = /^Bearer\s+(.+)$/i.exec(value)?.[1]
@@ -177,13 +181,13 @@ const secretValues = (request: HttpClientRequest.HttpClientRequest) => {
 // Two passes: structural (redact `"name": "value"` and `name=value` patterns
 // for any field name that looks sensitive) plus literal (replace any actual
 // secret values we sent in the request, in case the response echoes one back).
-const redactBody = (body: string, request: HttpClientRequest.HttpClientRequest) =>
+const redactBody = (body: string, request: RedactionRequest) =>
   Array.from(secretValues(request)).reduce(
     (text, secret) => text.split(secret).join(REDACTED),
     body.replace(REDACT_JSON_FIELD, `$1"${REDACTED}"`).replace(REDACT_QUERY_FIELD, `$1${REDACTED}`),
   )
 
-const responseBody = (body: string | void, request: HttpClientRequest.HttpClientRequest) => {
+export const redactResponseBody = (body: string | void, request: RedactionRequest) => {
   if (body === undefined) return {}
   const redacted = redactBody(body, request)
   if (redacted.length <= BODY_LIMIT) return { body: redacted }
@@ -199,7 +203,7 @@ const responseHttp = (input: {
   readonly request: HttpClientRequest.HttpClientRequest
   readonly response: HttpClientResponse.HttpClientResponse
   readonly redactedNames: ReadonlyArray<string | RegExp>
-  readonly body: ReturnType<typeof responseBody>
+  readonly body: ReturnType<typeof redactResponseBody>
   readonly requestId?: string | undefined
   readonly rateLimit?: HttpRateLimitDetails | undefined
 }) =>
@@ -211,23 +215,6 @@ const responseHttp = (input: {
     rateLimit: input.rateLimit,
   })
 
-const decodeBodyJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
-
-// Provider machine code from a JSON error body (`error.code` / `error.type`),
-// fed to the shared classifier so code-based rules (overflow, quota) work on
-// HTTP rejections too. Truncated or non-JSON bodies yield undefined.
-const providerCode = (body: string | undefined) => {
-  if (!body) return undefined
-  const decoded = Option.getOrUndefined(decodeBodyJson(body))
-  if (typeof decoded !== "object" || decoded === null) return undefined
-  const error = (decoded as Record<string, unknown>).error
-  if (typeof error !== "object" || error === null) return undefined
-  const fields = error as Record<string, unknown>
-  if (typeof fields.code === "string") return fields.code
-  if (typeof fields.type === "string") return fields.type
-  return undefined
-}
-
 const statusError =
   (request: HttpClientRequest.HttpClientRequest, redactedNames: ReadonlyArray<string | RegExp>) =>
   (response: HttpClientResponse.HttpClientResponse) =>
@@ -237,11 +224,10 @@ const statusError =
       const headers = normalizedHeaders(response.headers)
       const retryAfter = retryAfterMs(headers)
       const rateLimit = rateLimitDetails(headers, retryAfter)
-      const details = responseBody(body, request)
+      const details = redactResponseBody(body, request)
       return yield* classifyApiFailure({
         status: response.status,
         message: providerMessage(response.status, details),
-        code: providerCode(details.body),
         retryAfterMs: retryAfter,
         rateLimit,
         requestID: requestId(headers),
@@ -269,7 +255,6 @@ const toHttpError = (redactedNames: ReadonlyArray<string | RegExp>) => (error: u
       kind: input.kind,
       url: input.request ? redactUrl(input.request.url) : undefined,
       http: httpContext(input.request),
-      cause: error,
     })
 
   if (Cause.isTimeoutError(error)) {
