@@ -12,7 +12,6 @@ type ServerProjectState = {
   lastProject: Record<string, string>
   recentlyClosed: Record<string, string[]>
 }
-type PersistedServerState = ServerProjectState & { list: StoredServer[] }
 const HEALTH_POLL_INTERVAL_MS = 10_000
 // The store retains more history than is displayed. Consumers filter recently closed entries
 // against the live project list (dropping deleted projects) and then cap the visible count via
@@ -179,13 +178,6 @@ export function resolveServerList(input: {
   return [...deduped.values()]
 }
 
-export function hasPersistedServerData(store: PersistedServerState) {
-  if (store.list.length > 0) return true
-  if (Object.values(store.projects).some((projects) => projects.length > 0)) return true
-  if (Object.values(store.lastProject).some(Boolean)) return true
-  return Object.values(store.recentlyClosed).some((projects) => projects.length > 0)
-}
-
 export namespace ServerConnection {
   type Base = { displayName?: string; label?: string }
 
@@ -339,12 +331,10 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       () => allServers().find((s) => ServerConnection.key(s) === state.active) ?? allServers()[0],
     )
     const isLocal = createMemo(() => ServerConnection.local(current()))
-    const hasPersistedData = createMemo(() => hasPersistedServerData(store))
 
     return {
       ready: isReady,
       isLocal,
-      hasPersistedData,
       get key() {
         return state.active
       },

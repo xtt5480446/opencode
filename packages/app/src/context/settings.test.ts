@@ -1,36 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import {
-  hasMeaningfulLayoutData,
   layoutTransitionState,
   maximumSunsetTimeout,
-  migrateSettings,
   newLayoutDesignsDefault,
   nextSunsetCheckDelay,
-  resolveLayoutTransitionClassification,
   resolveNewLayoutDesigns,
 } from "./settings"
 
 describe("layout transition", () => {
   test("blank profiles default to the new layout", () => {
     expect(newLayoutDesignsDefault).toBe(true)
-    expect(
-      hasMeaningfulLayoutData({ settings: false, server: false, wsl: false, projects: false, sessions: false }),
-    ).toBe(false)
-  })
-
-  test("recognizes each source of meaningful prior use", () => {
-    const blank = { settings: false, server: false, wsl: false, projects: false, sessions: false }
-    expect(hasMeaningfulLayoutData({ ...blank, settings: true })).toBe(true)
-    expect(hasMeaningfulLayoutData({ ...blank, server: true })).toBe(true)
-    expect(hasMeaningfulLayoutData({ ...blank, wsl: true })).toBe(true)
-    expect(hasMeaningfulLayoutData({ ...blank, projects: true })).toBe(true)
-    expect(hasMeaningfulLayoutData({ ...blank, sessions: true })).toBe(true)
-  })
-
-  test("allows late evidence to promote but never downgrade a cohort", () => {
-    expect(resolveLayoutTransitionClassification(undefined, false)).toBe(false)
-    expect(resolveLayoutTransitionClassification(false, true)).toBe(true)
-    expect(resolveLayoutTransitionClassification(true, false)).toBe(true)
   })
 
   test("hides the transition until a sunset is scheduled", () => {
@@ -38,9 +17,6 @@ describe("layout transition", () => {
   })
 
   test("existing profiles can switch before sunset", () => {
-    expect(migrateSettings({ general: { newLayoutDesigns: false } })).toEqual({
-      general: { newLayoutDesigns: false, layoutTransitionSettingsPresent: true },
-    })
     expect(layoutTransitionState(true, true, false, false)).toEqual({ available: true, notice: false })
   })
 
@@ -60,10 +36,5 @@ describe("layout transition", () => {
     expect(nextSunsetCheckDelay(maximumSunsetTimeout + 1_000, 0)).toBe(maximumSunsetTimeout)
     expect(nextSunsetCheckDelay(10_000, 9_000)).toBe(1_000)
     expect(nextSunsetCheckDelay(9_000, 10_000)).toBe(0)
-  })
-
-  test("migration does not reclassify fresh profiles", () => {
-    const settings = { general: { newLayoutDesigns: true, layoutTransitionEligible: false } }
-    expect(migrateSettings(settings)).toBe(settings)
   })
 })

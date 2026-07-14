@@ -3,7 +3,6 @@ import { createRoot, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 import {
   createServerProjects,
-  hasPersistedServerData,
   migrateCanonicalLocalServerState,
   nextServerAfterRemoval,
   resolveServerList,
@@ -59,23 +58,6 @@ describe("resolveServerList", () => {
       password: "saved",
     })
     expect(list[0]?.type === "http" ? list[0].authToken : true).toBeUndefined()
-  })
-})
-
-describe("hasPersistedServerData", () => {
-  const empty = () => ({ list: [], projects: {}, lastProject: {}, recentlyClosed: {} })
-
-  test("ignores a blank persisted server store", () => {
-    expect(hasPersistedServerData(empty())).toBe(false)
-  })
-
-  test("recognizes configured servers and remembered project activity", () => {
-    expect(hasPersistedServerData({ ...empty(), list: ["https://example.com"] })).toBe(true)
-    expect(hasPersistedServerData({ ...empty(), projects: { local: [{ worktree: "/code", expanded: true }] } })).toBe(
-      true,
-    )
-    expect(hasPersistedServerData({ ...empty(), lastProject: { local: "/code" } })).toBe(true)
-    expect(hasPersistedServerData({ ...empty(), recentlyClosed: { local: ["/code"] } })).toBe(true)
   })
 })
 

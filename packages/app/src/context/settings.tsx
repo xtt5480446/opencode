@@ -35,7 +35,6 @@ export interface Settings {
     mobileTitlebarPosition: "top" | "bottom"
     newLayoutDesigns?: boolean
     layoutTransitionEligible?: boolean
-    layoutTransitionSettingsPresent?: boolean
     newInterfaceNoticeDismissed?: boolean
   }
   appearance: {
@@ -60,27 +59,6 @@ export const newLayoutDesignsDefault = true
 // Existing users can switch layouts until local midnight on this date. Set new Date(YYYY, M-1, D) to show.
 export const oldInterfaceSunset = null as Date | null
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-export function migrateSettings(value: unknown) {
-  if (!isRecord(value)) return value
-  const general = isRecord(value.general) ? value.general : {}
-  if (
-    typeof general.layoutTransitionEligible === "boolean" ||
-    typeof general.layoutTransitionSettingsPresent === "boolean"
-  )
-    return value
-  return {
-    ...value,
-    general: {
-      ...general,
-      layoutTransitionSettingsPresent: true,
-    },
-  }
-}
-
 export function layoutTransitionState(scheduled: boolean, eligible: boolean, retired: boolean, dismissed: boolean) {
   return {
     available: scheduled && eligible && !retired,
@@ -97,21 +75,6 @@ export function nextSunsetCheckDelay(sunset: number, now: number) {
 export function resolveNewLayoutDesigns(retired: boolean, preference: boolean | undefined, fallback = true) {
   if (retired) return true
   return preference ?? fallback
-}
-
-export function hasMeaningfulLayoutData(input: {
-  settings: boolean
-  server: boolean
-  wsl: boolean
-  projects: boolean
-  sessions: boolean
-}) {
-  return input.settings || input.server || input.wsl || input.projects || input.sessions
-}
-
-export function resolveLayoutTransitionClassification(current: boolean | undefined, existing: boolean) {
-  if (current === true || existing) return true
-  return false
 }
 
 const monoFallback =
@@ -212,10 +175,7 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
   name: "Settings",
   gate: false,
   init: () => {
-    const [store, setStore, _, ready] = persisted(
-      { key: "settings.v3", migrate: migrateSettings },
-      createStore<Settings>(defaultSettings),
-    )
+    const [store, setStore, _, ready] = persisted("settings.v3", createStore<Settings>(defaultSettings))
     const showFileTree = withFallback(() => store.general?.showFileTree, defaultSettings.general.showFileTree)
     const showSearch = withFallback(() => store.general?.showSearch, defaultSettings.general.showSearch)
     const showStatus = withFallback(() => store.general?.showStatus, defaultSettings.general.showStatus)
@@ -229,10 +189,6 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
       () => typeof store.general?.layoutTransitionEligible === "boolean",
     )
     const layoutTransitionEligible = withFallback(() => store.general?.layoutTransitionEligible, false)
-    const layoutTransitionSettingsPresent = withFallback(
-      () => store.general?.layoutTransitionSettingsPresent,
-      false,
-    )
     const newInterfaceNoticeDismissed = withFallback(() => store.general?.newInterfaceNoticeDismissed, false)
     const layoutTransition = createMemo(() =>
       layoutTransitionState(!!sunset, layoutTransitionEligible(), oldInterfaceRetired(), newInterfaceNoticeDismissed()),
@@ -361,12 +317,10 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
           setStore("general", "newLayoutDesigns", oldInterfaceRetired() ? true : value)
         },
         layoutTransitionClassified,
-        layoutTransitionSettingsPresent,
-        classifyLayoutTransition(existing: boolean) {
+        setOldLayoutEligible(eligible: boolean) {
           const current = store.general?.layoutTransitionEligible
-          const next = resolveLayoutTransitionClassification(current, existing)
-          if (current === next) return
-          setStore("general", "layoutTransitionEligible", next)
+          if (typeof current === "boolean") return
+          setStore("general", "layoutTransitionEligible", eligible)
         },
         layoutTransitionAvailable: createMemo(() => ready() && layoutTransition().available),
         newInterfaceNoticeVisible: createMemo(() => ready() && layoutTransition().notice),

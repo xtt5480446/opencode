@@ -28,7 +28,6 @@ import {
   type ParentProps,
   Show,
 } from "solid-js"
-import { createStore } from "solid-js/store"
 import { Dynamic } from "solid-js/web"
 import { CommandProvider, useCommand, type CommandOption } from "@/context/command"
 import { CommentsProvider } from "@/context/comments"
@@ -45,7 +44,7 @@ import { PermissionProvider } from "@/context/permission"
 import { usePlatform } from "@/context/platform"
 import { PromptProvider } from "@/context/prompt"
 import { ServerConnection, ServerProvider, serverName, useServer } from "@/context/server"
-import { hasMeaningfulLayoutData, SettingsProvider, useSettings } from "@/context/settings"
+import { SettingsProvider, useSettings } from "@/context/settings"
 import { TabsProvider, useTabs, type DraftTab } from "@/context/tabs"
 import { SDKProvider, useSDK } from "@/context/sdk"
 import { WslServersProvider } from "@/wsl/context"
@@ -268,133 +267,6 @@ function BodyDesignClass() {
   })
 
   return null
-}
-
-function layoutClassificationRequest<T>(promise: Promise<T>, onTimeout: () => void, timeoutMs = 10_000) {
-  return new Promise<T>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      onTimeout()
-      reject(new Error("Layout classification timed out"))
-    }, timeoutMs)
-    promise.then(
-      (value) => {
-        clearTimeout(timeout)
-        resolve(value)
-      },
-      (error) => {
-        clearTimeout(timeout)
-        reject(error)
-      },
-    )
-  })
-}
-
-function LayoutTransitionGate(props: ParentProps) {
-  const settings = useSettings()
-  const server = useServer()
-  const global = useGlobal()
-  const platform = usePlatform()
-  const [state, setState] = createStore({ started: false, retry: 0 })
-  const retry = { current: undefined as ReturnType<typeof setTimeout> | undefined }
-  const wslState = {
-    current: undefined as ReturnType<NonNullable<typeof platform.wslServers>["getState"]> | undefined,
-  }
-
-  const readWslState = () => {
-    if (!platform.wslServers) return Promise.resolve(undefined)
-    if (wslState.current) return wslState.current
-    const request = platform.wslServers.getState()
-    wslState.current = request
-    void request.catch(() => {
-      if (wslState.current === request) wslState.current = undefined
-    })
-    return request
-  }
-
-  const scheduleRetry = () => {
-    if (retry.current !== undefined) return
-    retry.current = setTimeout(() => {
-      retry.current = undefined
-      setState({ started: false, retry: state.retry + 1 })
-    }, 10_000)
-  }
-
-  onCleanup(() => {
-    if (retry.current !== undefined) clearTimeout(retry.current)
-  })
-
-  createEffect(() => {
-    void state.retry
-    if (state.started || settings.general.layoutTransitionClassified()) return
-    if (!settings.ready() || !server.ready()) return
-
-    const input = {
-      settings: settings.general.layoutTransitionSettingsPresent(),
-      server: server.hasPersistedData(),
-      wsl: false,
-      projects: false,
-      sessions: false,
-    }
-    if (hasMeaningfulLayoutData(input)) {
-      setState("started", true)
-      settings.general.classifyLayoutTransition(true)
-      return
-    }
-    const conn = server.current
-    if (!conn) return
-    setState("started", true)
-    const client = global.ensureServerCtx(conn).sdk.client
-    const abort = new AbortController()
-    const pendingWsl = readWslState()
-    void pendingWsl.then(
-      (wsl) => {
-        if ((wsl?.servers.length ?? 0) > 0) settings.general.classifyLayoutTransition(true)
-      },
-      () => undefined,
-    )
-    const wsl = layoutClassificationRequest(pendingWsl, () => {}, 5_000).then(
-      (value) => ({ known: true as const, value }),
-      () => ({ known: false as const, value: undefined }),
-    )
-    void layoutClassificationRequest(
-      Promise.all([
-        client.project.list(undefined, { signal: abort.signal, throwOnError: true }),
-        client.session.list({ limit: 1 }, { signal: abort.signal, throwOnError: true }),
-        wsl,
-      ]),
-      () => abort.abort(),
-    )
-      .then(([projects, sessions, wsl]) => {
-        const existing = hasMeaningfulLayoutData({
-          ...input,
-          wsl: (wsl.value?.servers.length ?? 0) > 0,
-          projects: (projects.data?.length ?? 0) > 0,
-          sessions: (sessions.data?.length ?? 0) > 0,
-        })
-        if (!existing && !wsl.known) {
-          scheduleRetry()
-          return
-        }
-        settings.general.classifyLayoutTransition(existing)
-      })
-      .catch((error) => {
-        console.error("[layout-transition] failed to classify local data", error)
-        scheduleRetry()
-      })
-  })
-
-  return (
-    <Show
-      when={settings.general.layoutTransitionClassified()}
-      fallback={
-        <div class="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-background-base">
-          <Splash class="w-16 h-20 opacity-50 animate-pulse" />
-        </div>
-      }
-    >
-      {props.children}
-    </Show>
-  )
 }
 
 // Server-agnostic providers shared across every route. These live in the shared
@@ -682,26 +554,24 @@ export function AppInterface(props: {
       <GlobalProvider>
         <SettingsProvider>
           <ConnectionGate disableHealthCheck={props.disableHealthCheck} startup={props.startup}>
-            <LayoutTransitionGate>
-              <Show when={useSettings().general.newLayoutDesigns().toString()} keyed>
-                <Dynamic
-                  component={props.router ?? Router}
-                  root={(routerProps) => (
-                    <TabsProvider>
-                      <NotificationProvider>
-                        <ServerShell>
-                          <Show when={useSettings().general.newLayoutDesigns()} fallback={routerProps.children}>
-                            <NewAppLayout serverScoped={props.serverScoped}>{routerProps.children}</NewAppLayout>
-                          </Show>
-                        </ServerShell>
-                      </NotificationProvider>
-                    </TabsProvider>
-                  )}
-                >
-                  <Routes serverScoped={props.serverScoped} />
-                </Dynamic>
-              </Show>
-            </LayoutTransitionGate>
+            <Show when={useSettings().general.newLayoutDesigns().toString()} keyed>
+              <Dynamic
+                component={props.router ?? Router}
+                root={(routerProps) => (
+                  <TabsProvider>
+                    <NotificationProvider>
+                      <ServerShell>
+                        <Show when={useSettings().general.newLayoutDesigns()} fallback={routerProps.children}>
+                          <NewAppLayout serverScoped={props.serverScoped}>{routerProps.children}</NewAppLayout>
+                        </Show>
+                      </ServerShell>
+                    </NotificationProvider>
+                  </TabsProvider>
+                )}
+              >
+                <Routes serverScoped={props.serverScoped} />
+              </Dynamic>
+            </Show>
           </ConnectionGate>
         </SettingsProvider>
       </GlobalProvider>
