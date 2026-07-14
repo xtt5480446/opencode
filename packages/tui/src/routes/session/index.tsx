@@ -2350,14 +2350,16 @@ function Shell(props: ToolProps) {
             )
           }
         >
-          <box flexDirection="row" gap={1} minWidth={0} paddingRight={1}>
+          <box flexDirection="row" minWidth={0} paddingRight={1}>
             <Show when={isRunning()}>
               <Spinner color={color()} />
+              <text> </text>
             </Show>
             <text flexShrink={1} wrapMode="none" truncate fg={theme.text}>
               {input()}
             </text>
             <Show when={shellID()}>
+              <text> </text>
               <StatusBadge>Background</StatusBadge>
             </Show>
           </box>
