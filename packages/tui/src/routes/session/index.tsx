@@ -2327,11 +2327,13 @@ function Shell(props: ToolProps) {
   const [expanded, setExpanded] = createSignal(false)
   const maxLines = 10
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
-  const input = createMemo(() => (command() ? `${isRunning() ? "" : "$ "}${command()}` : ""))
-  const content = createMemo(() => [input(), output()].filter(Boolean).join("\n\n"))
-  const collapsed = createMemo(() => collapseToolOutput(content(), maxLines, maxChars()))
+  const input = createMemo(() => {
+    const value = command()?.replace(/\s+/g, " ").trim()
+    return value ? `${isRunning() ? "" : "$ "}${value}` : ""
+  })
+  const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
   const limited = createMemo(() => {
-    if (expanded() || !collapsed().overflow) return content()
+    if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
 
@@ -2348,23 +2350,20 @@ function Shell(props: ToolProps) {
             )
           }
         >
-          <Show
-            when={isRunning()}
-            fallback={
-              <text>
-                <span style={{ fg: theme.text }}>{limited().slice(0, input().length)}</span>
-                <span style={{ fg: theme.textMuted }}>{limited().slice(input().length)}</span>
-              </text>
-            }
-          >
-            <Spinner color={color()}>
-              <span style={{ fg: theme.text }}>{limited().slice(0, input().length)}</span>
-              <span style={{ fg: theme.textMuted }}>{limited().slice(input().length)}</span>
-            </Spinner>
-          </Show>
+          <box flexDirection="row" gap={1} minWidth={0}>
+            <Show when={isRunning()}>
+              <Spinner color={color()} />
+            </Show>
+            <text flexShrink={1} wrapMode="none" truncate fg={theme.text}>
+              {input()}
+            </text>
+            <Show when={shellID()}>
+              <StatusBadge>Background</StatusBadge>
+            </Show>
+          </box>
         </Show>
-        <Show when={shellID()}>
-          <StatusBadge>Background</StatusBadge>
+        <Show when={limited()}>
+          <text fg={theme.textMuted}>{limited()}</text>
         </Show>
         <Show when={collapsed().overflow}>
           <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
