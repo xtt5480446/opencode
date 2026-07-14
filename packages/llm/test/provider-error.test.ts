@@ -25,6 +25,19 @@ describe("provider error classification", () => {
     })
   })
 
+  test("keeps 5xx safety failures retryable", () => {
+    expect(
+      classifyApiFailure({
+        message: "Request failed",
+        status: 500,
+        http: new HttpContext({
+          request: new HttpRequestDetails({ method: "POST", url: "https://provider.test", headers: {} }),
+          body: "Internal safety check failed",
+        }),
+      }),
+    ).toMatchObject({ _tag: "LLM.ServerError" })
+  })
+
   test("retains the Cerebras no-body overflow heuristic", () => {
     expect(classifyApiFailure({ message: "413 status code (no body)", status: 413 })).toMatchObject({
       _tag: "LLM.ContextOverflow",

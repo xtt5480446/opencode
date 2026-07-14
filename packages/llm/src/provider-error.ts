@@ -131,7 +131,7 @@ export const classifyApiFailure = (input: ApiFailure): LLMError => {
   )
     return new ContextOverflow(common)
   if (input.status === 408) return new TimeoutError({ message: input.message, http: input.http })
-  if (CONTENT_POLICY_TEXT.test(text)) return new ContentPolicy(common)
+  if (clientScoped && CONTENT_POLICY_TEXT.test(text)) return new ContentPolicy(common)
   if (normalizedCodes.some((code) => QUOTA_CODES.has(code)) || (input.status === 429 && QUOTA_TEXT.test(text)))
     return new QuotaExceeded(common)
   if (input.status === 401 || normalizedCodes.includes("authentication_error")) return new Authentication(common)
