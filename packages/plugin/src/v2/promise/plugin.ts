@@ -28,9 +28,11 @@ export interface Context {
   readonly websearch: WebSearchDomain
 }
 
+export type Cleanup = () => Promise<void> | void
+
 export interface Plugin {
   readonly id: string
-  readonly setup: (context: Context) => Promise<void> | void
+  readonly setup: (context: Context) => Promise<Cleanup | void> | Cleanup | void
 }
 
 export function define(plugin: Plugin) {

@@ -32,6 +32,15 @@ export type Options = {
   readonly command?: ReadonlyArray<string>
 }
 
+export type StartReason = "missing" | "version-mismatch"
+
+export type StartOptions = Options & {
+  // Called once when start() decides it must spawn: either no service was
+  // found, or a healthy service with a different version is being replaced.
+  // `existing` carries the registration of the service being replaced.
+  readonly onStart?: (reason: StartReason, existing?: Info) => void
+}
+
 // Read-only lookup: registration file plus health check and version gate.
 // Never spawns; escalation to start() is the caller's policy.
 export const discover = Effect.fn("service.discover")(function* (options: Options = {}) {
@@ -47,11 +56,14 @@ const discoverLocal = Effect.fnUntraced(function* (options: Options) {
 
 // Idempotent ensure-running: reuses a healthy compatible server, replaces a
 // version-mismatched one, and otherwise spawns the service command detached.
-export const start = Effect.fn("service.start")(function* (options: Options = {}) {
+export const start = Effect.fn("service.start")(function* (options: StartOptions = {}) {
   const compatible = yield* discover(options)
   if (compatible !== undefined) return compatible
-  const mismatched = yield* find(options)
-  if (mismatched !== undefined) yield* kill(mismatched.info, options).pipe(Effect.ignore)
+  const existing = yield* find(options)
+  if (existing?.version !== undefined && (options.version === undefined || existing.version === options.version))
+    return existing.endpoint
+  yield* Effect.sync(() => options.onStart?.(existing === undefined ? "missing" : "version-mismatch", existing?.info))
+  if (existing !== undefined) yield* kill(existing.info, options).pipe(Effect.ignore)
 
   const [command, ...args] = options.command ?? ["opencode", "serve", "--service"]
   if (command === undefined) return yield* Effect.fail(new Error("Missing service command"))
@@ -126,6 +138,7 @@ const read = Effect.fnUntraced(function* (file?: string) {
 type LocalService = {
   readonly info: Info
   readonly endpoint: Endpoint
+  readonly version?: string
 }
 
 const probe = Effect.fnUntraced(function* (info: Info, version?: string, allowLegacy = false) {
@@ -149,7 +162,7 @@ const probe = Effect.fnUntraced(function* (info: Info, version?: string, allowLe
     if (health.value.pid !== info.pid) return undefined
     if (info.version !== undefined && health.value.version !== info.version) return undefined
     if (version !== undefined && health.value.version !== version) return undefined
-    return { info, endpoint } satisfies LocalService
+    return { info, endpoint, version: health.value.version } satisfies LocalService
   }
   if (
     !allowLegacy ||

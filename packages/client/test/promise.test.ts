@@ -16,7 +16,7 @@ test("exposes every standard HTTP API group", () => {
     "generate",
     "provider",
     "integration",
-    "server.mcp",
+    "mcp",
     "credential",
     "project",
     "form",
@@ -138,7 +138,7 @@ test("MCP resource catalog uses the public HTTP contract", async () => {
     },
   })
 
-  const result = await client["server.mcp"].resource.catalog({ location: { directory: "/tmp/project" } })
+  const result = await client.mcp.resource.catalog({ location: { directory: "/tmp/project" } })
 
   expect(result.data.resources[0]?.uri).toBe("docs://readme")
   expect(request?.method).toBe("GET")
@@ -288,6 +288,34 @@ test("session instructions methods use the public HTTP contract", async () => {
   ])
 })
 
+test("session.pending.list uses the public HTTP contract", async () => {
+  const requests: Array<{ method: string; url: string }> = []
+  const pending = [
+    {
+      admittedSeq: 3,
+      id: "msg_pending",
+      sessionID: "ses_test",
+      timeCreated: 1_717_171_717_000,
+      type: "user",
+      data: { text: "Fix the failing tests" },
+      delivery: "steer",
+    },
+  ]
+  const client = OpenCode.make({
+    baseUrl: "http://localhost:3000",
+    fetch: async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init)
+      requests.push({ method: request.method, url: request.url })
+      return Response.json({ data: pending })
+    },
+  })
+
+  const result = await client.session.pending.list({ sessionID: "ses_test" })
+
+  expect(result).toEqual(pending)
+  expect(requests).toEqual([{ method: "GET", url: "http://localhost:3000/api/session/ses_test/pending" }])
+})
+
 test("event.subscribe exposes the Promise event stream wire projection", async () => {
   const client = OpenCode.make({
     baseUrl: "http://localhost:3000",
@@ -314,6 +342,43 @@ test("event.subscribe terminates on malformed Promise SSE data", async () => {
   await expect(client.event.subscribe()[Symbol.asyncIterator]().next()).rejects.toMatchObject({
     name: "ClientError",
     reason: "MalformedResponse",
+  })
+})
+
+test("event.subscribe accepts a fragmented SSE event below the size limit", async () => {
+  const event = { id: "evt_large", type: "test.large", data: { output: "x".repeat(12 * 1024 * 1024) } }
+  const encoded = new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`)
+  const client = OpenCode.make({
+    baseUrl: "http://localhost:3000",
+    fetch: async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            for (let offset = 0; offset < encoded.length; offset += 64 * 1024) {
+              controller.enqueue(encoded.slice(offset, offset + 64 * 1024))
+            }
+            controller.close()
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+  })
+
+  await expect(client.event.subscribe()[Symbol.asyncIterator]().next()).resolves.toEqual({ done: false, value: event })
+})
+
+test("event.subscribe rejects an SSE event above the size limit", async () => {
+  const client = OpenCode.make({
+    baseUrl: "http://localhost:3000",
+    fetch: async () =>
+      new Response(`data: ${JSON.stringify({ output: "x".repeat(16 * 1024 * 1024) })}`, {
+        headers: { "content-type": "text/event-stream" },
+      }),
+  })
+
+  await expect(client.event.subscribe()[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+    name: "ClientError",
+    reason: "SseEventTooLarge",
   })
 })
 

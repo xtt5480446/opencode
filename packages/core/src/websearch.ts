@@ -149,7 +149,6 @@ const layer = Layer.effect(
           sessionID,
           title: "Choose a web search provider",
           metadata: { kind: "websearch.provider" },
-          mode: "form",
           fields: [
             {
               key: "provider",

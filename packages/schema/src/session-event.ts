@@ -14,12 +14,13 @@ import { SessionMessage } from "./session-message.js"
 import { Revert } from "./session-revert.js"
 import { Shell as ShellSchema } from "./shell.js"
 import { SessionError } from "./session-error.js"
+import { Instruction } from "./instruction.js"
 import { Agent } from "./agent.js"
 import { Skill as SkillSchema } from "./skill.js"
 import { Money } from "./money.js"
 import { Snapshot } from "./snapshot.js"
 import { TokenUsage } from "./token-usage.js"
-import { SessionInput } from "./session-input.js"
+import { SessionPending } from "./session-pending.js"
 
 export { FileAttachment }
 
@@ -105,10 +106,14 @@ export type Deleted = typeof Deleted.Type
 
 export const Forked = Event.durable({
   type: "session.forked",
-  ...options,
+  durable: {
+    aggregate: "sessionID",
+    version: 2,
+  },
   schema: {
     ...Base,
     parentID: SessionID,
+    parentSeq: Schema.Int.check(Schema.isGreaterThanOrEqualTo(-1)),
     from: SessionMessage.ID.pipe(optional),
   },
 })
@@ -130,7 +135,7 @@ export const InputAdmitted = Event.durable({
   schema: {
     ...Base,
     inputID: SessionMessage.ID,
-    input: SessionInput.Message,
+    input: SessionPending.Message,
   },
 })
 export type InputAdmitted = typeof InputAdmitted.Type
@@ -159,10 +164,13 @@ export namespace Execution {
 
 export const InstructionsUpdated = Event.durable({
   type: "session.instructions.updated",
-  ...options,
+  durable: {
+    aggregate: "sessionID",
+    version: 2,
+  },
   schema: {
     ...Base,
-    text: Schema.String,
+    delta: Instruction.Delta,
   },
 })
 export type InstructionsUpdated = typeof InstructionsUpdated.Type

@@ -54,12 +54,6 @@ const PluginModule = Schema.Struct({
   ]),
 })
 
-const PluginPackage = Schema.Struct({
-  exports: Schema.optional(Schema.Unknown),
-  main: Schema.optional(Schema.String),
-  module: Schema.optional(Schema.String),
-})
-
 type Operation =
   | {
       readonly type: "add"
@@ -71,23 +65,6 @@ type Operation =
       readonly type: "remove"
       readonly target: string
     }
-
-type Candidate =
-  | {
-      readonly type: "definition"
-      readonly definition: Plugin
-    }
-  | {
-      readonly type: "package"
-      readonly specifier: string
-      readonly options: Record<string, unknown>
-      readonly mtime?: number
-    }
-
-type ConfiguredPackage = {
-  readonly operation: Extract<Operation, { type: "add" }>
-  enabled: boolean
-}
 
 function parse(input: ConfigPlugin.Plugin): Operation {
   if (typeof input !== "string") {
@@ -109,13 +86,14 @@ const scan = Effect.fn("PluginSupervisor.scan")(function* (entries: readonly Con
     .filter((entry): entry is Config.Document => entry.type === "document")
     .flatMap((entry) =>
       (entry.info.plugins ?? []).map(parse).map((operation) => {
+        if (operation.type === "remove") return operation
         const directory = entry.path ? path.dirname(entry.path) : location.directory
         const target = operation.target.startsWith("file://")
           ? fileURLToPath(operation.target)
           : operation.target.startsWith("./") || operation.target.startsWith("../")
             ? path.resolve(directory, operation.target)
             : operation.target
-        return operation.type === "add" ? { ...operation, target } : { type: "remove" as const, target }
+        return { ...operation, target }
       }),
     )
   // Explicit config is applied last so it can remove auto-discovered packages.
@@ -132,95 +110,71 @@ const scan = Effect.fn("PluginSupervisor.scan")(function* (entries: readonly Con
 })
 
 const resolve = Effect.fn("PluginSupervisor.resolve")(function* (
-  pre: readonly Plugin[],
-  post: readonly Plugin[],
+  pre: readonly PluginV2.Versioned[],
+  post: readonly PluginV2.Versioned[],
   operations: readonly Operation[],
 ) {
-  const plan = apply(pre, post, operations)
-  return yield* load(plan)
-})
-
-function apply(pre: readonly Plugin[], post: readonly Plugin[], operations: readonly Operation[]) {
   const matches = (selector: string, target: string) =>
     selector === "*" || (selector.endsWith(".*") ? target.startsWith(selector.slice(0, -1)) : selector === target)
-  const plugins = [...pre, ...post]
-  const enabled = new Set(plugins.map((plugin) => plugin.id))
-  const packages = new Map<string, ConfiguredPackage>()
+  const definitions = [...pre, ...post]
+  const enabled = new Set(definitions.map((plugin) => plugin.id))
+  const packages = new Map<string, PluginV2.Versioned>()
+  const plugins = () => [...definitions, ...packages.values()]
 
   for (const operation of operations) {
     if (operation.type === "remove") {
-      plugins.filter((plugin) => matches(operation.target, plugin.id)).forEach((plugin) => enabled.delete(plugin.id))
-      packages.forEach((item, target) => {
-        if (matches(operation.target, target)) item.enabled = false
-      })
+      plugins()
+        .filter((plugin) => matches(operation.target, plugin.id))
+        .forEach((plugin) => enabled.delete(plugin.id))
       continue
     }
 
-    const matched = plugins.filter((plugin) => matches(operation.target, plugin.id))
-    const selectsDefinitions =
+    const matched = plugins().filter((plugin) => matches(operation.target, plugin.id))
+    const selectsPlugins =
       matched.length > 0 ||
       operation.target === "*" ||
       operation.target.endsWith(".*") ||
       operation.target.startsWith("opencode.")
-    if (selectsDefinitions) {
+    if (selectsPlugins) {
       matched.forEach((plugin) => enabled.add(plugin.id))
-      packages.forEach((item, target) => {
-        if (matches(operation.target, target)) item.enabled = true
-      })
       continue
     }
 
-    packages.set(operation.target, { operation, enabled: true })
+    const plugin = yield* load(operation).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+    if (!plugin) continue
+    const previous = packages.get(operation.target)
+    if (previous) enabled.delete(previous.id)
+    packages.set(operation.target, plugin)
+    enabled.add(plugin.id)
   }
 
-  const definitions: Candidate[] = pre.flatMap((definition) =>
-    enabled.has(definition.id) ? [{ type: "definition", definition }] : [],
-  )
-  const configured: Candidate[] = Array.from(packages.values()).flatMap((item) =>
-    item.enabled
-      ? [
-          {
-            type: "package",
-            specifier: item.operation.target,
-            options: item.operation.options,
-            ...(item.operation.mtime === undefined ? {} : { mtime: item.operation.mtime }),
-          },
-        ]
-      : [],
-  )
-  const posts: Candidate[] = post.flatMap((definition) =>
-    enabled.has(definition.id) ? [{ type: "definition", definition }] : [],
-  )
-  return [...definitions, ...configured, ...posts]
-}
+  return [
+    ...pre.filter((plugin) => enabled.has(plugin.id)),
+    ...Array.from(packages.values()).filter((plugin) => enabled.has(plugin.id)),
+    ...post.filter((plugin) => enabled.has(plugin.id)),
+  ]
+})
 
-const load = Effect.fn("PluginSupervisor.load")(function* (plan: readonly Candidate[]) {
-  return yield* Effect.forEach(plan, (candidate) => {
-    if (candidate.type === "definition") return Effect.succeed({ plugin: candidate.definition })
-    return Effect.gen(function* () {
-      const npm = yield* Npm.Service
-      const entrypoint = path.isAbsolute(candidate.specifier)
-        ? pathToFileURL(candidate.specifier).href
-        : (yield* npm.add(candidate.specifier)).entrypoint
-      if (!entrypoint) return
-      // Bun currently ignores query parameters when caching file:// imports.
-      const source =
-        candidate.mtime === undefined
-          ? entrypoint
-          : `${candidate.specifier.replaceAll("\\", "/")}?mtime=${candidate.mtime}`
-      yield* Effect.log({ msg: "loading plugin", id: candidate.specifier, entrypoint: source })
-      const mod = yield* Effect.promise(() => import(source))
-      const value = (yield* Schema.decodeUnknownEffect(PluginModule)(mod)).default
-      const plugin = "effect" in value ? value : PluginPromise.fromPromise(value)
-      return {
-        plugin: {
-          id: plugin.id,
-          effect: (host) => plugin.effect({ ...host, options: candidate.options }),
-        } satisfies Plugin,
-        ...(candidate.mtime === undefined ? {} : { version: String(candidate.mtime) }),
-      }
-    }).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
-  }).pipe(Effect.map((plugins) => plugins.filter((plugin) => plugin !== undefined)))
+const load = Effect.fn("PluginSupervisor.load")(function* (operation: Extract<Operation, { type: "add" }>) {
+  const npm = yield* Npm.Service
+  const entrypoint = path.isAbsolute(operation.target)
+    ? pathToFileURL(operation.target).href
+    : (yield* npm.add(operation.target, { subpaths: ["server", ""] })).entrypoint
+  if (!entrypoint) return
+  // Bun currently ignores query parameters when caching file:// imports.
+  const source =
+    operation.mtime === undefined
+      ? entrypoint
+      : `${operation.target.replaceAll("\\", "/")}?mtime=${operation.mtime}`
+  yield* Effect.log({ msg: "loading plugin", id: operation.target, entrypoint: source })
+  const mod = yield* Effect.promise(() => import(source))
+  const value = (yield* Schema.decodeUnknownEffect(PluginModule)(mod)).default
+  const plugin = "effect" in value ? value : PluginPromise.fromPromise(value)
+  return {
+    id: plugin.id,
+    version: JSON.stringify(operation),
+    effect: (host) => plugin.effect({ ...host, options: operation.options }),
+  } satisfies PluginV2.Versioned
 })
 
 function discoverDirectory(fs: FSUtil.Interface, directory: string) {
@@ -234,39 +188,9 @@ function discoverDirectory(fs: FSUtil.Interface, directory: string) {
         symlink: true,
       })
       .pipe(Effect.orElseSucceed(() => []))
-    const directories = yield* fs
-      .glob("{plugin,plugins}/*", {
-        cwd: directory,
-        absolute: true,
-        include: "all",
-        dot: true,
-        symlink: true,
-      })
-      .pipe(
-        Effect.flatMap((items) => Effect.filter(items, (item) => fs.isDir(item), { concurrency: "unbounded" })),
-        Effect.orElseSucceed(() => []),
-      )
-    const packages = yield* Effect.forEach(directories.sort(), (directory) => resolvePackageEntrypoint(fs, directory), {
-      concurrency: "unbounded",
-    }).pipe(Effect.map((items) => items.filter((item): item is string => item !== undefined)))
-    return [...files.sort(), ...packages].map((target): Operation => ({ type: "add", target, options: {} }))
+    return files.sort().map((target): Operation => ({ type: "add", target, options: {} }))
   })
 }
-
-const resolvePackageEntrypoint = Effect.fnUntraced(function* (fs: FSUtil.Interface, directory: string) {
-  const pkg = yield* fs.readJson(path.join(directory, "package.json")).pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(PluginPackage)),
-    Effect.catch(() => Effect.succeed(undefined)),
-  )
-  const exported = typeof pkg?.exports === "string" ? pkg.exports : undefined
-  const entries = [exported, pkg?.module, pkg?.main, "index.ts", "index.js"]
-
-  return yield* Effect.forEach(entries, (entry) => {
-    if (!entry) return Effect.succeed(undefined)
-    const file = path.resolve(directory, entry)
-    return fs.isFile(file).pipe(Effect.map((exists) => (exists ? file : undefined)))
-  }).pipe(Effect.map((items) => items.find((item): item is string => item !== undefined)))
-})
 
 export interface Interface {
   /** Wait for the initial plugin generation and startup updates to settle. */
@@ -294,10 +218,11 @@ const layer = Layer.effect(
           // Resolve OpenCode's internal plugins with their privileged Location services.
           const internal = yield* PluginInternal.list()
           // Combine internal plugins with host-contributed SDK plugins in boot order.
-          const pre = [...internal.pre, ...sdk.all()]
+          const pre = [...internal.pre.map((plugin) => ({ ...plugin, version: "internal" })), ...sdk.all()]
+          const post = internal.post.map((plugin) => ({ ...plugin, version: "internal" }))
           const operations = yield* scan(yield* config.entries())
           // Apply config operations and load enabled package plugins into one ordered generation.
-          const plugins = yield* resolve(pre, internal.post, operations)
+          const plugins = yield* resolve(pre, post, operations)
           // Replace the active generation in one scoped, batched activation.
           yield* registry.activate(plugins)
           applied = target

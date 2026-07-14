@@ -227,6 +227,7 @@ const layer = Layer.effect(
     const scope = yield* Scope.Scope
     const attempts = SynchronizedRef.makeUnsafe(new Map<AttemptID, AttemptEntry>())
     const state = State.create<Data, Draft>({
+      name: "integration",
       initial: () => ({ integrations: new Map<ID, Entry>() }),
       draft: (draft) => ({
         list: () => Array.from(draft.integrations.values(), (entry) => entry.ref) as Ref[],
@@ -302,7 +303,7 @@ const layer = Layer.effect(
     }
 
     const project = (entry: Entry, connections: IntegrationConnection.Info[]) =>
-      new Info({
+      Info.make({
         id: entry.ref.id,
         name: entry.ref.name,
         methods: entry.methods,

@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "8c1748cc-f978-4df4-879d-fe7fda5c4c34",
+  "id": "5f0a1db8-d4bf-42c3-becb-96b46fe66bed",
   "prevIds": [
-    "beb91b32-23e2-405f-99b8-1e8763db94f8"
+    "666138ef-82cb-4a9a-a765-e6669a436ff3"
   ],
   "ddl": [
     {
@@ -51,11 +51,15 @@
       "entityType": "tables"
     },
     {
-      "name": "instruction_checkpoint",
+      "name": "instruction_blob",
       "entityType": "tables"
     },
     {
       "name": "instruction_entry",
+      "entityType": "tables"
+    },
+    {
+      "name": "instruction_state",
       "entityType": "tables"
     },
     {
@@ -67,11 +71,11 @@
       "entityType": "tables"
     },
     {
-      "name": "session_input",
+      "name": "session_message",
       "entityType": "tables"
     },
     {
-      "name": "session_message",
+      "name": "session_pending",
       "entityType": "tables"
     },
     {
@@ -788,39 +792,19 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
-      "name": "session_id",
+      "name": "hash",
       "entityType": "columns",
-      "table": "instruction_checkpoint"
+      "table": "instruction_blob"
     },
     {
       "type": "text",
-      "notNull": true,
+      "notNull": false,
       "autoincrement": false,
       "default": null,
       "generated": null,
-      "name": "baseline",
+      "name": "value",
       "entityType": "columns",
-      "table": "instruction_checkpoint"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "snapshot",
-      "entityType": "columns",
-      "table": "instruction_checkpoint"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "baseline_seq",
-      "entityType": "columns",
-      "table": "instruction_checkpoint"
+      "table": "instruction_blob"
     },
     {
       "type": "text",
@@ -844,11 +828,21 @@
     },
     {
       "type": "text",
-      "notNull": true,
+      "notNull": false,
       "autoincrement": false,
       "default": null,
       "generated": null,
       "name": "value",
+      "entityType": "columns",
+      "table": "instruction_entry"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "removed",
       "entityType": "columns",
       "table": "instruction_entry"
     },
@@ -871,6 +865,56 @@
       "name": "time_updated",
       "entityType": "columns",
       "table": "instruction_entry"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "instruction_state"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "epoch_start",
+      "entityType": "columns",
+      "table": "instruction_state"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "through_seq",
+      "entityType": "columns",
+      "table": "instruction_state"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "initial_values",
+      "entityType": "columns",
+      "table": "instruction_state"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "current_values",
+      "entityType": "columns",
+      "table": "instruction_state"
     },
     {
       "type": "text",
@@ -990,86 +1034,6 @@
       "generated": null,
       "name": "id",
       "entityType": "columns",
-      "table": "session_input"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "session_id",
-      "entityType": "columns",
-      "table": "session_input"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "type",
-      "entityType": "columns",
-      "table": "session_input"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "data",
-      "entityType": "columns",
-      "table": "session_input"
-    },
-    {
-      "type": "text",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "delivery",
-      "entityType": "columns",
-      "table": "session_input"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "admitted_seq",
-      "entityType": "columns",
-      "table": "session_input"
-    },
-    {
-      "type": "integer",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "promoted_seq",
-      "entityType": "columns",
-      "table": "session_input"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "time_created",
-      "entityType": "columns",
-      "table": "session_input"
-    },
-    {
-      "type": "text",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "id",
-      "entityType": "columns",
       "table": "session_message"
     },
     {
@@ -1140,6 +1104,76 @@
       "generated": null,
       "name": "id",
       "entityType": "columns",
+      "table": "session_pending"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "session_pending"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "type",
+      "entityType": "columns",
+      "table": "session_pending"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "data",
+      "entityType": "columns",
+      "table": "session_pending"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery",
+      "entityType": "columns",
+      "table": "session_pending"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "admitted_seq",
+      "entityType": "columns",
+      "table": "session_pending"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "session_pending"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
       "table": "session"
     },
     {
@@ -1189,6 +1223,16 @@
       "default": null,
       "generated": null,
       "name": "fork_message_id",
+      "entityType": "columns",
+      "table": "session"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "fork_seq",
       "entityType": "columns",
       "table": "session"
     },
@@ -1443,6 +1487,16 @@
       "table": "session"
     },
     {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_suspended",
+      "entityType": "columns",
+      "table": "session"
+    },
+    {
       "type": "text",
       "notNull": false,
       "autoincrement": false,
@@ -1588,9 +1642,9 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "nameExplicit": false,
-      "name": "fk_instruction_checkpoint_session_id_session_id_fk",
+      "name": "fk_instruction_entry_session_id_session_id_fk",
       "entityType": "fks",
-      "table": "instruction_checkpoint"
+      "table": "instruction_entry"
     },
     {
       "columns": [
@@ -1603,9 +1657,9 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "nameExplicit": false,
-      "name": "fk_instruction_entry_session_id_session_id_fk",
+      "name": "fk_instruction_state_session_id_session_id_fk",
       "entityType": "fks",
-      "table": "instruction_entry"
+      "table": "instruction_state"
     },
     {
       "columns": [
@@ -1648,9 +1702,9 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "nameExplicit": false,
-      "name": "fk_session_input_session_id_session_id_fk",
+      "name": "fk_session_message_session_id_session_id_fk",
       "entityType": "fks",
-      "table": "session_input"
+      "table": "session_message"
     },
     {
       "columns": [
@@ -1663,9 +1717,9 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "nameExplicit": false,
-      "name": "fk_session_message_session_id_session_id_fk",
+      "name": "fk_session_input_session_id_session_id_fk",
       "entityType": "fks",
-      "table": "session_message"
+      "table": "session_pending"
     },
     {
       "columns": [
@@ -1810,11 +1864,20 @@
     },
     {
       "columns": [
+        "hash"
+      ],
+      "nameExplicit": false,
+      "name": "instruction_blob_pk",
+      "table": "instruction_blob",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "session_id"
       ],
       "nameExplicit": false,
-      "name": "instruction_checkpoint_pk",
-      "table": "instruction_checkpoint",
+      "name": "instruction_state_pk",
+      "table": "instruction_state",
       "entityType": "pks"
     },
     {
@@ -1840,8 +1903,8 @@
         "id"
       ],
       "nameExplicit": false,
-      "name": "session_input_pk",
-      "table": "session_input",
+      "name": "session_message_pk",
+      "table": "session_message",
       "entityType": "pks"
     },
     {
@@ -1849,8 +1912,8 @@
         "id"
       ],
       "nameExplicit": false,
-      "name": "session_message_pk",
-      "table": "session_message",
+      "name": "session_input_pk",
+      "table": "session_pending",
       "entityType": "pks"
     },
     {
@@ -1994,82 +2057,6 @@
           "isExpression": false
         },
         {
-          "value": "promoted_seq",
-          "isExpression": false
-        },
-        {
-          "value": "delivery",
-          "isExpression": false
-        },
-        {
-          "value": "admitted_seq",
-          "isExpression": false
-        }
-      ],
-      "isUnique": false,
-      "where": null,
-      "origin": "manual",
-      "name": "session_input_session_pending_delivery_seq_idx",
-      "entityType": "indexes",
-      "table": "session_input"
-    },
-    {
-      "columns": [
-        {
-          "value": "session_id",
-          "isExpression": false
-        }
-      ],
-      "isUnique": true,
-      "where": "\"session_input\".\"type\" = 'compaction' and \"session_input\".\"promoted_seq\" is null",
-      "origin": "manual",
-      "name": "session_input_session_pending_compaction_idx",
-      "entityType": "indexes",
-      "table": "session_input"
-    },
-    {
-      "columns": [
-        {
-          "value": "session_id",
-          "isExpression": false
-        },
-        {
-          "value": "admitted_seq",
-          "isExpression": false
-        }
-      ],
-      "isUnique": true,
-      "where": null,
-      "origin": "manual",
-      "name": "session_input_session_admitted_seq_idx",
-      "entityType": "indexes",
-      "table": "session_input"
-    },
-    {
-      "columns": [
-        {
-          "value": "session_id",
-          "isExpression": false
-        },
-        {
-          "value": "promoted_seq",
-          "isExpression": false
-        }
-      ],
-      "isUnique": true,
-      "where": null,
-      "origin": "manual",
-      "name": "session_input_session_promoted_seq_idx",
-      "entityType": "indexes",
-      "table": "session_input"
-    },
-    {
-      "columns": [
-        {
-          "value": "session_id",
-          "isExpression": false
-        },
-        {
           "value": "seq",
           "isExpression": false
         }
@@ -2142,6 +2129,60 @@
     {
       "columns": [
         {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "delivery",
+          "isExpression": false
+        },
+        {
+          "value": "admitted_seq",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "session_pending_session_delivery_seq_idx",
+      "entityType": "indexes",
+      "table": "session_pending"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": "\"session_pending\".\"type\" = 'compaction'",
+      "origin": "manual",
+      "name": "session_pending_session_compaction_idx",
+      "entityType": "indexes",
+      "table": "session_pending"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "admitted_seq",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "session_pending_session_admitted_seq_idx",
+      "entityType": "indexes",
+      "table": "session_pending"
+    },
+    {
+      "columns": [
+        {
           "value": "project_id",
           "isExpression": false
         }
@@ -2178,6 +2219,20 @@
       "where": null,
       "origin": "manual",
       "name": "session_parent_idx",
+      "entityType": "indexes",
+      "table": "session"
+    },
+    {
+      "columns": [
+        {
+          "value": "time_suspended",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": "\"session\".\"time_suspended\" is not null",
+      "origin": "manual",
+      "name": "session_time_suspended_idx",
       "entityType": "indexes",
       "table": "session"
     }

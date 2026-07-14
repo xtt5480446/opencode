@@ -55,6 +55,7 @@ export const groupNames = {
   "server.event": "event",
   "server.pty": "pty",
   "server.shell": "shell",
+  "server.mcp": "mcp",
   "server.question": "question",
   "server.reference": "reference",
   "server.project": "project",

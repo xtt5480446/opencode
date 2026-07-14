@@ -599,24 +599,6 @@ export type Part =
   | RetryPart
   | CompactionPart
 
-export type Shell = {
-  id: string
-  status: "running" | "exited" | "timeout" | "killed"
-  command: string
-  cwd: string
-  shell: string
-  file: string
-  pid?: number
-  exit?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-  metadata: {
-    [key: string]: unknown
-  }
-  time: {
-    started: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-    completed?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-  }
-}
-
 export type Pty = {
   id: string
   title: string
@@ -830,6 +812,7 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           parentID: string
+          parentSeq: number
           from?: string
         }
       }
@@ -847,7 +830,7 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           inputID: string
-          input: SessionInputMessage
+          input: SessionPendingMessage
         }
       }
     | {
@@ -885,7 +868,9 @@ export type GlobalEvent = {
         type: "session.instructions.updated"
         properties: {
           sessionID: string
-          text: string
+          delta: {
+            [key: string]: string | "removed"
+          }
         }
       }
     | {
@@ -915,7 +900,7 @@ export type GlobalEvent = {
         type: "session.shell.started"
         properties: {
           sessionID: string
-          shell: Shell
+          shell: ShellInfo
         }
       }
     | {
@@ -923,7 +908,7 @@ export type GlobalEvent = {
         type: "session.shell.ended"
         properties: {
           sessionID: string
-          shell: Shell
+          shell: ShellInfo
           output: {
             output: string
             cursor: number
@@ -1356,7 +1341,7 @@ export type GlobalEvent = {
         id: string
         type: "shell.created"
         properties: {
-          info: Shell
+          info: ShellInfo
         }
       }
     | {
@@ -1364,7 +1349,7 @@ export type GlobalEvent = {
         type: "shell.exited"
         properties: {
           id: string
-          exit?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          exit?: number
           status: "running" | "exited" | "timeout" | "killed"
         }
       }
@@ -1409,7 +1394,7 @@ export type GlobalEvent = {
         id: string
         type: "form.created"
         properties: {
-          form: FormFormInfo | FormUrlInfo
+          form: FormInfo
         }
       }
     | {
@@ -2888,22 +2873,11 @@ export type UnknownError1 = {
   ref?: string
 }
 
-export type Shell1 = {
-  id: string
-  status: "running" | "exited" | "timeout" | "killed"
-  command: string
-  cwd: string
-  shell: string
-  file: string
-  pid?: number
-  exit?: number | "NaN" | "Infinity" | "-Infinity"
-  metadata: {
-    [key: string]: unknown
-  }
-  time: {
-    started: number | "NaN" | "Infinity" | "-Infinity"
-    completed?: number | "NaN" | "Infinity" | "-Infinity"
-  }
+export type InstructionEntryValueTooLargeError = {
+  _tag: "InstructionEntryValueTooLargeError"
+  actualBytes: number
+  maxBytes: number
+  message: string
 }
 
 export type SessionLogItem = SessionEventDurable | EventLogSynced
@@ -3153,24 +3127,6 @@ export type EffectHttpApiErrorForbidden = {
   _tag: "Forbidden"
 }
 
-export type Shell2 = {
-  id: string
-  status: "running" | "exited" | "timeout" | "killed"
-  command: string
-  cwd: string
-  shell: string
-  file: string
-  pid?: number
-  exit?: number | "NaN" | "Infinity" | "-Infinity"
-  metadata: {
-    [key: string]: unknown
-  }
-  time: {
-    started: number | "NaN" | "Infinity" | "-Infinity"
-    completed?: number | "NaN" | "Infinity" | "-Infinity"
-  }
-}
-
 export type EventTuiPromptAppend2 = {
   id: string
   type: "tui.prompt.append"
@@ -3361,7 +3317,7 @@ export type PromptAgentAttachment = {
   mention?: PromptMention
 }
 
-export type SessionInputUserData = {
+export type SessionPendingUserData = {
   text: string
   files?: Array<PromptFileAttachment>
   agents?: Array<PromptAgentAttachment>
@@ -3370,13 +3326,13 @@ export type SessionInputUserData = {
   }
 }
 
-export type SessionInputUserMessage = {
+export type SessionPendingUserMessage = {
   type: "user"
-  data: SessionInputUserData
+  data: SessionPendingUserData
   delivery: "steer" | "queue"
 }
 
-export type SessionInputSyntheticData = {
+export type SessionPendingSyntheticData = {
   text: string
   description?: string
   metadata?: {
@@ -3384,17 +3340,35 @@ export type SessionInputSyntheticData = {
   }
 }
 
-export type SessionInputSyntheticMessage = {
+export type SessionPendingSyntheticMessage = {
   type: "synthetic"
-  data: SessionInputSyntheticData
+  data: SessionPendingSyntheticData
   delivery: "steer" | "queue"
 }
 
-export type SessionInputMessage = SessionInputUserMessage | SessionInputSyntheticMessage
+export type SessionPendingMessage = SessionPendingUserMessage | SessionPendingSyntheticMessage
 
 export type SessionStructuredError = {
   type: string
   message: string
+}
+
+export type ShellInfo = {
+  id: string
+  status: "running" | "exited" | "timeout" | "killed"
+  command: string
+  cwd: string
+  shell: string
+  file: string
+  pid?: number
+  exit?: number
+  metadata: {
+    [key: string]: unknown
+  }
+  time: {
+    started: number
+    completed?: number
+  }
 }
 
 export type SessionMessageProviderState = {
@@ -3554,22 +3528,30 @@ export type FormMultiselectField = {
   default?: Array<string>
 }
 
-export type FormFormInfo = {
-  id: string
-  sessionID: string
-  title: string
-  metadata?: FormMetadata
-  mode: "form"
-  fields: Array<FormStringField | FormNumberField | FormIntegerField | FormBooleanField | FormMultiselectField>
+export type FormExternalField = {
+  key: string
+  type: "external"
+  url: string
+  title?: string
+  description?: string
 }
 
-export type FormUrlInfo = {
+export type FormField =
+  | FormStringField
+  | FormNumberField
+  | FormIntegerField
+  | FormBooleanField
+  | FormMultiselectField
+  | FormExternalField
+
+export type FormFields = Array<FormField>
+
+export type FormInfo = {
   id: string
   sessionID: string
   title: string
   metadata?: FormMetadata
-  mode: "url"
-  url: string
+  fields: FormFields
 }
 
 export type FormValue =
@@ -3788,13 +3770,14 @@ export type SyncEventSessionForked = {
   type: "sync"
   id: string
   syncEvent: {
-    type: "session.forked.1"
+    type: "session.forked.2"
     id: string
     seq: number
     aggregateID: string
     data: {
       sessionID: string
       parentID: string
+      parentSeq: number
       from?: string
     }
   }
@@ -3826,7 +3809,7 @@ export type SyncEventSessionInputAdmitted = {
     data: {
       sessionID: string
       inputID: string
-      input: SessionInputMessage
+      input: SessionPendingMessage
     }
   }
 }
@@ -3893,13 +3876,15 @@ export type SyncEventSessionInstructionsUpdated = {
   type: "sync"
   id: string
   syncEvent: {
-    type: "session.instructions.updated.1"
+    type: "session.instructions.updated.2"
     id: string
     seq: number
     aggregateID: string
     data: {
       sessionID: string
-      text: string
+      delta: {
+        [key: string]: string | "removed"
+      }
     }
   }
 }
@@ -3950,7 +3935,7 @@ export type SyncEventSessionShellStarted = {
     aggregateID: string
     data: {
       sessionID: string
-      shell: Shell
+      shell: ShellInfo
     }
   }
 }
@@ -3965,7 +3950,7 @@ export type SyncEventSessionShellEnded = {
     aggregateID: string
     data: {
       sessionID: string
-      shell: Shell
+      shell: ShellInfo
       output: {
         output: string
         cursor: number
@@ -4459,35 +4444,32 @@ export type PromptInputFileAttachment = {
   mention?: PromptMention
 }
 
-export type SessionInputUser = {
+export type SessionPendingUser = {
   admittedSeq: number
   id: string
   sessionID: string
   timeCreated: number
-  promotedSeq?: number
   type: "user"
-  data: SessionInputUserData
+  data: SessionPendingUserData
   delivery: "steer" | "queue"
 }
 
-export type SessionInputSynthetic = {
+export type SessionPendingSynthetic = {
   admittedSeq: number
   id: string
   sessionID: string
   timeCreated: number
-  promotedSeq?: number
   type: "synthetic"
-  data: SessionInputSyntheticData
+  data: SessionPendingSyntheticData
   delivery: "steer" | "queue"
 }
 
-export type SessionInputCompaction = {
+export type SessionPendingCompaction = {
   admittedSeq: number
   id: string
   sessionID: string
   timeCreated: number
   type: "compaction"
-  handledSeq?: number
 }
 
 export type SessionMessageAgentSelected = {
@@ -4756,6 +4738,8 @@ export type SessionMessageInfo =
   | SessionMessageAssistant
   | SessionMessageCompaction
 
+export type SessionPendingInfo = SessionPendingUser | SessionPendingSynthetic | SessionPendingCompaction
+
 export type InstructionEntryKey = string
 
 export type InstructionEntryInfo = {
@@ -4868,12 +4852,13 @@ export type SessionForked = {
   durable: {
     aggregateID: string
     seq: number
-    version: 1
+    version: 2
   }
   location?: LocationRef
   data: {
     sessionID: string
     parentID: string
+    parentSeq: number
     from?: string
   }
 }
@@ -4913,7 +4898,7 @@ export type SessionInputAdmitted = {
   data: {
     sessionID: string
     inputID: string
-    input: SessionInputMessage
+    input: SessionPendingMessage
   }
 }
 
@@ -5001,12 +4986,14 @@ export type SessionInstructionsUpdated = {
   durable: {
     aggregateID: string
     seq: number
-    version: 1
+    version: 2
   }
   location?: LocationRef
   data: {
     sessionID: string
-    text: string
+    delta: {
+      [key: string]: string | "removed"
+    }
   }
 }
 
@@ -5069,7 +5056,7 @@ export type SessionShellStarted = {
   location?: LocationRef
   data: {
     sessionID: string
-    shell: Shell1
+    shell: ShellInfo
   }
 }
 
@@ -5088,7 +5075,7 @@ export type SessionShellEnded = {
   location?: LocationRef
   data: {
     sessionID: string
-    shell: Shell1
+    shell: ShellInfo
     output: {
       output: string
       cursor: number
@@ -5845,9 +5832,7 @@ export type FormCreatePayload = {
   id?: string
   title: string
   metadata?: FormMetadata
-  mode: "form" | "url"
-  fields?: Array<FormStringField | FormNumberField | FormIntegerField | FormBooleanField | FormMultiselectField>
-  url?: string
+  fields: FormFields
 }
 
 export type FormState =
@@ -6449,7 +6434,7 @@ export type ShellCreated = {
   type: "shell.created"
   location?: LocationRef
   data: {
-    info: Shell1
+    info: ShellInfo
   }
 }
 
@@ -6463,7 +6448,7 @@ export type ShellExited = {
   location?: LocationRef
   data: {
     id: string
-    exit?: number | "NaN" | "Infinity" | "-Infinity"
+    exit?: number
     status: "running" | "exited" | "timeout" | "killed"
   }
 }
@@ -6568,7 +6553,7 @@ export type FormCreated = {
   type: "form.created"
   location?: LocationRef
   data: {
-    form: FormFormInfo | FormUrlInfo
+    form: FormInfo
   }
 }
 
@@ -7199,6 +7184,7 @@ export type EventSessionForked = {
   properties: {
     sessionID: string
     parentID: string
+    parentSeq: number
     from?: string
   }
 }
@@ -7218,7 +7204,7 @@ export type EventSessionInputAdmitted = {
   properties: {
     sessionID: string
     inputID: string
-    input: SessionInputMessage
+    input: SessionPendingMessage
   }
 }
 
@@ -7261,7 +7247,9 @@ export type EventSessionInstructionsUpdated = {
   type: "session.instructions.updated"
   properties: {
     sessionID: string
-    text: string
+    delta: {
+      [key: string]: string | "removed"
+    }
   }
 }
 
@@ -7294,7 +7282,7 @@ export type EventSessionShellStarted = {
   type: "session.shell.started"
   properties: {
     sessionID: string
-    shell: Shell2
+    shell: ShellInfo
   }
 }
 
@@ -7303,7 +7291,7 @@ export type EventSessionShellEnded = {
   type: "session.shell.ended"
   properties: {
     sessionID: string
-    shell: Shell2
+    shell: ShellInfo
     output: {
       output: string
       cursor: number
@@ -7781,7 +7769,7 @@ export type EventShellCreated = {
   id: string
   type: "shell.created"
   properties: {
-    info: Shell2
+    info: ShellInfo
   }
 }
 
@@ -7790,7 +7778,7 @@ export type EventShellExited = {
   type: "shell.exited"
   properties: {
     id: string
-    exit?: number | "NaN" | "Infinity" | "-Infinity"
+    exit?: number
     status: "running" | "exited" | "timeout" | "killed"
   }
 }
@@ -7864,7 +7852,7 @@ export type EventFormCreated = {
   id: string
   type: "form.created"
   properties: {
-    form: FormFormInfo | FormUrlInfo
+    form: FormInfo
   }
 }
 
@@ -8194,24 +8182,6 @@ export type UnknownErrorV2 = {
   _tag: "UnknownError"
   message: string
   ref?: string | null
-}
-
-export type ShellV2 = {
-  id: string
-  status: "running" | "exited" | "timeout" | "killed"
-  command: string
-  cwd: string
-  shell: string
-  file: string
-  pid?: number
-  exit?: number | "NaN" | "Infinity" | "-Infinity"
-  metadata: {
-    [key: string]: unknown
-  }
-  time: {
-    started: number | "NaN" | "Infinity" | "-Infinity"
-    completed?: number | "NaN" | "Infinity" | "-Infinity"
-  }
 }
 
 export type SessionMessagesResponseV2 = {
@@ -8820,35 +8790,32 @@ export type SessionInfoV2 = {
 
 export type PromptBase64V2 = string
 
-export type SessionInputUserV2 = {
+export type SessionPendingUserV2 = {
   admittedSeq: number
   id: string
   sessionID: string
   timeCreated: number
-  promotedSeq?: number
   type: "user"
-  data: SessionInputUserData
+  data: SessionPendingUserData
   delivery: "steer" | "queue"
 }
 
-export type SessionInputSyntheticV2 = {
+export type SessionPendingSyntheticV2 = {
   admittedSeq: number
   id: string
   sessionID: string
   timeCreated: number
-  promotedSeq?: number
   type: "synthetic"
-  data: SessionInputSyntheticData
+  data: SessionPendingSyntheticData
   delivery: "steer" | "queue"
 }
 
-export type SessionInputCompactionV2 = {
+export type SessionPendingCompactionV2 = {
   admittedSeq: number
   id: string
   sessionID: string
   timeCreated: number
   type: "compaction"
-  handledSeq?: number
 }
 
 export type SessionMessageAgentSelectedV2 = {
@@ -9136,12 +9103,13 @@ export type SessionForkedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: 1
+    version: 2
   }
   location?: LocationRefV2
   data: {
     sessionID: string
     parentID: string
+    parentSeq: number
     from?: string
   }
 }
@@ -9165,7 +9133,7 @@ export type SessionInputPromotedV2 = {
   }
 }
 
-export type SessionInputUserData1 = {
+export type SessionPendingUserData1 = {
   text: string
   files?: Array<PromptFileAttachment>
   agents?: Array<PromptAgentAttachment>
@@ -9174,13 +9142,13 @@ export type SessionInputUserData1 = {
   }
 }
 
-export type SessionInputUserMessageV2 = {
+export type SessionPendingUserMessageV2 = {
   type: "user"
-  data: SessionInputUserData1
+  data: SessionPendingUserData1
   delivery: "steer" | "queue"
 }
 
-export type SessionInputSyntheticData1 = {
+export type SessionPendingSyntheticData1 = {
   text: string
   description?: string
   metadata?: {
@@ -9188,9 +9156,9 @@ export type SessionInputSyntheticData1 = {
   }
 }
 
-export type SessionInputSyntheticMessageV2 = {
+export type SessionPendingSyntheticMessageV2 = {
   type: "synthetic"
-  data: SessionInputSyntheticData1
+  data: SessionPendingSyntheticData1
   delivery: "steer" | "queue"
 }
 
@@ -9210,7 +9178,7 @@ export type SessionInputAdmittedV2 = {
   data: {
     sessionID: string
     inputID: string
-    input: SessionInputMessage
+    input: SessionPendingMessage
   }
 }
 
@@ -9298,12 +9266,14 @@ export type SessionInstructionsUpdatedV2 = {
   durable: {
     aggregateID: string
     seq: number
-    version: 1
+    version: 2
   }
   location?: LocationRefV2
   data: {
     sessionID: string
-    text: string
+    delta: {
+      [key: string]: string | "removed"
+    }
   }
 }
 
@@ -9351,6 +9321,24 @@ export type SessionSkillActivatedV2 = {
   }
 }
 
+export type ShellInfoV2 = {
+  id: string
+  status: "running" | "exited" | "timeout" | "killed"
+  command: string
+  cwd: string
+  shell: string
+  file: string
+  pid?: number
+  exit?: number
+  metadata: {
+    [key: string]: unknown
+  }
+  time: {
+    started: number
+    completed?: number
+  }
+}
+
 export type SessionShellStartedV2 = {
   id: string
   created: number
@@ -9366,7 +9354,7 @@ export type SessionShellStartedV2 = {
   location?: LocationRefV2
   data: {
     sessionID: string
-    shell: ShellV2
+    shell: ShellInfoV2
   }
 }
 
@@ -9385,7 +9373,7 @@ export type SessionShellEndedV2 = {
   location?: LocationRefV2
   data: {
     sessionID: string
-    shell: ShellV2
+    shell: ShellInfoV2
     output: {
       output: string
       cursor: number
@@ -9934,33 +9922,21 @@ export type FormMultiselectFieldV2 = {
   default?: Array<string>
 }
 
-export type FormFormInfoV2 = {
-  id: string
-  sessionID: string
-  title: string
-  metadata?: FormMetadata
-  mode: "form"
-  fields: Array<FormStringFieldV2 | FormNumberField | FormIntegerField | FormBooleanField | FormMultiselectFieldV2>
-}
+export type FormFieldsV2 = [FormField, FormField]
 
-export type FormUrlInfoV2 = {
+export type FormInfoV2 = {
   id: string
   sessionID: string
   title: string
   metadata?: FormMetadata
-  mode: "url"
-  url: string
+  fields: FormFieldsV2
 }
 
 export type FormCreatePayloadV2 = {
   id?: string | null
   title: string
   metadata?: FormMetadata
-  mode: "form" | "url"
-  fields?: Array<
-    FormStringFieldV2 | FormNumberField | FormIntegerField | FormBooleanField | FormMultiselectFieldV2
-  > | null
-  url?: string | null
+  fields: FormFieldsV2
 }
 
 export type FormValueV2 =
@@ -10544,7 +10520,7 @@ export type ShellCreatedV2 = {
   type: "shell.created"
   location?: LocationRefV2
   data: {
-    info: ShellV2
+    info: ShellInfoV2
   }
 }
 
@@ -10558,7 +10534,7 @@ export type ShellExitedV2 = {
   location?: LocationRefV2
   data: {
     id: string
-    exit?: number | "NaN" | "Infinity" | "-Infinity"
+    exit?: number
     status: "running" | "exited" | "timeout" | "killed"
   }
 }
@@ -10669,22 +10645,22 @@ export type FormMultiselectField1 = {
   default?: Array<string>
 }
 
-export type FormFormInfo1 = {
-  id: string
-  sessionID: string
-  title: string
-  metadata?: FormMetadata1
-  mode: "form"
-  fields: Array<FormStringField1 | FormNumberField1 | FormIntegerField1 | FormBooleanField1 | FormMultiselectField1>
-}
+export type FormField1 =
+  | FormStringField1
+  | FormNumberField1
+  | FormIntegerField1
+  | FormBooleanField1
+  | FormMultiselectField1
+  | FormExternalField
 
-export type FormUrlInfo1 = {
+export type FormFields1 = [FormField1, FormField1]
+
+export type FormInfo1 = {
   id: string
   sessionID: string
   title: string
   metadata?: FormMetadata1
-  mode: "url"
-  url: string
+  fields: FormFields1
 }
 
 export type FormCreatedV2 = {
@@ -10696,7 +10672,7 @@ export type FormCreatedV2 = {
   type: "form.created"
   location?: LocationRefV2
   data: {
-    form: FormFormInfo1 | FormUrlInfo1
+    form: FormInfo1
   }
 }
 
@@ -11029,6 +11005,24 @@ export type V2EventServerConnected = {
 export type PtyTicketConnectTokenV2 = {
   ticket: string
   expires_in: number
+}
+
+export type ShellInfo1 = {
+  id: string
+  status: "running" | "exited" | "timeout" | "killed"
+  command: string
+  cwd: string
+  shell: string
+  file: string
+  pid?: number
+  exit?: number
+  metadata: {
+    [key: string]: unknown
+  }
+  time: {
+    started: number
+    completed?: number
+  }
 }
 
 export type QuestionV2RequestV2 = {
@@ -15740,7 +15734,7 @@ export type V2SessionPromptResponses = {
    * Success
    */
   200: {
-    data: SessionInputUserV2
+    data: SessionPendingUserV2
   }
 }
 
@@ -15795,7 +15789,7 @@ export type V2SessionCommandResponses = {
    * Success
    */
   200: {
-    data: SessionInputUserV2
+    data: SessionPendingUserV2
   }
 }
 
@@ -15884,7 +15878,7 @@ export type V2SessionSyntheticResponses = {
    * Success
    */
   200: {
-    data: SessionInputSyntheticV2
+    data: SessionPendingSyntheticV2
   }
 }
 
@@ -15965,7 +15959,7 @@ export type V2SessionCompactResponses = {
    * Success
    */
   200: {
-    data: SessionInputCompactionV2
+    data: SessionPendingCompactionV2
   }
 }
 
@@ -16181,6 +16175,43 @@ export type V2SessionContextResponses = {
 
 export type V2SessionContextResponse = V2SessionContextResponses[keyof V2SessionContextResponses]
 
+export type V2SessionPendingListData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/pending"
+}
+
+export type V2SessionPendingListErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestErrorV2
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+}
+
+export type V2SessionPendingListError = V2SessionPendingListErrors[keyof V2SessionPendingListErrors]
+
+export type V2SessionPendingListResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: Array<SessionPendingInfo>
+  }
+}
+
+export type V2SessionPendingListResponse = V2SessionPendingListResponses[keyof V2SessionPendingListResponses]
+
 export type V2SessionInstructionsEntryListData = {
   body?: never
   path: {
@@ -16283,6 +16314,10 @@ export type V2SessionInstructionsEntryPutErrors = {
    * SessionNotFoundError
    */
   404: SessionNotFoundError
+  /**
+   * InstructionEntryValueTooLargeError
+   */
+  413: InstructionEntryValueTooLargeError
 }
 
 export type V2SessionInstructionsEntryPutError =
@@ -17264,7 +17299,7 @@ export type V2FormRequestListResponses = {
    */
   200: {
     location: LocationInfoV2
-    data: Array<FormFormInfoV2 | FormUrlInfoV2>
+    data: Array<FormInfoV2>
   }
 }
 
@@ -17301,7 +17336,7 @@ export type V2SessionFormListResponses = {
    * Success
    */
   200: {
-    data: Array<FormFormInfoV2 | FormUrlInfoV2>
+    data: Array<FormInfoV2>
   }
 }
 
@@ -17342,7 +17377,7 @@ export type V2SessionFormCreateResponses = {
    * Success
    */
   200: {
-    data: FormFormInfoV2 | FormUrlInfoV2
+    data: FormInfoV2
   }
 }
 
@@ -17380,7 +17415,7 @@ export type V2SessionFormGetResponses = {
    * Success
    */
   200: {
-    data: FormFormInfoV2 | FormUrlInfoV2
+    data: FormInfoV2
   }
 }
 
@@ -18322,7 +18357,7 @@ export type V2ShellListResponses = {
    */
   200: {
     location: LocationInfoV2
-    data: Array<ShellV2>
+    data: Array<ShellInfo1>
   }
 }
 
@@ -18366,7 +18401,7 @@ export type V2ShellCreateResponses = {
    */
   200: {
     location: LocationInfoV2
-    data: ShellV2
+    data: ShellInfo1
   }
 }
 
@@ -18449,7 +18484,7 @@ export type V2ShellGetResponses = {
    */
   200: {
     location: LocationInfoV2
-    data: ShellV2
+    data: ShellInfo1
   }
 }
 
@@ -18494,7 +18529,7 @@ export type V2ShellTimeoutResponses = {
    */
   200: {
     location: LocationInfoV2
-    data: ShellV2
+    data: ShellInfo1
   }
 }
 

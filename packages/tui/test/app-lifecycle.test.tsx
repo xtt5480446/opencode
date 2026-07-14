@@ -4,8 +4,7 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { Effect } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { Global } from "@opencode-ai/core/global"
-import { createTuiResolvedConfig } from "./fixture/tui-runtime"
-import { createEventStream, createFetch, directory, json } from "./fixture/tui-sdk"
+import { createEventStream, createFetch, directory, json } from "./fixture/tui-client"
 
 test("SIGHUP clears title and disposes scoped resources once", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
@@ -32,7 +31,7 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
     const task = Effect.runPromise(
       run({
         server: { endpoint: { url: server.url.toString() } },
-        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        config: { get: async () => ({}), update: async () => ({}) },
         args: {},
         log: () => {},
         pluginHost: {
@@ -96,6 +95,7 @@ test("session lifecycle updates the terminal title and prints the epilogue after
       })
     if (url.pathname === "/api/session/dummy") return json({ data: session })
     if (url.pathname === "/api/session/dummy/message") return json({ data: [], cursor: {} })
+    if (url.pathname === "/api/session/dummy/pending") return json({ data: [] })
     if (url.pathname === "/api/session/dummy/permission") return json({ data: [] })
   }, events)
   const server = Bun.serve({ port: 0, fetch: (request) => calls.fetch(request) })
@@ -117,7 +117,7 @@ test("session lifecycle updates the terminal title and prints the epilogue after
     const task = Effect.runPromise(
       run({
         server: { endpoint: { url: server.url.toString() } },
-        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        config: { get: async () => ({}), update: async () => ({}) },
         args: { sessionID: "dummy" },
         log: () => {},
         pluginHost: {

@@ -48,6 +48,8 @@ import type {
   SessionRevertCommitOutput,
   SessionContextInput,
   SessionContextOutput,
+  SessionPendingListInput,
+  SessionPendingListOutput,
   SessionInstructionsEntryListInput,
   SessionInstructionsEntryListOutput,
   SessionInstructionsEntryPutInput,
@@ -88,10 +90,10 @@ import type {
   IntegrationAttemptCompleteOutput,
   IntegrationAttemptCancelInput,
   IntegrationAttemptCancelOutput,
-  ServerMcpListInput,
-  ServerMcpListOutput,
-  ServerMcpResourceCatalogInput,
-  ServerMcpResourceCatalogOutput,
+  McpListInput,
+  McpListOutput,
+  McpResourceCatalogInput,
+  McpResourceCatalogOutput,
   CredentialUpdateInput,
   CredentialUpdateOutput,
   CredentialRemoveInput,
@@ -199,12 +201,12 @@ import { ClientError } from "./client-error"
 export interface ClientOptions {
   readonly baseUrl: string
   readonly fetch?: typeof globalThis.fetch
-  readonly headers?: HeadersInit
+  readonly headers?: RequestInit["headers"]
 }
 
 export interface RequestOptions {
   readonly signal?: AbortSignal
-  readonly headers?: HeadersInit
+  readonly headers?: RequestInit["headers"]
 }
 
 interface RequestDescriptor {
@@ -218,6 +220,8 @@ interface RequestDescriptor {
   readonly empty: boolean
   readonly binary?: true
 }
+
+const maxSseEventBytes = 16 * 1024 * 1024
 
 export function make(options: ClientOptions) {
   const fetch = options.fetch ?? globalThis.fetch
@@ -295,7 +299,7 @@ export function make(options: ClientOptions) {
             throw new ClientError("Transport", { cause })
           }
           buffer += decoder.decode(next.value, { stream: !next.done })
-          if (buffer.length > 1_048_576) throw new ClientError("MalformedResponse")
+          if (buffer.length > maxSseEventBytes) throw new ClientError("SseEventTooLarge")
           const trailingCarriageReturn = !next.done && buffer.endsWith("\r")
           if (trailingCarriageReturn) buffer = buffer.slice(0, -1)
           buffer = buffer.replaceAll("\r\n", "\n").replaceAll("\r", "\n")
@@ -674,6 +678,19 @@ export function make(options: ClientOptions) {
           },
           requestOptions,
         ).then((value) => value.data),
+      pending: {
+        list: (input: SessionPendingListInput, requestOptions?: RequestOptions) =>
+          request<{ readonly data: SessionPendingListOutput }>(
+            {
+              method: "GET",
+              path: `/api/session/${encodeURIComponent(input.sessionID)}/pending`,
+              successStatus: 200,
+              declaredStatuses: [404, 400, 401],
+              empty: false,
+            },
+            requestOptions,
+          ).then((value) => value.data),
+      },
       instructions: {
         entry: {
           list: (input: SessionInstructionsEntryListInput, requestOptions?: RequestOptions) =>
@@ -694,7 +711,7 @@ export function make(options: ClientOptions) {
                 path: `/api/session/${encodeURIComponent(input.sessionID)}/instructions/entries/${encodeURIComponent(input.key)}`,
                 body: { value: input["value"] },
                 successStatus: 204,
-                declaredStatuses: [404, 400, 401],
+                declaredStatuses: [404, 413, 400, 401],
                 empty: true,
               },
               requestOptions,
@@ -932,9 +949,9 @@ export function make(options: ClientOptions) {
           ),
       },
     },
-    "server.mcp": {
-      list: (input?: ServerMcpListInput, requestOptions?: RequestOptions) =>
-        request<ServerMcpListOutput>(
+    mcp: {
+      list: (input?: McpListInput, requestOptions?: RequestOptions) =>
+        request<McpListOutput>(
           {
             method: "GET",
             path: `/api/mcp`,
@@ -946,8 +963,8 @@ export function make(options: ClientOptions) {
           requestOptions,
         ),
       resource: {
-        catalog: (input?: ServerMcpResourceCatalogInput, requestOptions?: RequestOptions) =>
-          request<ServerMcpResourceCatalogOutput>(
+        catalog: (input?: McpResourceCatalogInput, requestOptions?: RequestOptions) =>
+          request<McpResourceCatalogOutput>(
             {
               method: "GET",
               path: `/api/mcp/resource`,
@@ -1049,14 +1066,7 @@ export function make(options: ClientOptions) {
           {
             method: "POST",
             path: `/api/session/${encodeURIComponent(input.sessionID)}/form`,
-            body: {
-              id: input["id"],
-              title: input["title"],
-              metadata: input["metadata"],
-              mode: input["mode"],
-              fields: input["fields"],
-              url: input["url"],
-            },
+            body: { id: input["id"], title: input["title"], metadata: input["metadata"], fields: input["fields"] },
             successStatus: 200,
             declaredStatuses: [404, 409, 400, 401],
             empty: false,
