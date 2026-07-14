@@ -1,0 +1,72 @@
+[data-component="server-status-icon"] {
+  color: var(--v2-icon-icon-muted);
+
+  [data-slot="server-status-left"],
+  [data-slot="server-status-right"] {
+    fill: none;
+    stroke: var(--server-status-color);
+  }
+
+  [data-slot="server-status-dot"] {
+    fill: var(--server-status-color);
+  }
+
+  &[data-state="reconnecting"] {
+    --server-status-color: var(--v2-state-fg-warning);
+
+    [data-slot="server-status-left"] {
+      animation: server-status-reconnecting-left 1.2s ease-in-out infinite;
+    }
+
+    [data-slot="server-status-right"] {
+      animation: server-status-reconnecting-right 1.2s ease-in-out infinite;
+    }
+  }
+
+  &[data-state="disconnected"] {
+    --server-status-color: var(--v2-state-fg-danger);
+
+    [data-slot="server-status-left"],
+    [data-slot="server-status-right"] {
+      animation: server-status-disconnected 1.2s ease-in-out infinite;
+    }
+  }
+}
+
+@keyframes server-status-reconnecting-left {
+  0%,
+  66%,
+  100% {
+    opacity: 1;
+  }
+  33% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes server-status-reconnecting-right {
+  0%,
+  33%,
+  100% {
+    opacity: 1;
+  }
+  66% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes server-status-disconnected {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-component="server-status-icon"] [data-slot^="server-status-"] {
+    animation: none;
+  }
+}

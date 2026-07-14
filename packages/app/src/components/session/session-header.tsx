@@ -17,7 +17,9 @@ import { useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
 import { usePlatform } from "@/context/platform"
-import { useServer } from "@/context/server"
+import { ServerConnection, serverName, useServer } from "@/context/server"
+import { useServerSDK } from "@/context/server-sdk"
+import { useGlobal } from "@/context/global"
 import { useSettings } from "@/context/settings"
 import { useSync } from "@/context/sync"
 import { useTerminal } from "@/context/terminal"
@@ -34,6 +36,8 @@ import { KeybindV2 } from "@opencode-ai/ui/v2/keybind-v2"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { reviewTooltipKeybind } from "../command-tooltip-keybind"
 import { useTitlebarRightMount } from "../titlebar"
+import { useSettingsDialog } from "../settings-dialog"
+import { resolveServerStatus, ServerStatusIcon, type ServerStatusIconState } from "../server-status-icon"
 
 const OPEN_APPS = [
   "vscode",
@@ -145,6 +149,8 @@ export function SessionHeader() {
   const platform = usePlatform()
   const language = useLanguage()
   const settings = useSettings()
+  const global = useGlobal()
+  const serverSDK = useServerSDK()
   const sync = useSync()
   const terminal = useTerminal()
   const { params, view } = useSessionLayout()
@@ -166,6 +172,7 @@ export function SessionHeader() {
   const search = settings.visibility.search
   const status = settings.visibility.status
   const isDesktop = createMediaQuery("(min-width: 768px)")
+  const openServerSettings = useSettingsDialog("servers")
 
   const [exists, setExists] = createStore<Partial<Record<OpenApp, boolean>>>({
     finder: true,
@@ -235,7 +242,23 @@ export function SessionHeader() {
   const tint = createMemo(() =>
     messageAgentColor(params.id ? sync().data.message[params.id] : undefined, sync().data.agent),
   )
+  const serverStatus = createMemo<ServerStatusIconState | undefined>(() => {
+    const current = serverSDK()
+    return resolveServerStatus(
+      global.servers.health[ServerConnection.key(current.server)]?.healthy,
+      current.connection.status,
+    )
+  })
+  const serverStatusLabel = createMemo(() => {
+    if (serverStatus() === "disconnected") {
+      return language.t("app.server.unreachable", { server: serverName(serverSDK().server) })
+    }
+    return language.t("app.server.retrying")
+  })
   const v2ActionsState = createMemo<SessionHeaderV2ActionsState>(() => ({
+    serverStatus: isDesktop() ? serverStatus() : undefined,
+    serverStatusLabel: serverStatusLabel(),
+    onServerStatusClick: openServerSettings,
     toolsVisible: isDesktop() && status(),
     statusLabel: language.t("status.popover.tools.trigger"),
     reviewLabel: language.t("command.review.toggle"),
@@ -518,6 +541,9 @@ export function SessionHeader() {
 }
 
 type SessionHeaderV2ActionsState = {
+  serverStatus?: ServerStatusIconState
+  serverStatusLabel: string
+  onServerStatusClick: () => void
   toolsVisible: boolean
   statusLabel: string
   reviewLabel: string
@@ -532,6 +558,21 @@ function SessionHeaderV2Actions(props: { state: SessionHeaderV2ActionsState }) {
 
   return (
     <div class="flex items-center gap-[6px]">
+      <Show when={props.state.serverStatus}>
+        {(status) => (
+          <TooltipV2 placement="bottom" value={props.state.serverStatusLabel}>
+            <IconButtonV2
+              type="button"
+              variant="ghost-muted"
+              size="large"
+              class="!w-9 shrink-0"
+              onClick={props.state.onServerStatusClick}
+              aria-label={props.state.serverStatusLabel}
+              icon={<ServerStatusIcon state={status()} />}
+            />
+          </TooltipV2>
+        )}
+      </Show>
       <Show when={props.state.toolsVisible}>
         <TooltipV2 placement="bottom" value={props.state.statusLabel}>
           <StatusPopoverV2 />

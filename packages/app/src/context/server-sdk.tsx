@@ -3,6 +3,7 @@ import { createSimpleContext } from "@opencode-ai/ui/context"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { type Accessor, batch, createMemo, onCleanup, onMount } from "solid-js"
+import { createStore } from "solid-js/store"
 import { createSdkForServer } from "@/utils/server"
 import { useLanguage } from "./language"
 import { usePlatform } from "./platform"
@@ -142,6 +143,9 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   let run: Promise<void> | undefined
   let started = false
   let generation = 0
+  const [connection, setConnection] = createStore({
+    status: "connecting" as "connecting" | "connected" | "reconnecting",
+  })
   const HEARTBEAT_TIMEOUT_MS = 15_000
   let lastEventAt = Date.now()
   let heartbeat: ReturnType<typeof setTimeout> | undefined
@@ -187,6 +191,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
               })
             },
           })
+          setConnection("status", "connected")
           let yielded = Date.now()
           resetHeartbeat()
           for await (const event of events.stream) {
@@ -218,6 +223,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
         }
 
         if (abort.signal.aborted || !started || generation !== active) return
+        setConnection("status", "reconnecting")
         await wait(RECONNECT_DELAY_MS)
       }
     })().finally(() => {
@@ -269,6 +275,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
       listen: emitter.listen.bind(emitter),
       start,
     },
+    connection,
     createClient(opts: Omit<Parameters<typeof createSdkForServer>[0], "server" | "fetch">) {
       return createSdkForServer({
         server: server.http,

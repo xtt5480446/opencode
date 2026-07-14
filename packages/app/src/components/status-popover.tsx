@@ -165,7 +165,7 @@ function StatusPopoverBody(props: { shown: boolean; children: JSX.Element }) {
 }
 
 function StatusPopoverView(props: { state: StatusPopoverState }) {
-  const warning = () => props.state.serverHealth === false || props.state.issue !== undefined
+  const warning = () => props.state.issue !== undefined
 
   const popoverProps = {
     class:
