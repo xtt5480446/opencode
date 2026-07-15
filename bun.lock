@@ -202,6 +202,7 @@
         "@planetscale/database": "1.19.0",
         "aws4fetch": "1.0.20",
         "drizzle-orm": "catalog:",
+        "effect": "catalog:",
         "postgres": "3.4.7",
         "stripe": "18.0.0",
         "ulid": "catalog:",
