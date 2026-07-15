@@ -2361,7 +2361,9 @@ function ModelProviderIcon(props: { providerID?: string; free: boolean }) {
             />
           }
         >
-          <Mark class="h-4 w-3.5 shrink-0 opacity-40 group-hover:opacity-100 transition-opacity duration-150" />
+          <span class="size-4 shrink-0 flex items-center justify-center opacity-40 group-hover:opacity-100 transition-opacity duration-150">
+            <Mark class="h-4 w-3.5" />
+          </span>
         </Show>
       )}
     </Show>
