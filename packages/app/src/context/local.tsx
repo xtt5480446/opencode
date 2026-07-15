@@ -4,8 +4,10 @@ import { useParams } from "@solidjs/router"
 import { batch, createEffect, createMemo, startTransition } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useModels } from "@/context/models"
+import { useSettings } from "@/context/settings"
 import { useProviders } from "@/hooks/use-providers"
 import { Persist, persisted } from "@/utils/persist"
+import { resolveAgent } from "./local-agent"
 import { cycleModelVariant, getConfiguredAgentVariant, resolveModelVariant } from "./model-variant"
 import { useSDK } from "./sdk"
 import { useSync } from "./sync"
@@ -62,6 +64,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const serverSDK = useServerSDK()
     const providers = useProviders(() => sdk().directory)
     const models = useModels()
+    const settings = useSettings()
 
     const id = createMemo(() => params.id || undefined)
     const list = createMemo(() => sync().data.agent.filter((item) => item.mode !== "subagent" && !item.hidden))
@@ -88,7 +91,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         variant?: string | null
       }
     }>({
-      current: list()[0]?.name,
+      current: resolveAgent(list())?.name,
       draft: undefined,
       last: undefined,
     })
@@ -107,9 +110,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     }
 
     const pickAgent = (name: string | undefined) => {
-      const items = list()
-      if (items.length === 0) return
-      return items.find((item) => item.name === name) ?? items[0]
+      return resolveAgent(list(), name)
     }
 
     createEffect(() => {
@@ -181,6 +182,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const agent = {
       list,
       current() {
+        if (!settings.visibility.customAgents()) return pickAgent("build")
         return pickAgent(scope()?.agent ?? store.current)
       },
       set(name: string | undefined) {

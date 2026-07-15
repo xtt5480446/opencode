@@ -3,12 +3,46 @@ import {
   isAppUpgrade,
   layoutTransitionState,
   maximumSunsetTimeout,
+  migrateSettings,
   newLayoutDesignsDefault,
   nextSunsetCheckDelay,
   resolveNewLayoutDesigns,
   shouldDisplayTabsToast,
   shouldEnableNewLayout,
 } from "./settings"
+
+describe("feature visibility", () => {
+  test("enables features once for profiles created before the visibility defaults", () => {
+    expect(
+      migrateSettings({
+        general: {
+          showFileTree: false,
+          showSearch: false,
+          showStatus: false,
+          showCustomAgents: false,
+        },
+      }),
+    ).toEqual({
+      general: {
+        showFileTree: true,
+        showSearch: true,
+        showStatus: true,
+        showCustomAgents: true,
+        featureVisibilityInitialized: true,
+      },
+    })
+  })
+
+  test("preserves preferences after the visibility defaults are initialized", () => {
+    const value = {
+      general: {
+        showFileTree: false,
+        featureVisibilityInitialized: true,
+      },
+    }
+    expect(migrateSettings(value)).toBe(value)
+  })
+})
 
 describe("layout transition", () => {
   test("blank profiles default to the new layout", () => {

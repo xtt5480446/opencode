@@ -1,5 +1,5 @@
 import { createStore, reconcile } from "solid-js/store"
-import { createEffect, createMemo, createSignal, onCleanup } from "solid-js"
+import { batch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { persisted } from "@/utils/persist"
 import { usePlatform } from "@/context/platform"
@@ -36,6 +36,7 @@ export interface Settings {
     mobileTitlebarPosition: "top" | "bottom"
     newLayoutDesigns?: boolean
     layoutTransitionEligible?: boolean
+    featureVisibilityInitialized?: boolean
     newInterfaceNoticeDismissed?: boolean
     shouldDisplayTabsToast?: boolean
   }
@@ -61,6 +62,27 @@ export const newLayoutDesignsDefault = true
 // Existing users can switch layouts until local midnight on this date. Set new Date(YYYY, M-1, D) to show.
 export const oldInterfaceSunset = new Date(2026, 8, 14)
 const newLayoutDesignsUpgradeCutoff = "1.17.19"
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+export function migrateSettings(value: unknown) {
+  if (!isRecord(value)) return value
+  const general = isRecord(value.general) ? value.general : {}
+  if (general.featureVisibilityInitialized === true) return value
+  return {
+    ...value,
+    general: {
+      ...general,
+      showFileTree: true,
+      showSearch: true,
+      showStatus: true,
+      showCustomAgents: true,
+      featureVisibilityInitialized: true,
+    },
+  }
+}
 
 function compareVersions(a: string, b: string) {
   const parse = (version: string) => {
@@ -220,7 +242,10 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
   gate: false,
   init: () => {
     const platform = usePlatform()
-    const [store, setStore, _, ready] = persisted("settings.v3", createStore<Settings>(defaultSettings))
+    const [store, setStore, _, ready] = persisted(
+      { key: "settings.v3", migrate: migrateSettings },
+      createStore<Settings>(defaultSettings),
+    )
     const [launch, setLaunch, , launchReady] = persisted(
       "app-version.v1",
       createStore<{ version?: string }>({ version: undefined }),
@@ -266,7 +291,17 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
         layoutTransitionEligible() ? legacyNewLayoutDesignsDefault : newLayoutDesignsDefault,
       )
     })
-    const visible = (preference: () => boolean) => createMemo(() => !newLayoutDesigns() || preference())
+
+    const initializeFeatureVisibility = (existing: boolean) => {
+      if (store.general?.featureVisibilityInitialized === true) return
+      batch(() => {
+        setStore("general", "showFileTree", existing)
+        setStore("general", "showSearch", existing)
+        setStore("general", "showStatus", existing)
+        setStore("general", "showCustomAgents", existing)
+        setStore("general", "featureVisibilityInitialized", true)
+      })
+    }
 
     if (sunset && !oldInterfaceRetired()) {
       const timeout = { current: undefined as ReturnType<typeof setTimeout> | undefined }
@@ -316,6 +351,11 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
       if (!ready() || !oldInterfaceRetired()) return
       if (store.general?.newLayoutDesigns === true) return
       setStore("general", "newLayoutDesigns", true)
+    })
+
+    createEffect(() => {
+      if (!ready() || platform.platform === "desktop") return
+      initializeFeatureVisibility(false)
     })
 
     createEffect(() => {
@@ -416,6 +456,7 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
           if (typeof current === "boolean") return
           setStore("general", "layoutTransitionEligible", eligible)
         },
+        initializeFeatureVisibility,
         layoutTransitionAvailable: createMemo(() => ready() && layoutTransition().available),
         newInterfaceNoticeVisible: createMemo(() => ready() && layoutTransition().notice),
         dismissNewInterfaceNotice() {
@@ -427,10 +468,10 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
         },
       },
       visibility: {
-        fileTree: visible(showFileTree),
-        search: visible(showSearch),
-        status: visible(showStatus),
-        customAgents: visible(showCustomAgents),
+        fileTree: showFileTree,
+        search: showSearch,
+        status: showStatus,
+        customAgents: showCustomAgents,
       },
       appearance: {
         fontSize: withFallback(() => store.appearance?.fontSize, defaultSettings.appearance.fontSize),
