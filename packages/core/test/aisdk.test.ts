@@ -1,4 +1,9 @@
-import { APICallError, type LanguageModelV3, type LanguageModelV3CallOptions } from "@ai-sdk/provider"
+import {
+  APICallError,
+  InvalidResponseDataError,
+  type LanguageModelV3,
+  type LanguageModelV3CallOptions,
+} from "@ai-sdk/provider"
 import { AISDK } from "@opencode-ai/core/aisdk"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -212,5 +217,94 @@ it.effect("classifies AI SDK request timeouts", () =>
       .pipe(Stream.runDrain, Effect.flip)
 
     expect(error).toMatchObject({ _tag: "LLM.TimeoutError", message: "The operation timed out" })
+  }),
+)
+
+it.effect("classifies structured AI SDK stream errors", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    yield* aisdk.hook.sdk((event) => {
+      event.sdk = {}
+    })
+    yield* aisdk.hook.language((event) => {
+      event.language = {
+        ...failingLanguage(new Error("unused")),
+        doStream: async () => ({
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } })
+              controller.close()
+            },
+          }),
+          request: { body: {} },
+        }),
+      }
+    })
+
+    const resolved = yield* aisdk.model(model("@ai-sdk/anthropic"))
+    const request = LLM.request({ model: resolved, prompt: "Hello" })
+    const prepared = yield* LLMClient.prepare<LanguageModelV3CallOptions>(request)
+    const error = yield* resolved.route
+      .streamPrepared(prepared.body, request, { http: { execute: () => Effect.die("unused") } })
+      .pipe(Stream.runDrain, Effect.flip)
+
+    expect(error).toMatchObject({ _tag: "LLM.ServerError", code: "overloaded_error", message: "Overloaded" })
+  }),
+)
+
+it.effect("classifies malformed AI SDK response causes", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    yield* aisdk.hook.sdk((event) => {
+      event.sdk = {}
+    })
+    yield* aisdk.hook.language((event) => {
+      event.language = failingLanguage(
+        new APICallError({
+          message: "Failed to process successful response",
+          url: "https://provider.test/v1",
+          requestBodyValues: {},
+          statusCode: 200,
+          cause: new InvalidResponseDataError({ data: { invalid: true } }),
+        }),
+      )
+    })
+
+    const resolved = yield* aisdk.model(model("@ai-sdk/openai"))
+    const request = LLM.request({ model: resolved, prompt: "Hello" })
+    const prepared = yield* LLMClient.prepare<LanguageModelV3CallOptions>(request)
+    const error = yield* resolved.route
+      .streamPrepared(prepared.body, request, { http: { execute: () => Effect.die("unused") } })
+      .pipe(Stream.runDrain, Effect.flip)
+
+    expect(error).toMatchObject({ _tag: "LLM.MalformedResponse", message: 'Invalid response data: {"invalid":true}.' })
+  }),
+)
+
+it.effect("respects non-retryable unclassified AI SDK failures", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    yield* aisdk.hook.sdk((event) => {
+      event.sdk = {}
+    })
+    yield* aisdk.hook.language((event) => {
+      event.language = failingLanguage(
+        new APICallError({
+          message: "Provider adapter rejected the request",
+          url: "https://provider.test/v1",
+          requestBodyValues: {},
+          isRetryable: false,
+        }),
+      )
+    })
+
+    const resolved = yield* aisdk.model(model("@ai-sdk/openai"))
+    const request = LLM.request({ model: resolved, prompt: "Hello" })
+    const prepared = yield* LLMClient.prepare<LanguageModelV3CallOptions>(request)
+    const error = yield* resolved.route
+      .streamPrepared(prepared.body, request, { http: { execute: () => Effect.die("unused") } })
+      .pipe(Stream.runDrain, Effect.flip)
+
+    expect(error).toMatchObject({ _tag: "LLM.APIError", message: "Provider adapter rejected the request" })
   }),
 )

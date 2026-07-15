@@ -38,6 +38,17 @@ describe("provider error classification", () => {
     ).toMatchObject({ _tag: "LLM.ServerError" })
   })
 
+  test("uses retryability hints only for ambiguous failures", () => {
+    expect(classifyApiFailure({ message: "Failed", status: 500, isRetryable: false })._tag).toBe("LLM.APIError")
+    expect(
+      classifyApiFailure({ message: "Failed", status: 500, code: "overloaded_error", isRetryable: false })._tag,
+    ).toBe("LLM.ServerError")
+    expect(
+      classifyApiFailure({ message: '{"type":"request_too_large"}', status: 500, isRetryable: false })._tag,
+    ).toBe("LLM.BadRequest")
+    expect(classifyApiFailure({ message: "Failed", status: 429, isRetryable: false })._tag).toBe("LLM.RateLimit")
+  })
+
   test("classifies only structured content-policy signals", () => {
     expect(
       [

@@ -69,7 +69,12 @@ const SERVER_CODES = new Set([
   "server_is_overloaded",
   "serviceunavailableexception",
 ])
-const INVALID_REQUEST_CODES = new Set(["invalid_prompt", "invalid_request_error", "validationexception"])
+const INVALID_REQUEST_CODES = new Set([
+  "invalid_prompt",
+  "invalid_request_error",
+  "request_too_large",
+  "validationexception",
+])
 const RATE_LIMIT_TEXT = /rate increased too quickly|rate[-_\s]?limit|too[_\s]?many[_\s]?requests/i
 const QUOTA_TEXT = /insufficient[-_\s]?quota|quota[-_\s]?exceeded/i
 
@@ -78,6 +83,8 @@ export interface ApiFailure {
   readonly status?: number | undefined
   /** Provider machine-readable error code or type string (e.g. `context_length_exceeded`, `overloaded_error`). */
   readonly code?: string | undefined
+  /** Provider or SDK retry hint, used only when stronger structured signals are absent. */
+  readonly isRetryable?: boolean | undefined
   readonly retryAfterMs?: number | undefined
   readonly rateLimit?: HttpRateLimitDetails | undefined
   readonly requestID?: string | undefined
@@ -142,6 +149,7 @@ export const classifyApiFailure = (input: ApiFailure): LLMError => {
   if (input.status === 401 || normalizedCodes.includes("authentication_error")) return new Authentication(common)
   if (input.status === 403 || normalizedCodes.includes("permission_error")) return new PermissionDenied(common)
   if (input.status === 404 || normalizedCodes.includes("not_found_error")) return new NotFound(common)
+  if (normalizedCodes.some((code) => INVALID_REQUEST_CODES.has(code))) return new BadRequest(common)
   if (
     normalizedCodes.some(
       (code) => code.includes("rate_limit") || code === "too_many_requests" || code === "throttlingexception",
@@ -156,9 +164,9 @@ export const classifyApiFailure = (input: ApiFailure): LLMError => {
   )
     return serverError(input, common)
   if (input.status === 429) return rateLimit(input, common)
-  if (input.status !== undefined && input.status >= 500) return serverError(input, common)
+  if (input.status !== undefined && input.status >= 500)
+    return input.isRetryable === false ? new APIError(common) : serverError(input, common)
   if (
-    normalizedCodes.some((code) => INVALID_REQUEST_CODES.has(code)) ||
     input.status === 400 ||
     input.status === 409 ||
     input.status === 413 ||
@@ -177,7 +185,7 @@ function providerCodes(value: unknown) {
     : isRecord(error?.innererror)
       ? error.innererror
       : undefined
-  return [error?.code, error?.type, innerError?.code, decoded.code]
+  return [error?.code, error?.type, innerError?.code, decoded.code, decoded.type]
     .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
     .map(String)
 }

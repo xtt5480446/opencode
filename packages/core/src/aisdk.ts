@@ -725,8 +725,8 @@ const headerRetryAfterMs = (headers: Record<string, string> | undefined) => {
 
 // Classify AI SDK failures into the shared `LLMError` union so the synthetic
 // AI SDK route reports failures identically to native protocol routes. An
-// `APICallError` without a status code is the AI SDK's representation of a
-// network-level failure (connect refused, reset, DNS), not an API rejection.
+// A retryable `APICallError` without a status code is the AI SDK's
+// representation of a network-level failure (connect refused, reset, DNS).
 function llmError(error: unknown): LLMError {
   if (isLLMError(error)) return error
   const cause = error instanceof Error ? error.cause : undefined
@@ -736,15 +736,22 @@ function llmError(error: unknown): LLMError {
     (cause instanceof Error && cause.name === "TimeoutError")
   )
     return new TimeoutError({ message: error instanceof Error ? error.message : "Request timed out" })
+  const malformed = [error, cause].find(isMalformedError)
+  if (malformed) return new MalformedResponse({ message: malformed.message })
   if (APICallError.isInstance(error)) {
+    const code = extractApiFailureCode(error.data) ?? extractApiFailureCode(error.responseBody)
     if (error.statusCode === undefined) {
-      return new ConnectionError({ message: error.message, url: RequestExecutor.redactUrl(error.url) })
+      if (code) return classifyApiFailure({ message: error.message, code, isRetryable: error.isRetryable })
+      return error.isRetryable
+        ? new ConnectionError({ message: error.message, url: RequestExecutor.redactUrl(error.url) })
+        : new APIError({ message: error.message })
     }
     const body = RequestExecutor.redactResponseBody(error.responseBody, { url: error.url })
     return classifyApiFailure({
       message: error.message,
       status: error.statusCode,
-      code: extractApiFailureCode(error.data) ?? extractApiFailureCode(error.responseBody),
+      code,
+      isRetryable: error.isRetryable,
       retryAfterMs: headerRetryAfterMs(error.responseHeaders),
       requestID: error.responseHeaders?.["x-request-id"] ?? error.responseHeaders?.["request-id"],
       http: new HttpContext({
@@ -768,16 +775,25 @@ function llmError(error: unknown): LLMError {
   ) {
     return new BadRequest({ message: error.message })
   }
-  if (
+  const code = extractApiFailureCode(error)
+  if (code) return classifyApiFailure({ message: apiFailureMessage(error), code })
+  return new APIError({ message: error instanceof Error ? error.message : String(error) })
+}
+
+function isMalformedError(error: unknown): error is Error {
+  return (
     InvalidResponseDataError.isInstance(error) ||
     JSONParseError.isInstance(error) ||
     TypeValidationError.isInstance(error) ||
     EmptyResponseBodyError.isInstance(error) ||
     NoContentGeneratedError.isInstance(error)
-  ) {
-    return new MalformedResponse({ message: error.message })
-  }
-  return new APIError({ message: error instanceof Error ? error.message : String(error) })
+  )
+}
+
+function apiFailureMessage(error: unknown) {
+  if (typeof error !== "object" || error === null) return String(error)
+  const message = Reflect.get(error, "message")
+  return typeof message === "string" ? message : String(error)
 }
 
 export const node = makeLocationNode({ service: Service, layer: locationLayer, deps: [] })
