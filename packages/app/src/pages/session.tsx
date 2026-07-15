@@ -57,6 +57,7 @@ import { useSync } from "@/context/sync"
 import { useTabs } from "@/context/tabs"
 import { TerminalProvider, useTerminal } from "@/context/terminal"
 import { PromptInput } from "@/components/prompt-input"
+import { PromptInputV2Composer } from "@/components/prompt-input-v2"
 import { useSettingsCommand } from "@/components/settings-dialog"
 import { setCursorPosition } from "@/components/prompt-input/editor-dom"
 import { promptLength } from "@/components/prompt-input/history"
@@ -2086,27 +2087,54 @@ export default function Page() {
       <SessionComposerRegion
         controller={controller}
         promptInput={
-          <PromptInput
-            controls={inputController()}
-            ref={(el) => {
-              inputRef = el
-            }}
-            newSessionWorktree={newSessionWorktree()}
-            onNewSessionWorktreeReset={() => setStore("newSessionWorktree", "main")}
-            onSubmit={() => {
-              comments.clear()
-              resumeScroll()
-            }}
-            edit={editingFollowup()}
-            onEditLoaded={clearFollowupEdit}
-            shouldQueue={queueEnabled}
-            onQueue={queueFollowup}
-            onAbort={() => {
-              const id = params.id
-              if (!id) return
-              setFollowup("paused", id, true)
-            }}
-          />
+          <Show
+            when={newSessionDesign()}
+            fallback={
+              <PromptInput
+                controls={inputController()}
+                ref={(el) => {
+                  inputRef = el
+                }}
+                newSessionWorktree={newSessionWorktree()}
+                onNewSessionWorktreeReset={() => setStore("newSessionWorktree", "main")}
+                onSubmit={() => {
+                  comments.clear()
+                  resumeScroll()
+                }}
+                edit={editingFollowup()}
+                onEditLoaded={clearFollowupEdit}
+                shouldQueue={queueEnabled}
+                onQueue={queueFollowup}
+                onAbort={() => {
+                  const id = params.id
+                  if (!id) return
+                  setFollowup("paused", id, true)
+                }}
+              />
+            }
+          >
+            <PromptInputV2Composer
+              controls={inputController()}
+              ref={(el) => {
+                inputRef = el
+              }}
+              newSessionWorktree={newSessionWorktree()}
+              onNewSessionWorktreeReset={() => setStore("newSessionWorktree", "main")}
+              onSubmit={() => {
+                comments.clear()
+                resumeScroll()
+              }}
+              edit={editingFollowup()}
+              onEditLoaded={clearFollowupEdit}
+              shouldQueue={queueEnabled}
+              onQueue={queueFollowup}
+              onAbort={() => {
+                const id = params.id
+                if (!id) return
+                setFollowup("paused", id, true)
+              }}
+            />
+          </Show>
         }
       />
     )

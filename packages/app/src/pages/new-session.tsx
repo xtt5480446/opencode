@@ -6,7 +6,7 @@ import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { NewSessionDesignView } from "@/components/session"
-import { PromptInput } from "@/components/prompt-input"
+import { PromptInputV2Composer } from "@/components/prompt-input-v2"
 import { StatusPopoverV2 } from "@/components/status-popover"
 import {
   PromptProjectAddButton,
@@ -152,21 +152,18 @@ export default function NewSessionPage() {
                   }
                 >
                   <div class="flex flex-col" classList={{ "gap-8": showWorkspaceBar(), "gap-3": !showWorkspaceBar() }}>
-                    <PromptInput
+                    <PromptInputV2Composer
                       controls={inputController()}
-                      variant="new-session"
                       ref={(el) => {
                         inputRef = el
                       }}
                       newSessionWorktree={newSessionWorktree()}
                       onNewSessionWorktreeReset={() => setStore("worktree", undefined)}
                       onSubmit={() => comments.clear()}
-                      toolbar={
-                        <Show when={!projectController.selected()}>
-                          <PromptProjectAddButton controller={projectController} />
-                        </Show>
-                      }
                     />
+                    <Show when={projectController.empty()}>
+                      <PromptProjectAddButton controller={projectController} />
+                    </Show>
                     <Show when={projectController.selected()}>
                       <div
                         class="flex min-h-7 min-w-0 items-center gap-0 text-v2-text-text-faint"
