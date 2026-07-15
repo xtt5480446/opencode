@@ -2,7 +2,7 @@ export * as ConfigMigration from "./migrate"
 
 import { TuiConfigV1 } from "@opencode-ai/tui/config/v1"
 import { Effect, FileSystem, Option, Schema } from "effect"
-import { parse, type ParseError } from "jsonc-parser"
+import { applyEdits, modify, parse, type ParseError } from "jsonc-parser"
 import path from "path"
 import type { Info } from "./schema"
 
@@ -15,26 +15,76 @@ export const run = Effect.fn("cli.config.migrate")(function* (input: {
   readonly state: string
 }) {
   const fs = yield* FileSystem.FileSystem
-  if (yield* fs.exists(input.file).pipe(Effect.orElseSucceed(() => false))) return
+  const modelFile = path.join(input.state, "model.json")
+  const model = yield* readJson(modelFile)
+  const favorites = legacyFavorites(model)
+  const cleanupModel = () => {
+    if (!model || !("favorite" in model)) return Effect.void
+    const next = { ...model }
+    delete next.favorite
+    return write(modelFile, JSON.stringify(next) + "\n")
+  }
+  const currentText = yield* fs.readFileString(input.file).pipe(Effect.catch(() => Effect.succeed(undefined)))
+  if (currentText !== undefined) {
+    const current = yield* readJson(input.file)
+    if (!current) return
+    if (typeof current.models === "object" && current.models !== null && Array.isArray(current.models.favorites)) {
+      yield* cleanupModel()
+      return
+    }
+    if (!favorites.length) return
+    const updated = applyEdits(
+      currentText,
+      modify(currentText, ["models", "favorites"], favorites, {
+        formattingOptions: { tabSize: 2, insertSpaces: true },
+      }),
+    )
+    yield* write(input.file, updated.endsWith("\n") ? updated : updated + "\n")
+    yield* cleanupModel()
+    yield* Effect.logInfo("migrated model favorites to cli config", { from: modelFile, to: input.file })
+    return
+  }
 
   const legacyValue = yield* readJson(path.join(input.config, "tui.json"))
   const legacy = Option.getOrUndefined(decodeV1(legacyValue))
   const kv = yield* readJson(path.join(input.state, "kv.json"))
-  const migrated = migrateV1(legacy, kv ?? {})
+  const migrated = {
+    ...migrateV1(legacy, kv ?? {}),
+    ...(favorites.length ? { models: { favorites } } : {}),
+  }
   if (!Object.keys(migrated).length) return
 
-  const temp = input.file + ".tmp"
-  yield* fs.makeDirectory(path.dirname(input.file), { recursive: true })
-  yield* fs.writeFileString(temp, JSON.stringify(migrated, null, 2) + "\n", { mode: 0o600 })
-  yield* fs.rename(temp, input.file)
+  yield* write(input.file, JSON.stringify(migrated, null, 2) + "\n")
+  yield* cleanupModel()
   yield* Effect.logInfo("migrated cli config", {
     from: [
       legacyValue === undefined ? undefined : path.join(input.config, "tui.json"),
       kv === undefined ? undefined : path.join(input.state, "kv.json"),
+      favorites.length ? modelFile : undefined,
     ].filter(Boolean),
     to: input.file,
   })
+
+  function write(file: string, text: string) {
+    const temp = file + ".tmp"
+    return fs
+      .makeDirectory(path.dirname(file), { recursive: true })
+      .pipe(Effect.andThen(fs.writeFileString(temp, text, { mode: 0o600 })), Effect.andThen(fs.rename(temp, file)))
+  }
 })
+
+function legacyFavorites(value: Record<string, any> | undefined) {
+  if (!Array.isArray(value?.favorite)) return []
+  return [
+    ...new Set(
+      value.favorite.flatMap((item: any) =>
+        typeof item?.providerID === "string" && typeof item?.modelID === "string"
+          ? [`${item.providerID}/${item.modelID}`]
+          : [],
+      ),
+    ),
+  ]
+}
 
 export function migrateV1(legacy: TuiConfigV1.Info | undefined, kv: Record<string, any>): Info {
   const plugins = [
@@ -48,12 +98,16 @@ export function migrateV1(legacy: TuiConfigV1.Info | undefined, kv: Record<strin
   const attentionSoundPack = kv.attention_sound_pack
   const diffView = kv.diff_viewer_view ?? (legacy?.diff_style === "stacked" ? "unified" : undefined)
   const thinking =
-    kv.thinking_mode ??
-    (kv.thinking_visibility === undefined ? undefined : kv.thinking_visibility ? "show" : "hide")
+    kv.thinking_mode ?? (kv.thinking_visibility === undefined ? undefined : kv.thinking_visibility ? "show" : "hide")
 
   return {
     ...(themeName !== undefined || themeMode !== undefined
-      ? { theme: { ...(themeName === undefined ? {} : { name: themeName }), ...(themeMode === undefined ? {} : { mode: themeMode }) } }
+      ? {
+          theme: {
+            ...(themeName === undefined ? {} : { name: themeName }),
+            ...(themeMode === undefined ? {} : { mode: themeMode }),
+          },
+        }
       : {}),
     ...(legacy?.keybinds === undefined ? {} : { keybinds: legacy.keybinds }),
     ...(plugins.length ? { plugins } : {}),

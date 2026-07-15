@@ -1,6 +1,6 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { Global } from "@opencode-ai/core/global"
-import { Effect } from "effect"
+import { Effect, Fiber, Option, Stream } from "effect"
 import { expect, test } from "bun:test"
 import path from "path"
 import { Config } from "../src/config"
@@ -102,9 +102,7 @@ test("migrates before the first update and does not remigrate afterward", async 
           draft.animations = false
           draft.mouse = false
         })
-        yield* Effect.promise(() =>
-          Bun.write(path.join(directory, "tui.json"), JSON.stringify({ theme: "changed" })),
-        )
+        yield* Effect.promise(() => Bun.write(path.join(directory, "tui.json"), JSON.stringify({ theme: "changed" })))
         return yield* service.get()
       }),
     )
@@ -122,7 +120,7 @@ test("migrates before the first update and does not remigrate afterward", async 
 
 test("updates a config draft while preserving JSONC comments", async () => {
   const directory = await Bun.$`mktemp -d`.text().then((value) => value.trim())
-  await Bun.write(path.join(directory, "cli.json"), "{\n  // Keep this comment\n  \"animations\": true\n}\n")
+  await Bun.write(path.join(directory, "cli.json"), '{\n  // Keep this comment\n  "animations": true\n}\n')
 
   try {
     const config = await run(
@@ -137,6 +135,93 @@ test("updates a config draft while preserving JSONC comments", async () => {
 
     expect(config).toEqual({ animations: true, prompt: { paste: "compact" } })
     expect(await Bun.file(path.join(directory, "cli.json")).text()).toContain("// Keep this comment")
+  } finally {
+    await Bun.$`rm -rf ${directory}`
+  }
+})
+
+test("migrates model favorites into an existing cli config", async () => {
+  const directory = await Bun.$`mktemp -d`.text().then((value) => value.trim())
+  await Bun.write(path.join(directory, "cli.json"), '{\n  // Keep this comment\n  "animations": true\n}\n')
+  await Bun.write(
+    path.join(directory, "model.json"),
+    JSON.stringify({
+      recent: [{ providerID: "anthropic", modelID: "recent" }],
+      favorite: [
+        { providerID: "anthropic", modelID: "claude-sonnet" },
+        { providerID: "openai", modelID: "gpt/favorite" },
+      ],
+    }),
+  )
+
+  try {
+    const config = await run(
+      directory,
+      Effect.gen(function* () {
+        const service = yield* Config.Service
+        return yield* service.get()
+      }),
+    )
+
+    expect(config.models?.favorites).toEqual(["anthropic/claude-sonnet", "openai/gpt/favorite"])
+    expect(await Bun.file(path.join(directory, "cli.json")).text()).toContain("// Keep this comment")
+    const model = await Bun.file(path.join(directory, "model.json")).json()
+    expect(model).toHaveProperty("recent")
+    expect(model).not.toHaveProperty("favorite")
+  } finally {
+    await Bun.$`rm -rf ${directory}`
+  }
+})
+
+test("emits config changes written by another process", async () => {
+  const directory = await Bun.$`mktemp -d`.text().then((value) => value.trim())
+  await Bun.write(path.join(directory, "cli.json"), JSON.stringify({ animations: true }))
+
+  try {
+    const config = await run(
+      directory,
+      Effect.gen(function* () {
+        const service = yield* Config.Service
+        const update = yield* service.changes.pipe(Stream.runHead, Effect.forkChild)
+        yield* Effect.sleep("100 millis")
+        yield* Effect.promise(() => Bun.write(path.join(directory, "cli.json"), JSON.stringify({ animations: false })))
+        return yield* Fiber.join(update).pipe(Effect.timeout("5 seconds"))
+      }),
+    )
+
+    expect(Option.getOrThrow(config).animations).toBe(false)
+  } finally {
+    await Bun.$`rm -rf ${directory}`
+  }
+})
+
+test("serializes updates from separate config services", async () => {
+  const directory = await Bun.$`mktemp -d`.text().then((value) => value.trim())
+  await Bun.write(path.join(directory, "cli.json"), "{}")
+
+  try {
+    await Promise.all([
+      run(
+        directory,
+        Effect.gen(function* () {
+          const service = yield* Config.Service
+          yield* service.update((draft) => {
+            draft.animations = false
+          })
+        }),
+      ),
+      run(
+        directory,
+        Effect.gen(function* () {
+          const service = yield* Config.Service
+          yield* service.update((draft) => {
+            draft.mouse = false
+          })
+        }),
+      ),
+    ])
+
+    expect(await Bun.file(path.join(directory, "cli.json")).json()).toEqual({ animations: false, mouse: false })
   } finally {
     await Bun.$`rm -rf ${directory}`
   }

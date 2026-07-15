@@ -1,12 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { testRender } from "@opentui/solid"
 import { expect, test } from "bun:test"
-import {
-  resolve,
-  ConfigProvider,
-  useConfig,
-  type Interface,
-} from "../src/config"
+import { resolve, ConfigProvider, useConfig, type Interface } from "../src/config"
 
 test("resolves nested config and keybind defaults", () => {
   const config = resolve(
@@ -62,4 +57,39 @@ test("provides config and its host interface", async () => {
   } finally {
     app.renderer.destroy()
   }
+})
+
+test("reconciles config updates from another process", async () => {
+  const config = resolve({ models: { favorites: ["anthropic/old"] } }, { terminalSuspend: true })
+  let listener: ((info: { models?: { favorites?: string[] } }) => void) | undefined
+  let unsubscribed = false
+  const service: Interface = {
+    get: async () => ({}),
+    update: async () => ({}),
+    subscribe: (next) => {
+      listener = next
+      return () => {
+        unsubscribed = true
+      }
+    },
+  }
+  let context: ReturnType<typeof useConfig> | undefined
+
+  function Consumer() {
+    context = useConfig()
+    return <text>{context.data.models?.favorites?.join(",")}</text>
+  }
+
+  const app = await testRender(() => (
+    <ConfigProvider config={config} service={service}>
+      <Consumer />
+    </ConfigProvider>
+  ))
+  await app.renderOnce()
+  expect(app.captureCharFrame()).toContain("anthropic/old")
+  listener?.({ models: { favorites: ["anthropic/new"] } })
+  await app.renderOnce()
+  expect(app.captureCharFrame()).toContain("anthropic/new")
+  app.renderer.destroy()
+  expect(unsubscribed).toBe(true)
 })

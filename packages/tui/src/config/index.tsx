@@ -2,7 +2,7 @@ export * as Config from "."
 
 import { createBindingLookup } from "@opentui/keymap/extras"
 import { Schema } from "effect"
-import { createContext, type JSX, useContext } from "solid-js"
+import { createContext, onCleanup, onMount, type JSX, useContext } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { TuiKeybind } from "./keybind"
 
@@ -10,6 +10,7 @@ export interface Interface {
   readonly path?: string
   readonly get: () => Promise<Info>
   readonly update: (update: (draft: any) => void) => Promise<Info>
+  readonly subscribe?: (listener: (info: Info) => void) => () => void
 }
 
 export const AttentionSoundName = Schema.Literals([
@@ -126,6 +127,11 @@ export const Info = Schema.Struct({
       onboarding: Schema.optional(Schema.Boolean).annotate({ description: "Show getting-started guidance" }),
     }),
   ).annotate({ description: "In-product guidance settings" }),
+  models: Schema.optional(
+    Schema.Struct({
+      favorites: Schema.optional(Schema.Array(Schema.String)).annotate({ description: "Favorite model IDs" }),
+    }),
+  ).annotate({ description: "Model picker settings" }),
   animations: Schema.optional(Schema.Boolean).annotate({ description: "Enable interface animations" }),
   mouse: Schema.optional(Schema.Boolean).annotate({ description: "Enable terminal mouse capture" }),
 })
@@ -196,6 +202,12 @@ export function ConfigProvider(props: {
     setConfig(reconcile(resolve(info, props.options ?? { terminalSuspend: true })))
     return info
   }
+  onMount(() => {
+    const unsubscribe = host?.subscribe?.((info) => {
+      setConfig(reconcile(resolve(info, props.options ?? { terminalSuspend: true })))
+    })
+    if (unsubscribe) onCleanup(unsubscribe)
+  })
   return (
     <ConfigContext.Provider value={{ data: config, path: host?.path, update }}>{props.children}</ConfigContext.Provider>
   )

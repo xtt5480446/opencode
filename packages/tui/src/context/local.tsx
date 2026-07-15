@@ -13,6 +13,7 @@ import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
 import { useData } from "./data"
 import { usePermission } from "./permission"
+import { useConfig } from "../config"
 
 export type LocalTheme = {
   secondary: RGBA
@@ -60,6 +61,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const args = useArgs()
     const event = useEvent()
     const permission = usePermission()
+    const config = useConfig()
 
     function isModelValid(model: { providerID: string; modelID: string }) {
       return !!data.location.model
@@ -151,16 +153,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           providerID: string
           modelID: string
         }[]
-        favorite: {
-          providerID: string
-          modelID: string
-        }[]
         variant: Record<string, string | undefined>
       }>({
         ready: false,
         model: {},
         recent: [],
-        favorite: [],
         variant: {},
       })
 
@@ -177,7 +174,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         state.pending = false
         void writeJsonAtomic(filePath, {
           recent: modelStore.recent,
-          favorite: modelStore.favorite,
           variant: modelStore.variant,
         })
       }
@@ -187,7 +183,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (!x || typeof x !== "object") return
           const value = x as Record<string, unknown>
           if (Array.isArray(value.recent)) setModelStore("recent", value.recent)
-          if (Array.isArray(value.favorite)) setModelStore("favorite", value.favorite)
           if (typeof value.variant === "object" && value.variant !== null)
             setModelStore("variant", value.variant as Record<string, string | undefined>)
         })
@@ -242,7 +237,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return modelStore.recent
         },
         favorite() {
-          return modelStore.favorite
+          return (config.data.models?.favorites ?? []).map(parseModel)
         },
         parsed: createMemo(() => {
           const value = currentModel()
@@ -279,7 +274,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           setModelStore("model", a.id, { ...val })
         },
         cycleFavorite(direction: 1 | -1) {
-          const favorites = modelStore.favorite.filter((item) => isModelValid(item))
+          const favorites = (config.data.models?.favorites ?? []).map(parseModel).filter((item) => isModelValid(item))
           if (!favorites.length) {
             toast.show({
               variant: "info",
@@ -328,27 +323,24 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           })
         },
         toggleFavorite(model: { providerID: string; modelID: string }) {
-          batch(() => {
-            if (!isModelValid(model)) {
-              toast.show({
-                message: `Model ${model.providerID}/${model.modelID} is not valid`,
-                variant: "warning",
-                duration: 3000,
-              })
-              return
-            }
-            const exists = modelStore.favorite.some(
-              (x) => x.providerID === model.providerID && x.modelID === model.modelID,
-            )
-            const next = exists
-              ? modelStore.favorite.filter((x) => x.providerID !== model.providerID || x.modelID !== model.modelID)
-              : [model, ...modelStore.favorite]
-            setModelStore(
-              "favorite",
-              next.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
-            )
-            save()
-          })
+          if (!isModelValid(model)) {
+            toast.show({
+              message: `Model ${model.providerID}/${model.modelID} is not valid`,
+              variant: "warning",
+              duration: 3000,
+            })
+            return
+          }
+          const key = `${model.providerID}/${model.modelID}`
+          void config
+            .update((draft) => {
+              draft.models ??= {}
+              const favorites: string[] = draft.models.favorites ?? []
+              draft.models.favorites = favorites.includes(key)
+                ? favorites.filter((favorite) => favorite !== key)
+                : [key, ...favorites]
+            })
+            .catch(() => {})
         },
         variant: {
           selected() {
@@ -441,7 +433,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         })
 
       const slots = createMemo(() => {
-        const existing = new Set(data.session.list().filter((x) => x.parentID === undefined).map((x) => x.id))
+        const existing = new Set(
+          data.session
+            .list()
+            .filter((x) => x.parentID === undefined)
+            .map((x) => x.id),
+        )
         return sessionStore.pinned.filter((id) => existing.has(id)).slice(0, 9)
       })
 

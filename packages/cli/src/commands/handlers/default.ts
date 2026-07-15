@@ -4,7 +4,7 @@ import { run } from "@opencode-ai/tui"
 import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
 import { Config } from "../../config"
-import { Context, Effect, FileSystem, Option } from "effect"
+import { Context, Effect, Fiber, FileSystem, Option, Stream } from "effect"
 import { ServerConnection } from "../../services/server-connection"
 import { Updater } from "../../services/updater"
 import { UpdatePreflight } from "../../services/update-preflight"
@@ -58,6 +58,12 @@ export default Runtime.handler(Commands, (input) =>
         path: config.path,
         get: () => runPromise(config.get()),
         update: (update) => runPromise(config.update(update)),
+        subscribe: (listener) => {
+          const fiber = runFork(config.changes.pipe(Stream.runForEach((info) => Effect.sync(() => listener(info)))))
+          return () => {
+            runFork(Fiber.interrupt(fiber))
+          }
+        },
       },
       packages: {
         resolve: (spec) =>
