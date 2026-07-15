@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { ConfigProvider, Effect, Layer, Stream } from "effect"
 import { Headers, HttpClientRequest } from "effect/unstable/http"
-import { LLM, LLMError, Message, Model, ToolCallPart, Usage } from "../../src"
+import { LLM, LLMError, LLMEvent, Message, Model, ToolCallPart, Usage } from "../../src"
 import { Auth, LLMClient, RequestExecutor, WebSocketExecutor } from "../../src/route"
 import * as Azure from "../../src/providers/azure"
 import * as OpenAI from "../../src/providers/openai"
@@ -1283,6 +1283,35 @@ describe("OpenAI Responses route", () => {
         providerMetadata: { openai: { itemId: "item_1" } },
       })
       expect(response.finishReason).toBe("tool-calls")
+    }),
+  )
+
+  it.effect("rejects an incomplete pending function call", () =>
+    Effect.gen(function* () {
+      const body = sseEvents(
+        {
+          type: "response.output_item.added",
+          item: { type: "function_call", id: "item_1", call_id: "call_1", name: "patch", arguments: "" },
+        },
+        {
+          type: "response.incomplete",
+          response: { incomplete_details: { reason: "max_output_tokens" } },
+        },
+      )
+      const events: LLMEvent[] = []
+      const error = yield* LLMClient.stream(
+        LLM.updateRequest(request, {
+          tools: [{ name: "patch", description: "Apply a patch", inputSchema: { type: "object" } }],
+        }),
+      ).pipe(
+        Stream.runForEach((event) => Effect.sync(() => events.push(event))),
+        Effect.flip,
+        Effect.provide(fixedResponse(body)),
+      )
+
+      expect(events.filter(LLMEvent.is.toolCall)).toEqual([])
+      expect(error.reason).toMatchObject({ _tag: "InvalidProviderOutput" })
+      expect(error.message).toContain("OpenAI Responses response incomplete with pending tool calls")
     }),
   )
 
