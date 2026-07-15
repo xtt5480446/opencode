@@ -1259,6 +1259,33 @@ describe("OpenAI Responses route", () => {
     }),
   )
 
+  it.effect("finalizes an empty function call when the terminal response omits output_item.done", () =>
+    Effect.gen(function* () {
+      const body = sseEvents(
+        {
+          type: "response.output_item.added",
+          item: { type: "function_call", id: "item_1", call_id: "call_1", name: "patch", arguments: "" },
+        },
+        { type: "response.completed", response: { usage: { input_tokens: 5, output_tokens: 1 } } },
+      )
+      const response = yield* LLMClient.generate(
+        LLM.updateRequest(request, {
+          tools: [{ name: "patch", description: "Apply a patch", inputSchema: { type: "object" } }],
+        }),
+      ).pipe(Effect.provide(fixedResponse(body)))
+
+      expect(response.events).toContainEqual({
+        type: "tool-call",
+        id: "call_1",
+        name: "patch",
+        input: {},
+        providerExecuted: undefined,
+        providerMetadata: { openai: { itemId: "item_1" } },
+      })
+      expect(response.finishReason).toBe("tool-calls")
+    }),
+  )
+
   it.effect("decodes web_search_call as provider-executed tool-call + tool-result", () =>
     Effect.gen(function* () {
       const item = {

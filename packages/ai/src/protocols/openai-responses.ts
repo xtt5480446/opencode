@@ -878,10 +878,15 @@ const onOutputItemDone = Effect.fn("OpenAIResponses.onOutputItemDone")(function*
   return [state, NO_EVENTS] satisfies StepResult
 })
 
-const onResponseFinish = (state: ParserState, event: OpenAIResponsesEvent): StepResult => {
-  const events: LLMEvent[] = []
+const onResponseFinish = Effect.fn("OpenAIResponses.onResponseFinish")(function* (
+  state: ParserState,
+  event: OpenAIResponsesEvent,
+) {
+  const pending = yield* ToolStream.finishAll(ADAPTER, state.tools)
+  const events = [...pending.events]
+  const hasFunctionCall = state.hasFunctionCall || pending.events.some(LLMEvent.is.toolCall)
   const lifecycle = Lifecycle.finish(state.lifecycle, events, {
-    reason: mapFinishReason(event, state.hasFunctionCall),
+    reason: mapFinishReason(event, hasFunctionCall),
     usage: mapUsage(event.response?.usage),
     providerMetadata:
       event.response?.id || event.response?.service_tier
@@ -891,8 +896,8 @@ const onResponseFinish = (state: ParserState, event: OpenAIResponsesEvent): Step
           })
         : undefined,
   })
-  return [{ ...state, lifecycle }, events]
-}
+  return [{ ...state, tools: pending.tools, hasFunctionCall, lifecycle }, events] satisfies StepResult
+})
 
 // Build a single human-readable message from whatever the provider supplied.
 // When both code and message are present, prefix the code so consumers see
@@ -939,8 +944,7 @@ const step = (state: ParserState, event: OpenAIResponsesEvent) => {
   if (event.type === "response.output_item.added") return Effect.succeed(onOutputItemAdded(state, event))
   if (event.type === "response.function_call_arguments.delta") return onFunctionCallArgumentsDelta(state, event)
   if (event.type === "response.output_item.done") return onOutputItemDone(state, event)
-  if (event.type === "response.completed" || event.type === "response.incomplete")
-    return Effect.succeed(onResponseFinish(state, event))
+  if (event.type === "response.completed" || event.type === "response.incomplete") return onResponseFinish(state, event)
   if (event.type === "response.failed") return providerError(event, "OpenAI Responses response failed")
   if (event.type === "error") return providerError(event, "OpenAI Responses stream error")
   return Effect.succeed<StepResult>([state, NO_EVENTS])
