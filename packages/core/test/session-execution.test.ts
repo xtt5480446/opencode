@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ConnectionError } from "@opencode-ai/llm"
+import { ConnectionError } from "@opencode-ai/ai"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"

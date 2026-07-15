@@ -1,7 +1,6 @@
 import { Prompt, type PromptRef } from "../component/prompt"
 import { createEffect, createMemo, createSignal, onMount, Show } from "solid-js"
 import { Logo } from "../component/logo"
-import { Toast } from "../ui/toast"
 import { useArgs } from "../context/args"
 import { useRouteData } from "../context/route"
 import { usePromptRef } from "../context/prompt"
@@ -9,7 +8,7 @@ import { useLocal } from "../context/local"
 import { usePluginRuntime } from "../plugin/runtime"
 import { useEditorContext } from "../context/editor"
 import { useData } from "../context/data"
-import { useSetLocation } from "../context/location"
+import { useLocation } from "../context/location"
 import { FormPrompt } from "./session/form"
 import { PluginSlot } from "../plugin/context"
 
@@ -28,12 +27,12 @@ export function Home() {
   const local = useLocal()
   const editor = useEditorContext()
   const data = useData()
-  const setLocation = useSetLocation()
+  const location = useLocation()
   // Global MCP elicitations can arrive without a session route, so keep them reachable from Home.
   const forms = createMemo(() => data.session.form.list("global", data.location.default()) ?? [])
   let sent = false
 
-  createEffect(() => setLocation(data.location.default()))
+  createEffect(() => location.set(data.location.default()))
 
   onMount(() => {
     editor.clearSelection()
@@ -88,7 +87,6 @@ export function Home() {
         </box>
         <PluginSlot name="home.bottom" />
         <box flexGrow={1} minHeight={0} />
-        <Toast />
       </box>
       <box width="100%" flexShrink={0}>
         <PluginSlot name="home.footer" />

@@ -162,6 +162,8 @@ export function fromPromise(plugin: Plugin) {
               register(host.tool.hook(name, (event) => Effect.promise(() => Promise.resolve(callback(event))))),
           },
           session: {
+            hook: (name, callback) =>
+              register(host.session.hook(name, (event) => Effect.promise(() => Promise.resolve(callback(event))))),
             create: (input) =>
               run(
                 host.session.create(

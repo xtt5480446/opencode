@@ -367,6 +367,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: PluginV2.Int
       },
     },
     session: {
+      hook: (name, callback) => hooks.register("session", name, callback),
       create: (input) =>
         runtime.session.create({
           id: input?.id,

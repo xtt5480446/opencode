@@ -18,7 +18,6 @@ import { EOL, tmpdir } from "node:os"
 import { mkdir, writeFile } from "node:fs/promises"
 import { useRoute, useRouteData } from "../../context/route"
 import { createStore } from "solid-js/store"
-import { useProject } from "../../context/project"
 import { useData } from "../../context/data"
 import { SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
@@ -53,7 +52,7 @@ import { Composer } from "./composer"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
-import { Toast, useToast } from "../../ui/toast"
+import { useToast } from "../../ui/toast"
 import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
 import { useEpilogue } from "../../context/epilogue"
@@ -71,7 +70,7 @@ import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { usePluginRuntime } from "../../plugin/runtime"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
-import { useSetLocation } from "../../context/location"
+import { useLocation } from "../../context/location"
 import { createSessionRows, resolvePart, type PartRef, type SessionRow } from "./rows"
 import { switchLabel } from "../../util/model"
 
@@ -106,7 +105,6 @@ export function Session() {
   const route = useRouteData("session")
   const { navigate } = useRoute()
   const data = useData()
-  const project = useProject()
   const paths = useTuiPaths()
   const configState = useConfig()
   const config = configState.data
@@ -115,9 +113,9 @@ export function Session() {
   const session = createMemo(() => data.session.get(route.sessionID))
   const messages = () => data.session.message.list(route.sessionID)
   const location = createMemo(() => session()?.location)
-  const setLocation = useSetLocation()
+  const currentLocation = useLocation()
 
-  createEffect(() => setLocation(location()))
+  createEffect(() => currentLocation.set(location()))
 
   createEffect(() => {
     const title = Locale.truncate(session()?.title ?? "", 50)
@@ -211,7 +209,6 @@ export function Session() {
         navigate({ type: "home" })
         return
       }
-      project.workspace.set(info.location.workspaceID)
       editor.reconnect(info.location.directory)
       if (route.sessionID === sessionID && scroll) scroll.scrollBy(100_000)
     })().catch((error) => {
@@ -919,7 +916,6 @@ export function Session() {
               </Switch>
             </box>
           </Show>
-          <Toast />
         </box>
         <Show when={sidebarVisible()}>
           <Switch>
@@ -2322,6 +2318,7 @@ function BlockTool(props: {
 function Shell(props: ToolProps) {
   const { theme } = useTheme()
   const ctx = use()
+  const client = useClient()
   const data = useData()
   const permission = createMemo(() => {
     const request = data.session.permission.list(ctx.sessionID)?.[0]
@@ -2335,13 +2332,35 @@ function Shell(props: ToolProps) {
   })
   const isRunning = createMemo(() => props.part.state.status === "running" || backgroundRunning())
   const command = createMemo(() => stringValue(props.input.command))
+  const [expanded, setExpanded] = createSignal(false)
+  const [backgroundOutput, setBackgroundOutput] = createSignal("")
+  let loading = false
+  const loadBackgroundOutput = async () => {
+    const id = shellID()
+    if (!id || loading) return
+    loading = true
+    const location = data.session.get(ctx.sessionID)?.location
+    await client.api.shell
+      .output({
+        id,
+        limit: 1024 * 1024,
+        location: location ? { directory: location.directory, workspace: location.workspaceID } : undefined,
+      })
+      .then((response) => setBackgroundOutput(stripAnsi(response.data.output.trim())))
+      .catch(() => undefined)
+    loading = false
+  }
+  createEffect(() => {
+    if (!expanded() || !backgroundRunning()) return
+    const interval = setInterval(() => void loadBackgroundOutput(), 1_000)
+    onCleanup(() => clearInterval(interval))
+  })
   const output = createMemo(() => {
     if (props.part.state.status === "streaming") return ""
-    if (shellID()) return ""
+    if (shellID()) return expanded() ? backgroundOutput() : ""
     const content = props.part.state.content[0]
     return stripAnsi(content?.type === "text" ? content.text.trim() : "")
   })
-  const [expanded, setExpanded] = createSignal(false)
   const maxLines = 10
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
   const input = createMemo(() => (command() ? `${isRunning() ? "" : "$ "}${command()}` : ""))
@@ -2351,9 +2370,15 @@ function Shell(props: ToolProps) {
     if (expanded() || !collapsed().overflow) return content()
     return collapsed().output
   })
+  const expandable = createMemo(() => Boolean(shellID()) || collapsed().overflow)
+  const toggle = () => {
+    const next = !expanded()
+    setExpanded(next)
+    if (next) void loadBackgroundOutput()
+  }
 
   return (
-    <BlockTool part={props.part} onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}>
+    <BlockTool part={props.part} onClick={expandable() ? toggle : undefined}>
       <box gap={1}>
         <Show
           when={command()}
@@ -2382,9 +2407,6 @@ function Shell(props: ToolProps) {
         </Show>
         <Show when={shellID()}>
           <StatusBadge>Background</StatusBadge>
-        </Show>
-        <Show when={collapsed().overflow}>
-          <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
         </Show>
       </box>
     </BlockTool>
@@ -2702,27 +2724,36 @@ function ApplyPatch(props: ToolProps) {
                 }}
                 part={props.part}
               >
-                <box paddingLeft={1}>
-                  <diff
-                    diff={file.patch}
-                    view={view()}
-                    filetype={filetype(file.relativePath)}
-                    syntaxStyle={syntax()}
-                    showLineNumbers={true}
-                    width="100%"
-                    wrapMode={ctx.diffWrapMode()}
-                    fg={theme.text}
-                    addedBg={theme.diffAddedBg}
-                    removedBg={theme.diffRemovedBg}
-                    contextBg={theme.diffContextBg}
-                    addedSignColor={theme.diffHighlightAdded}
-                    removedSignColor={theme.diffHighlightRemoved}
-                    lineNumberFg={theme.diffLineNumber}
-                    lineNumberBg={theme.diffContextBg}
-                    addedLineNumberBg={theme.diffAddedLineNumberBg}
-                    removedLineNumberBg={theme.diffRemovedLineNumberBg}
-                  />
-                </box>
+                <Show
+                  when={file.type !== "delete"}
+                  fallback={
+                    <text fg={theme.diffRemoved}>
+                      -{file.deletions} line{file.deletions !== 1 ? "s" : ""}
+                    </text>
+                  }
+                >
+                  <box paddingLeft={1}>
+                    <diff
+                      diff={file.patch}
+                      view={view()}
+                      filetype={filetype(file.relativePath)}
+                      syntaxStyle={syntax()}
+                      showLineNumbers={true}
+                      width="100%"
+                      wrapMode={ctx.diffWrapMode()}
+                      fg={theme.text}
+                      addedBg={theme.diffAddedBg}
+                      removedBg={theme.diffRemovedBg}
+                      contextBg={theme.diffContextBg}
+                      addedSignColor={theme.diffHighlightAdded}
+                      removedSignColor={theme.diffHighlightRemoved}
+                      lineNumberFg={theme.diffLineNumber}
+                      lineNumberBg={theme.diffContextBg}
+                      addedLineNumberBg={theme.diffAddedLineNumberBg}
+                      removedLineNumberBg={theme.diffRemovedLineNumberBg}
+                    />
+                  </box>
+                </Show>
               </BlockTool>
             )}
           </For>

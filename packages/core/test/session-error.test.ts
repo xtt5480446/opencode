@@ -18,7 +18,7 @@ import {
   ServerError,
   TimeoutError,
   ToolFailure,
-} from "@opencode-ai/llm"
+} from "@opencode-ai/ai"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { Tool } from "@opencode-ai/plugin/v2/effect/tool"
 import { toSessionError } from "@opencode-ai/core/session/to-session-error"

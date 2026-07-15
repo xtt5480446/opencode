@@ -339,7 +339,7 @@ export function make(options: ClientOptions) {
           {
             method: "POST",
             path: `/api/service/stop`,
-            body: { instanceID: input["instanceID"], targetVersion: input["targetVersion"] },
+            body: { instanceID: input["instanceID"] },
             successStatus: 200,
             declaredStatuses: [401, 400],
             empty: false,
@@ -522,7 +522,7 @@ export function make(options: ClientOptions) {
           {
             method: "POST",
             path: `/api/session/${encodeURIComponent(input.sessionID)}/move`,
-            body: { destination: input["destination"], moveChanges: input["moveChanges"] },
+            body: { directory: input["directory"], workspaceID: input["workspaceID"] },
             successStatus: 204,
             declaredStatuses: [404, 400, 401],
             empty: true,
