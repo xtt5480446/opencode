@@ -82,8 +82,6 @@ export interface ApiFailure {
   readonly status?: number | undefined
   /** Provider machine-readable error code or type string (e.g. `context_length_exceeded`, `overloaded_error`). */
   readonly code?: string | undefined
-  /** Provider or SDK retry hint, used only when stronger structured signals are absent. */
-  readonly isRetryable?: boolean | undefined
   readonly retryAfterMs?: number | undefined
   readonly rateLimit?: HttpRateLimitDetails | undefined
   readonly requestID?: string | undefined
@@ -162,8 +160,7 @@ export const classifyApiFailure = (input: ApiFailure): LLMError => {
   )
     return serverError(input, common)
   if (input.status === 429) return rateLimit(input, common)
-  if (input.status !== undefined && input.status >= 500)
-    return input.isRetryable === false ? new APIError(common) : serverError(input, common)
+  if (input.status !== undefined && input.status >= 500) return serverError(input, common)
   if (
     input.status === 400 ||
     input.status === 409 ||

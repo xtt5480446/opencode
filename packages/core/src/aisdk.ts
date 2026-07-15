@@ -773,7 +773,7 @@ function llmError(error: unknown): LLMError {
   if (APICallError.isInstance(error)) {
     const code = extractApiFailureCode(error.data) ?? extractApiFailureCode(error.responseBody)
     if (error.statusCode === undefined) {
-      if (code) return classifyApiFailure({ message: error.message, code, isRetryable: error.isRetryable })
+      if (code) return classifyApiFailure({ message: error.message, code })
       return error.isRetryable
         ? new ConnectionError({ message: error.message, url: RequestExecutor.redactUrl(error.url) })
         : new APIError({ message: error.message })
@@ -783,7 +783,6 @@ function llmError(error: unknown): LLMError {
       message: error.message,
       status: error.statusCode,
       code,
-      isRetryable: error.isRetryable,
       retryAfterMs: headerRetryAfterMs(error.responseHeaders),
       requestID: error.responseHeaders?.["x-request-id"] ?? error.responseHeaders?.["request-id"],
       http: new HttpContext({
