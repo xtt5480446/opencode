@@ -180,6 +180,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const agent = {
       list,
+      hasCustom: createMemo(() => list().some((item) => item.name !== "build" && item.name !== "plan")),
       current() {
         return pickAgent(scope()?.agent ?? store.current)
       },
