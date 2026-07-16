@@ -80,9 +80,11 @@ export function DialogEditProject(props: { project: LocalProject; server: Server
       const start = store.startup.trim()
 
       if (props.project.id && props.project.id !== "global") {
-        await serverSDK().client.project.update({
+        const editing = (await serverSDK().backend).capabilities.projectEditing
+        if (!editing) throw new Error("Project editing is not supported by this server")
+        await editing.update({
           projectID: props.project.id,
-          directory: props.project.worktree,
+          location: { directory: props.project.worktree },
           name,
           icon: { color: store.color || "", override: store.iconOverride || "" },
           commands: { start },

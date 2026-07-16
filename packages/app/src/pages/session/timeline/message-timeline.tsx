@@ -1,6 +1,7 @@
 import {
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   For,
   Index,
@@ -46,12 +47,12 @@ import { TextField } from "@opencode-ai/ui/text-field"
 import { TextReveal } from "@opencode-ai/ui/text-reveal"
 import { TextShimmer } from "@opencode-ai/ui/text-shimmer"
 import type {
-  AssistantMessage,
-  Message as MessageType,
-  Part as PartType,
-  ToolPart,
-  UserMessage,
-} from "@opencode-ai/sdk/v2"
+  AppAssistantMessage as AssistantMessage,
+  AppMessage as MessageType,
+  AppPart as PartType,
+  AppUserMessage as UserMessage,
+} from "@/context/backend"
+type ToolPart = Extract<PartType, { type: "tool" }>
 import { showToast } from "@/utils/toast"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import { Popover as KobaltePopover } from "@kobalte/core/popover"
@@ -290,7 +291,14 @@ export function MessageTimeline(props: {
   const titleValue = createMemo(() => info()?.title)
   const titleLabel = createMemo(() => sessionTitle(titleValue()))
   const shareUrl = createMemo(() => info()?.share?.url)
-  const shareEnabled = createMemo(() => sync().data.config.share !== "disabled")
+  const [backend] = createResource(
+    () => sdk().backend,
+    (value) => value,
+  )
+  const shareEnabled = createMemo(
+    () => sync().data.config.share !== "disabled" && !!backend()?.capabilities.sessionExtrasV1,
+  )
+  const canArchive = createMemo(() => !!backend()?.capabilities.sessionExtrasV1)
   const parentID = createMemo(() => info()?.parentID)
   const parent = createMemo(() => {
     const id = parentID()
@@ -647,14 +655,22 @@ export function MessageTimeline(props: {
   }
 
   const shareMutation = useMutation(() => ({
-    mutationFn: (id: string) => serverSDK().client.session.share({ sessionID: id }),
+    mutationFn: async (id: string) => {
+      const capability = (await serverSDK().backend).capabilities.sessionExtrasV1
+      if (!capability) throw new Error("Session sharing is not supported by this server")
+      return capability.share({ location: { directory: sdk().directory }, sessionID: id })
+    },
     onError: (err) => {
       console.error("Failed to share session", err)
     },
   }))
 
   const unshareMutation = useMutation(() => ({
-    mutationFn: (id: string) => serverSDK().client.session.unshare({ sessionID: id }),
+    mutationFn: async (id: string) => {
+      const capability = (await serverSDK().backend).capabilities.sessionExtrasV1
+      if (!capability) throw new Error("Session sharing is not supported by this server")
+      return capability.unshare({ location: { directory: sdk().directory }, sessionID: id })
+    },
     onError: (err) => {
       console.error("Failed to unshare session", err)
     },
@@ -662,7 +678,15 @@ export function MessageTimeline(props: {
 
   const titleMutation = useMutation(() => ({
     mutationFn: (input: { id: string; title: string }) =>
-      sdk().client.session.update({ sessionID: input.id, title: input.title }),
+      sdk().backend.then((client) => {
+        const capability = client.capabilities.sessionActionsV1
+        if (!capability) throw new Error("Session renaming is not supported by this server")
+        return capability.rename({
+          location: { directory: sdk().directory },
+          sessionID: input.id,
+          title: input.title,
+        })
+      }),
     onSuccess: (_, input) => {
       sync().set(
         produce((draft) => {
@@ -806,7 +830,11 @@ export function MessageTimeline(props: {
     const nextSession = index === -1 ? undefined : (sessions[index + 1] ?? sessions[index - 1])
 
     await sdk()
-      .client.session.update({ sessionID, time: { archived: Date.now() } })
+      .backend.then(async (client) => {
+        const capability = client.capabilities.sessionExtrasV1
+        if (!capability) throw new Error("Session archiving is not supported by this server")
+        await capability.archive({ location: { directory: sdk().directory }, sessionID, archivedAt: Date.now() })
+      })
       .then(() => {
         sync().set(
           produce((draft) => {
@@ -835,8 +863,11 @@ export function MessageTimeline(props: {
     const nextSession = index === -1 ? undefined : (sessions[index + 1] ?? sessions[index - 1])
 
     const result = await sdk()
-      .client.session.delete({ sessionID })
-      .then((x) => x.data)
+      .backend.then((client) => {
+        const capability = client.capabilities.sessionActionsV1
+        if (!capability) throw new Error("Session deletion is not supported by this server")
+        return capability.remove({ location: { directory: sdk().directory }, sessionID })
+      })
       .catch((err) => {
         showToast({
           title: language.t("session.delete.failed.title"),
@@ -1203,7 +1234,10 @@ export function MessageTimeline(props: {
         return (
           <TimelineRowFrame row={retryRow}>
             <div data-slot="session-turn-message-container" class="w-full px-4 md:px-5">
-              <SessionRetry status={sessionStatus()} show={activeMessageID() === retryRow().userMessageID} />
+              <SessionRetry
+                status={((status) => (status.type === "running" ? { type: "busy" as const } : status))(sessionStatus())}
+                show={activeMessageID() === retryRow().userMessageID}
+              />
             </div>
           </TimelineRowFrame>
         )
@@ -1549,9 +1583,11 @@ export function MessageTimeline(props: {
                                     </DropdownMenu.ItemLabel>
                                   </DropdownMenu.Item>
                                 </Show>
-                                <DropdownMenu.Item onSelect={() => void archiveSession(id)}>
-                                  <DropdownMenu.ItemLabel>{language.t("common.archive")}</DropdownMenu.ItemLabel>
-                                </DropdownMenu.Item>
+                                <Show when={canArchive()}>
+                                  <DropdownMenu.Item onSelect={() => void archiveSession(id)}>
+                                    <DropdownMenu.ItemLabel>{language.t("common.archive")}</DropdownMenu.ItemLabel>
+                                  </DropdownMenu.Item>
+                                </Show>
                                 <DropdownMenu.Separator />
                                 <DropdownMenu.Item
                                   onSelect={() => dialog.show(() => <DialogDeleteSession sessionID={id} />)}
@@ -1620,9 +1656,11 @@ export function MessageTimeline(props: {
                                   {language.t("session.share.action.share")}...
                                 </MenuV2.Item>
                               </Show>
-                              <MenuV2.Item onSelect={() => void archiveSession(id)}>
-                                {language.t("common.archive")}
-                              </MenuV2.Item>
+                              <Show when={canArchive()}>
+                                <MenuV2.Item onSelect={() => void archiveSession(id)}>
+                                  {language.t("common.archive")}
+                                </MenuV2.Item>
+                              </Show>
                               <MenuV2.Separator />
                               <MenuV2.Item onSelect={() => dialog.show(() => <DialogDeleteSession sessionID={id} />)}>
                                 {language.t("common.delete")}...

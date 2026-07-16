@@ -1,7 +1,6 @@
 import { type Accessor, createEffect, createMemo, onCleanup } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { createSimpleContext } from "@opencode-ai/ui/context"
-import type { PermissionRequest } from "@opencode-ai/sdk/v2/client"
 import { Persist, persisted } from "@/utils/persist"
 import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "./server-sync"
@@ -20,6 +19,8 @@ type PermissionRespondFn = (input: {
   response: "once" | "always" | "reject"
   directory?: string
 }) => void
+
+type PermissionRequest = { id: string; sessionID: string }
 
 function isNonAllowRule(rule: unknown) {
   if (!rule) return false
@@ -119,8 +120,17 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
     }
 
     const respond: PermissionRespondFn = (input) => {
+      const directory = input.directory ?? props.directory?.() ?? decode64(params.dir)
+      if (!directory) return
       serverSDK()
-        .client.permission.respond(input)
+        .backend.then((client) =>
+          client.common.permissions.reply({
+            sessionID: input.sessionID,
+            requestID: input.permissionID,
+            reply: input.response,
+            location: { directory },
+          }),
+        )
         .catch(() => {
           responded.delete(input.permissionID)
         })
@@ -164,9 +174,9 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
 
     const unsubscribe = serverSDK().event.listen((e) => {
       const event = e.details
-      if (event?.type !== "permission.asked") return
+      if (event?.type !== "permission.requested") return
 
-      const perm = event.properties
+      const perm = event.request
       if (!shouldAutoRespond(perm, e.name)) return
 
       respondOnce(perm, e.name)
@@ -182,10 +192,10 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       )
 
       serverSDK()
-        .client.permission.list({ directory })
-        .then((x) => {
+        .backend.then((client) => client.common.permissions.pending({ location: { directory } }))
+        .then((items) => {
           if (!isAutoAcceptingDirectory(directory)) return
-          for (const perm of x.data ?? []) {
+          for (const perm of items) {
             if (!perm?.id) continue
             if (!shouldAutoRespond(perm, directory)) continue
             respondOnce(perm, directory)
@@ -214,11 +224,11 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
       )
 
       serverSDK()
-        .client.permission.list({ directory })
-        .then((x) => {
+        .backend.then((client) => client.common.permissions.pending({ location: { directory } }))
+        .then((items) => {
           if (enableVersion.get(key) !== version) return
           if (!isAutoAccepting(sessionID, directory)) return
-          for (const perm of x.data ?? []) {
+          for (const perm of items) {
             if (!perm?.id) continue
             if (!shouldAutoRespond(perm, directory)) continue
             respondOnce(perm, directory)

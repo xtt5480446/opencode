@@ -1,10 +1,10 @@
-import type { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
+import type { ProviderStore } from "@/context/global-sync/types"
 
-const emptyProviderCatalog: NormalizedProviderListResponse = { all: new Map(), connected: [], default: {} }
+const emptyProviderCatalog: ProviderStore = { all: new Map(), connected: [], default: {} }
 
 type DirectoryCatalog = {
   ready: boolean
-  providers: NormalizedProviderListResponse
+  providers: ProviderStore
 }
 
 type ProviderCatalogInput =
@@ -17,7 +17,7 @@ type ProviderCatalogInput =
       explicit: false
       directory?: string
       catalog?: DirectoryCatalog
-      global: NormalizedProviderListResponse
+      global: ProviderStore
     }
 
 export function selectProviderCatalog(input: ProviderCatalogInput) {

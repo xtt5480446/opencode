@@ -7,7 +7,7 @@ import { useServerSync } from "./server-sync"
 import { useServerSDK } from "./server-sdk"
 import { RECENTLY_CLOSED_DISPLAY_LIMIT, ServerConnection, useServer } from "./server"
 import { usePlatform } from "./platform"
-import { Project } from "@opencode-ai/sdk/v2"
+import type { AppProject } from "./backend"
 import { Persist, persisted, removePersisted } from "@/utils/persist"
 import { pathKey } from "@/utils/path-key"
 import { decode64 } from "@/utils/base64"
@@ -72,7 +72,7 @@ type TabHandoff = {
   at: number
 }
 
-export type LocalProject = Partial<Project> & { worktree: string; expanded: boolean }
+export type LocalProject = Partial<AppProject> & { worktree: string; expanded: boolean }
 export type HomeProjectSelection = { server: ServerConnection.Key; directory?: string }
 
 export type ReviewDiffStyle = "unified" | "split"
@@ -550,6 +550,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           setColors(worktree, color)
         }
         if (!project.id) continue
+        const projectID = project.id
 
         const requested = colorRequested.get(worktree)
         if (requested === color) continue
@@ -561,7 +562,11 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         }
 
         void serverSdk()
-          .client.project.update({ projectID: project.id, directory: worktree, icon: { color } })
+          .backend.then((client) => {
+            const editing = client.capabilities.projectEditing
+            if (!editing) throw new Error("Project editing is not supported by this server")
+            return editing.update({ projectID, location: { directory: worktree }, icon: { color } })
+          })
           .catch(() => {
             if (colorRequested.get(worktree) === color) colorRequested.delete(worktree)
           })

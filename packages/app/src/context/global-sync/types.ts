@@ -1,22 +1,23 @@
 import type {
-  Agent,
-  Command,
-  Config,
-  LspStatus,
-  McpResource,
-  McpStatus,
-  Message,
-  Part,
-  Path,
-  PermissionRequest,
-  QuestionRequest,
-  ReferenceInfo,
-  Session,
-  SessionStatus,
-  FileDiffInfo,
-  VcsInfo,
-} from "@opencode-ai/sdk/v2/client"
-import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
+  AppMessage,
+  AppPart,
+  AppPermissionRequest,
+  AppQuestionRequest,
+  AppSession,
+  AppFileDiff,
+  AppTodo,
+  AppCommand,
+  AppConfig,
+  AppAgent,
+  AppLspStatus,
+  AppMcpResource,
+  AppMcpStatus,
+  AppPathInfo,
+  AppProvider,
+  AppReference,
+  AppVcsInfo,
+  SessionActivity,
+} from "../backend"
 import type { Accessor } from "solid-js"
 import type { SetStoreFunction, Store } from "solid-js/store"
 
@@ -31,49 +32,62 @@ export type ProjectMeta = {
   }
 }
 
+export type StoreConfig = {
+  -readonly [Key in keyof AppConfig]: AppConfig[Key]
+}
+
+export type ProviderStore = {
+  all: ReadonlyMap<string, AppProvider>
+  connected: readonly string[]
+  default: Readonly<Record<string, string>>
+}
+
 export type State = {
   status: "loading" | "partial" | "complete"
-  agent: Agent[]
-  command: Command[]
-  reference: ReferenceInfo[]
+  agent: AppAgent[]
+  command: readonly AppCommand[]
+  reference: readonly AppReference[]
   project: string
   projectMeta: ProjectMeta | undefined
   icon: string | undefined
   provider_ready: boolean
-  provider: NormalizedProviderListResponse
-  config: Config
-  path: Path
-  session: Session[]
+  provider: ProviderStore
+  config: StoreConfig
+  path: AppPathInfo
+  session: AppSession[]
   sessionTotal: number
   session_status: {
-    [sessionID: string]: SessionStatus
+    [sessionID: string]: SessionActivity
   }
   session_working(id: string): boolean
   session_diff: {
-    [sessionID: string]: FileDiffInfo[]
+    [sessionID: string]: AppFileDiff[]
+  }
+  todo: {
+    [sessionID: string]: AppTodo[]
   }
   permission: {
-    [sessionID: string]: PermissionRequest[]
+    [sessionID: string]: AppPermissionRequest[]
   }
   question: {
-    [sessionID: string]: QuestionRequest[]
+    [sessionID: string]: AppQuestionRequest[]
   }
   mcp_ready: boolean
   mcp: {
-    [name: string]: McpStatus
+    [name: string]: AppMcpStatus
   }
   mcp_resource: {
-    [key: string]: McpResource
+    [key: string]: AppMcpResource
   }
   lsp_ready: boolean
-  lsp: LspStatus[]
-  vcs: VcsInfo | undefined
+  lsp: readonly AppLspStatus[]
+  vcs: AppVcsInfo | undefined
   limit: number
   message: {
-    [sessionID: string]: Message[]
+    [sessionID: string]: AppMessage[]
   }
   part: {
-    [messageID: string]: Part[]
+    [messageID: string]: AppPart[]
   }
   part_text_accum_delta: {
     [partID: string]: string
@@ -81,8 +95,8 @@ export type State = {
 }
 
 export type VcsCache = {
-  store: Store<{ value: VcsInfo | undefined }>
-  setStore: SetStoreFunction<{ value: VcsInfo | undefined }>
+  store: Store<{ value: AppVcsInfo | undefined }>
+  setStore: SetStoreFunction<{ value: AppVcsInfo | undefined }>
   ready: Accessor<boolean>
 }
 
@@ -127,11 +141,11 @@ export type DisposeCheck = {
 export type RootLoadArgs = {
   directory: string
   limit: number
-  list: (query: { directory: string; roots: true; limit?: number }) => Promise<{ data?: Session[] }>
+  list: (query: { directory: string; roots: true; limit?: number }) => Promise<{ data?: AppSession[] }>
 }
 
 export type RootLoadResult = {
-  data?: Session[]
+  data?: AppSession[]
   limit: number
   limited: boolean
 }

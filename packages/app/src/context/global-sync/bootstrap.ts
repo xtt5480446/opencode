@@ -1,35 +1,35 @@
 import type {
-  Config,
-  OpencodeClient,
-  Path,
-  PermissionRequest,
-  Project,
-  ProviderAuthResponse,
-  QuestionRequest,
-  ReferenceInfo,
-  Session,
-} from "@opencode-ai/sdk/v2/client"
+  AppClient,
+  AppConfig,
+  AppPathInfo,
+  AppPermissionRequest,
+  AppProject,
+  AppProviderAuthResponse,
+  AppQuestionRequest,
+  AppReference,
+  AppSession,
+  ProviderCatalog,
+} from "../backend"
 import { showToast } from "@/utils/toast"
 import { getFilename } from "@opencode-ai/core/util/path"
 import { retry } from "@opencode-ai/core/util/retry"
 import { batch } from "solid-js"
 import { produce, reconcile, type SetStoreFunction, type Store } from "solid-js/store"
-import type { State, VcsCache } from "./types"
+import type { ProviderStore, State, StoreConfig, VcsCache } from "./types"
 import type { ServerSession } from "../server-session"
-import { cmp, normalizeAgentList, normalizeProviderList } from "./utils"
+import { cmp } from "./utils"
 import { formatServerError } from "@/utils/server-errors"
 import { QueryClient, queryOptions } from "@tanstack/solid-query"
 import { loadMcpQuery, loadMcpResourcesQuery } from "../server-sync"
-import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
 import { ScopedKey, type ServerScope } from "@/utils/server-scope"
 
 type GlobalStore = {
   ready: boolean
-  path: Path
-  project: Project[]
-  provider: NormalizedProviderListResponse
-  provider_auth: ProviderAuthResponse
-  config: Config
+  path: AppPathInfo
+  project: AppProject[]
+  provider: ProviderStore
+  provider_auth: AppProviderAuthResponse
+  config: StoreConfig
   reload: undefined | "pending" | "complete"
 }
 
@@ -82,29 +82,31 @@ function showErrors(input: {
   })
 }
 
-export const loadGlobalConfigQuery = (scope: ServerScope, sdk: OpencodeClient) =>
+export const loadGlobalConfigQuery = (scope: ServerScope, backend: Promise<AppClient>) =>
   queryOptions({
     queryKey: [scope, "config"],
-    queryFn: () => retry(() => sdk.global.config.get().then((x) => x.data!)),
+    queryFn: () => retry(async () => (await backend).capabilities.configuration?.getGlobal() ?? {}),
   })
 
-export const loadProjectsQuery = (scope: ServerScope, sdk: OpencodeClient) =>
+export const loadProjectsQuery = (scope: ServerScope, backend: Promise<AppClient>) =>
   queryOptions({
     queryKey: [scope, "project"],
     queryFn: () =>
       retry(() =>
-        sdk.project.list().then((x) => {
-          return (x.data ?? [])
-            .filter((p) => !!p?.id)
-            .filter((p) => !!p.worktree && !p.worktree.includes("opencode-test"))
-            .slice()
-            .sort((a, b) => cmp(a.id, b.id))
-        }),
+        backend
+          .then((client) => client.capabilities.projectList?.list() ?? [])
+          .then((projects) => {
+            return projects
+              .filter((p) => !!p?.id)
+              .filter((p) => !!p.worktree && !p.worktree.includes("opencode-test"))
+              .slice()
+              .sort((a, b) => cmp(a.id, b.id))
+          }),
       ),
   })
 
 export async function bootstrapGlobal(input: {
-  serverSDK: OpencodeClient
+  backend: Promise<AppClient>
   scope: ServerScope
   requestFailedTitle: string
   translate: (key: string, vars?: Record<string, string | number>) => string
@@ -113,12 +115,12 @@ export async function bootstrapGlobal(input: {
   queryClient: QueryClient
 }) {
   const slow = [
-    () => input.queryClient.fetchQuery(loadGlobalConfigQuery(input.scope, input.serverSDK)),
-    () => input.queryClient.fetchQuery(loadProvidersQuery(input.scope, null, input.serverSDK)),
-    () => input.queryClient.fetchQuery(loadPathQuery(input.scope, null, input.serverSDK)),
+    () => input.queryClient.fetchQuery(loadGlobalConfigQuery(input.scope, input.backend)),
+    () => input.queryClient.fetchQuery(loadProvidersQuery(input.scope, null, input.backend)),
+    () => input.queryClient.fetchQuery(loadPathQuery(input.scope, null, input.backend)),
     () =>
       input.queryClient
-        .fetchQuery(loadProjectsQuery(input.scope, input.serverSDK))
+        .fetchQuery(loadProjectsQuery(input.scope, input.backend))
         .then((data) => input.setGlobalStore("project", data)),
   ]
   await runAll(slow)
@@ -140,11 +142,11 @@ function groupBySession<T extends { id: string; sessionID: string }>(input: T[])
   }, {})
 }
 
-function projectID(directory: string, projects: Project[]) {
+function projectID(directory: string, projects: readonly AppProject[]) {
   return projects.find((project) => project.worktree === directory || project.sandboxes?.includes(directory))?.id
 }
 
-function mergeSession(setStore: SetStoreFunction<State>, session: Session) {
+function mergeSession(setStore: SetStoreFunction<State>, session: AppSession) {
   setStore("session", (list) => {
     const next = list.slice()
     const idx = next.findIndex((item) => item.id >= session.id)
@@ -162,44 +164,54 @@ function warmSessions(input: {
   ids: string[]
   store: Store<State>
   setStore: SetStoreFunction<State>
-  sdk: OpencodeClient
+  backend: AppClient
+  location: { directory: string }
 }) {
   const known = new Set(input.store.session.map((item) => item.id))
   const ids = [...new Set(input.ids)].filter((id) => !!id && !known.has(id))
   if (ids.length === 0) return Promise.resolve()
   return Promise.all(
     ids.map((sessionID) =>
-      retry(() => input.sdk.session.get({ sessionID })).then((x) => {
-        const session = x.data
-        if (!session?.id) return
-        mergeSession(input.setStore, session)
+      retry(() => input.backend.common.sessions.get({ sessionID, location: input.location })).then((x) => {
+        if (!x?.id) return
+        mergeSession(input.setStore, x)
       }),
     ),
   ).then(() => undefined)
 }
 
-export const loadProvidersQuery = (scope: ServerScope, directory: string | null, sdk: OpencodeClient) =>
+export const loadProvidersQuery = (scope: ServerScope, directory: string | null, backend: Promise<AppClient>) =>
   queryOptions({
     queryKey: [scope, directory, "providers"],
-    queryFn: () => retry(() => sdk.provider.list().then((x) => normalizeProviderList(x.data!))),
+    queryFn: () =>
+      retry(() => backend.then((client) => client.common.catalog.providers(location(directory)).then(toProviderStore))),
   })
 
-export const loadAgentsQuery = (scope: ServerScope, directory: string | null, sdk: OpencodeClient) =>
+export const loadAgentsQuery = (scope: ServerScope, directory: string, backend: Promise<AppClient>) =>
   queryOptions({
     queryKey: [scope, directory, "agents"],
-    queryFn: () => retry(() => sdk.app.agents().then((x) => normalizeAgentList(x.data))),
+    queryFn: () =>
+      retry(() =>
+        backend.then((client) => client.common.catalog.agents(location(directory)).then((agents) => [...agents])),
+      ),
   })
 
-export const loadPathQuery = (scope: ServerScope, directory: string | null, sdk: OpencodeClient) =>
-  queryOptions<Path>({
+export const loadPathQuery = (scope: ServerScope, directory: string | null, backend: Promise<AppClient>) =>
+  queryOptions<AppPathInfo>({
     queryKey: [scope, directory, "path"],
-    queryFn: () => retry(() => sdk.path.get().then((x) => x.data!)),
+    queryFn: async () => {
+      const client = await backend
+      return retry(
+        () => client.capabilities.pathInfo?.get(location(directory)) ?? Promise.resolve(emptyPath(directory)),
+      )
+    },
   })
 
-export const loadReferencesQuery = (scope: ServerScope, directory: string, sdk: OpencodeClient) =>
-  queryOptions<ReferenceInfo[]>({
+export const loadReferencesQuery = (scope: ServerScope, directory: string, backend: Promise<AppClient>) =>
+  queryOptions<readonly AppReference[]>({
     queryKey: [scope, directory, "references"] as const,
-    queryFn: () => retry(() => sdk.v2.reference.list().then((x) => x.data?.data ?? [])).catch(() => []),
+    queryFn: () =>
+      retry(() => backend.then((client) => client.common.references.list(location(directory)))).catch(() => []),
     placeholderData: [],
   })
 
@@ -207,17 +219,17 @@ export async function bootstrapDirectory(input: {
   directory: string
   scope: ServerScope
   mcp: boolean
-  sdk: OpencodeClient
+  backend: AppClient
   store: Store<State>
   setStore: SetStoreFunction<State>
   vcsCache: VcsCache
   loadSessions: (directory: string) => Promise<void> | void
   translate: (key: string, vars?: Record<string, string | number>) => string
   global: {
-    config: Config
-    path: Path
-    project: Project[]
-    provider: NormalizedProviderListResponse
+    config: StoreConfig
+    path: AppPathInfo
+    project: readonly AppProject[]
+    provider: ProviderStore
   }
   queryClient: QueryClient
   session?: ServerSession
@@ -240,66 +252,90 @@ export async function bootstrapDirectory(input: {
       () => Promise.resolve(input.loadSessions(input.directory)),
       () =>
         input.queryClient
-          .ensureQueryData(loadAgentsQuery(input.scope, input.directory, input.sdk))
+          .ensureQueryData(loadAgentsQuery(input.scope, input.directory, Promise.resolve(input.backend)))
           .then((data) => input.setStore("agent", data)),
       () =>
-        retry(() => input.sdk.config.get().then((x) => input.setStore("config", reconcile(x.data!, { merge: false })))),
+        retry(
+          () =>
+            input.backend.capabilities.configuration
+              ?.get(location(input.directory))
+              .then((config) => input.setStore("config", reconcile(config, { merge: false }))) ?? Promise.resolve(),
+        ),
       () =>
         retry(() =>
-          input.sdk.session.status().then(async (x) => {
+          input.backend.common.sessions.activity(location(input.directory)).then(async (statuses) => {
             if (!input.session) {
-              input.setStore("session_status", x.data!)
+              input.setStore("session_status", mapActivity(statuses))
               return
             }
-            const statuses = x.data ?? {}
+            const mapped = mapActivity(statuses)
             input.session.set(
               "session_status",
               produce((draft) => {
                 for (const sessionID of Object.keys(draft)) {
-                  if (statuses[sessionID]) continue
+                  if (mapped[sessionID]) continue
                   if (input.session?.get(sessionID)?.directory === input.directory) delete draft[sessionID]
                 }
               }),
             )
-            for (const [sessionID, status] of Object.entries(statuses)) {
+            for (const [sessionID, status] of Object.entries(mapped)) {
               input.session.set("session_status", sessionID, reconcile(status))
             }
             // Warm session info only after seeding statuses so a stalled session
             // fetch cannot park busy indicators behind it, mirroring how live
             // session.status events apply first and resolve info in the background.
             await Promise.all(
-              Object.keys(statuses).map((sessionID) => input.session!.resolve(sessionID).catch(() => undefined)),
+              Object.keys(mapped).map((sessionID) => input.session!.resolve(sessionID).catch(() => undefined)),
             )
           }),
         ),
       !seededProject &&
-        (() => retry(() => input.sdk.project.current()).then((x) => input.setStore("project", x.data!.id))),
+        (() =>
+          retry(() => input.backend.common.projects.current(location(input.directory))).then((project) =>
+            input.setStore("project", project.id),
+          )),
       !seededPath &&
         (() =>
-          input.queryClient.ensureQueryData(loadPathQuery(input.scope, input.directory, input.sdk)).then((data) => {
-            const next = projectID(data.directory ?? input.directory, input.global.project)
-            if (next) input.setStore("project", next)
-          })),
+          input.queryClient
+            .ensureQueryData(loadPathQuery(input.scope, input.directory, Promise.resolve(input.backend)))
+            .then((data) => {
+              const next = projectID(data.directory ?? input.directory, input.global.project)
+              if (next) input.setStore("project", next)
+            })),
       () =>
         retry(() =>
-          input.sdk.vcs.get().then((x) => {
-            const next = x.data ?? input.store.vcs
-            input.setStore("vcs", next)
-            if (next) input.vcsCache.setStore("value", next)
-          }),
+          (input.backend.capabilities.vcsInfo?.get(location(input.directory)) ?? Promise.resolve(undefined)).then(
+            (data) => {
+              const next = data ?? input.store.vcs
+              input.setStore("vcs", next)
+              if (next) input.vcsCache.setStore("value", next)
+            },
+          ),
         ),
-      input.mcp && (() => retry(() => input.sdk.command.list().then((x) => input.setStore("command", x.data ?? [])))),
-      () => input.queryClient.fetchQuery(loadReferencesQuery(input.scope, input.directory, input.sdk)),
+      input.mcp &&
+        (() =>
+          retry(() => input.backend.common.commands.list(location(input.directory))).then((commands) =>
+            input.setStore("command", reconcile(commands)),
+          )),
+      () =>
+        input.queryClient.fetchQuery(loadReferencesQuery(input.scope, input.directory, Promise.resolve(input.backend))),
       () =>
         retry(() =>
-          input.sdk.permission.list().then((x) => {
-            const ids = (x.data ?? []).map((perm) => perm?.sessionID).filter((id): id is string => !!id)
-            const grouped = groupBySession(
-              (x.data ?? []).filter((perm): perm is PermissionRequest => !!perm?.id && !!perm.sessionID),
+          input.backend.common.permissions.pending(location(input.directory)).then((data) => {
+            const permissions = data.map(
+              (perm): AppPermissionRequest => perm,
             )
+            const ids = permissions.map((perm) => perm.sessionID)
+            const grouped = groupBySession(permissions)
             const warm = input.session
               ? Promise.all(ids.map((sessionID) => input.session!.resolve(sessionID))).then(() => undefined)
-              : warmSessions({ ids, store: input.store, setStore: input.setStore, sdk: input.sdk })
+              : warmSessions({
+                  ids,
+                  store: input.store,
+                  setStore: input.setStore,
+                  backend: input.backend,
+                  location: { directory: input.directory },
+                })
             return warm.then(() =>
               batch(() => {
                 const current = input.session?.data.permission ?? input.store.permission
@@ -323,12 +359,21 @@ export async function bootstrapDirectory(input: {
         ),
       () =>
         retry(() =>
-          input.sdk.question.list().then((x) => {
-            const ids = (x.data ?? []).map((question) => question?.sessionID).filter((id): id is string => !!id)
-            const grouped = groupBySession((x.data ?? []).filter((q): q is QuestionRequest => !!q?.id && !!q.sessionID))
+          input.backend.common.questions.pending(location(input.directory)).then((data) => {
+            const questions = data.map(
+              (question): AppQuestionRequest => question,
+            )
+            const ids = questions.map((question) => question.sessionID)
+            const grouped = groupBySession(questions)
             const warm = input.session
               ? Promise.all(ids.map((sessionID) => input.session!.resolve(sessionID))).then(() => undefined)
-              : warmSessions({ ids, store: input.store, setStore: input.setStore, sdk: input.sdk })
+              : warmSessions({
+                  ids,
+                  store: input.store,
+                  setStore: input.setStore,
+                  backend: input.backend,
+                  location: { directory: input.directory },
+                })
             return warm.then(() =>
               batch(() => {
                 const current = input.session?.data.question ?? input.store.question
@@ -351,17 +396,25 @@ export async function bootstrapDirectory(input: {
           }),
         ),
       () => Promise.resolve(input.loadSessions(input.directory)),
-      input.mcp && (() => input.queryClient.fetchQuery(loadMcpQuery(input.scope, input.directory, input.sdk))),
-      input.mcp && (() => input.queryClient.fetchQuery(loadMcpResourcesQuery(input.scope, input.directory, input.sdk))),
+      input.mcp &&
+        (() =>
+          input.queryClient.fetchQuery(loadMcpQuery(input.scope, input.directory, Promise.resolve(input.backend)))),
+      input.mcp &&
+        (() =>
+          input.queryClient.fetchQuery(
+            loadMcpResourcesQuery(input.scope, input.directory, Promise.resolve(input.backend)),
+          )),
       () =>
-        input.queryClient.fetchQuery(loadProvidersQuery(input.scope, input.directory, input.sdk)).catch((err) => {
-          const project = getFilename(input.directory)
-          showToast({
-            variant: "error",
-            title: input.translate("toast.project.reloadFailed.title", { project }),
-            description: formatServerError(err, input.translate),
-          })
-        }),
+        input.queryClient
+          .fetchQuery(loadProvidersQuery(input.scope, input.directory, Promise.resolve(input.backend)))
+          .catch((err) => {
+            const project = getFilename(input.directory)
+            showToast({
+              variant: "error",
+              title: input.translate("toast.project.reloadFailed.title", { project }),
+              description: formatServerError(err, input.translate),
+            })
+          }),
     ].filter(Boolean) as (() => Promise<any>)[]
 
     await waitForPaint()
@@ -378,4 +431,24 @@ export async function bootstrapDirectory(input: {
 
     if (loading && slowErrs.length === 0) input.setStore("status", "complete")
   })()
+}
+
+function location(directory: string | null) {
+  return directory === null ? undefined : { location: { directory } }
+}
+
+function emptyPath(directory: string | null): AppPathInfo {
+  return { home: "", directory: directory ?? "", state: "", config: "", worktree: "" }
+}
+
+function toProviderStore(input: ProviderCatalog): ProviderStore {
+  return {
+    all: input.providers,
+    connected: [...input.connected],
+    default: { ...input.defaults },
+  }
+}
+
+function mapActivity(input: Awaited<ReturnType<AppClient["common"]["sessions"]["activity"]>>) {
+  return input
 }

@@ -1,5 +1,11 @@
 import { Binary } from "@opencode-ai/core/util/binary"
-import type { AssistantMessage, Message, Part, SessionStatus, UserMessage } from "@opencode-ai/sdk/v2"
+import type {
+  AppAssistantMessage as AssistantMessage,
+  AppMessage as Message,
+  AppPart as Part,
+  AppUserMessage as UserMessage,
+  SessionActivity as SessionStatus,
+} from "@/context/backend"
 import { createMemo, mapArray, type Accessor } from "solid-js"
 import { reuseTimelineRows } from "./row-reconciliation"
 import { Timeline, TimelineRow } from "./rows"

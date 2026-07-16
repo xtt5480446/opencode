@@ -74,7 +74,7 @@ import { promptPlaceholder } from "./prompt-input/placeholder"
 import { createPromptInputTransientState } from "./prompt-input/transient-state"
 import { showToast } from "@/utils/toast"
 import { ImagePreview } from "@opencode-ai/ui/image-preview"
-import type { ReferenceInfo } from "@opencode-ai/sdk/v2/client"
+import type { AppReference as ReferenceInfo } from "@/context/backend"
 
 export type PromptInputState = ReturnType<typeof usePrompt>
 
@@ -678,7 +678,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         type: "resource",
         name: resource.name,
         uri: resource.uri,
-        client: resource.client,
+        client: resource.server,
         display: resource.name,
         description: resource.description,
         mime: resource.mimeType,

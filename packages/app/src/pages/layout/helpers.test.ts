@@ -6,7 +6,7 @@ import {
   parseDeepLink,
   parseNewSessionDeepLink,
 } from "./deep-links"
-import { type Session } from "@opencode-ai/sdk/v2/client"
+import type { AppSession as Session } from "@/context/backend"
 import {
   childSessionOnPath,
   closeHomeProject,
@@ -19,11 +19,21 @@ import {
   homeSessionServerStatus,
   latestRootSession,
   toggleHomeProjectSelection,
+  workspaceCopyCreateInput,
 } from "./helpers"
 import { pathKey } from "@/utils/path-key"
 import { ServerConnection } from "@/context/server"
 
 const serverKey = ServerConnection.Key.make
+
+test("builds a v2 git worktree copy request from the project root", () => {
+  expect(workspaceCopyCreateInput({ id: "project", worktree: "/repos/opencode" })).toEqual({
+    projectID: "project",
+    strategy: "git_worktree",
+    directory: "/repos/",
+  })
+  expect(workspaceCopyCreateInput({ worktree: "/repos/opencode" })).toBeUndefined()
+})
 
 const session = (input: Partial<Session> & Pick<Session, "id" | "directory">) =>
   ({

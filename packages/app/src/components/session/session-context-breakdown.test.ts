@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { Message, Part } from "@opencode-ai/sdk/v2/client"
+import type { AppMessage as Message, AppPart as Part } from "@/context/backend"
 import { estimateSessionContextBreakdown } from "./session-context-breakdown"
 
 const user = (id: string) => {

@@ -29,7 +29,7 @@ import {
   UserMessage,
   QuestionAnswer,
   QuestionInfo,
-} from "@opencode-ai/sdk/v2"
+} from "../context/data-types"
 import { useData } from "../context"
 import { useFileComponent } from "@opencode-ai/ui/context/file"
 import { useDialog } from "@opencode-ai/ui/context/dialog"

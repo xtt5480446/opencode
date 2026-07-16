@@ -11,12 +11,10 @@ import { matchKeybind, parseKeybind } from "@/context/command"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
-import { useServerSDK } from "@/context/server-sdk"
 import { terminalFontFamily, useSettings } from "@/context/settings"
 import type { LocalPTY } from "@/context/terminal"
 import { disposeIfDisposable, getHoveredLinkText, setOptionIfSupported } from "@/utils/runtime-adapters"
 import { terminalWriter } from "@/utils/terminal-writer"
-import { terminalWebSocketURL } from "@/utils/terminal-websocket-url"
 
 const TOGGLE_TERMINAL_ID = "terminal.toggle"
 const DEFAULT_TOGGLE_TERMINAL_KEYBIND = "ctrl+`"
@@ -174,16 +172,8 @@ export const Terminal = (props: TerminalProps) => {
   const settings = useSettings()
   const theme = useTheme()
   const language = useLanguage()
-  // Terminal captures its connection for the PTY lifetime, so callers must key it per server/session.
-  const connection = useServerSDK()().server
   const directory = sdk().directory
-  const client = sdk().client
-  const url = sdk().url
-  const auth = connection.http
-  const username = auth?.username ?? "opencode"
-  const password = auth?.password ?? ""
-  const authToken = connection.type === "http" ? connection.authToken : false
-  const sameOrigin = new URL(url, location.href).origin === location.origin
+  const backend = sdk().backend
   let container!: HTMLDivElement
   const [local, others] = splitProps(props, ["pty", "class", "classList", "autoFocus", "onConnect", "onConnectError"])
   const id = local.pty.id
@@ -233,11 +223,14 @@ export const Terminal = (props: TerminalProps) => {
   }
 
   const pushSize = (cols: number, rows: number) => {
-    return client.pty
-      .update({
-        ptyID: id,
-        size: { cols, rows },
-      })
+    return backend
+      .then((client) =>
+        client.common.pty.update({
+          ptyID: id,
+          size: { cols, rows },
+          location: { directory },
+        }),
+      )
       .catch((err) => {
         debugTerminal("failed to sync terminal size", err)
       })
@@ -490,33 +483,32 @@ export const Terminal = (props: TerminalProps) => {
       }
 
       const gone = () =>
-        client.pty
-          .get({ ptyID: id }, { throwOnError: false })
-          .then((result) => result.response.status === 404)
+        backend
+          .then((client) => {
+            const transport = client.capabilities.ptyTransport
+            if (transport) return transport.exists({ ptyID: id, location: { directory } }).then((exists) => !exists)
+            return client.common.pty.get({ ptyID: id, location: { directory } }).then(() => false)
+          })
           .catch((err) => {
             debugTerminal("failed to inspect terminal session", err)
             return false
           })
 
       const connectToken = async () => {
-        const result = await client.pty
-          .connectToken(
-            { ptyID: id, directory },
-            {
-              throwOnError: false,
-              headers: { "x-opencode-ticket": "1" },
-            },
-          )
+        const transport = (await backend).capabilities.ptyTransport
+        if (!transport) return
+        const result = await transport
+          .connectToken({ ptyID: id, location: { directory } })
           .catch((err: unknown) => {
             if (err instanceof Error && err.message.includes("Request is not supported")) return
             throw err
           })
         if (!result) return
-        if (result.response.status === 200 && result.data?.ticket) return result.data.ticket
-        if (result.response.status === 404 || result.response.status === 405) return
-        if (result.response.status === 403)
+        if (result.status === 200 && result.ticket) return result.ticket
+        if (result.status === 404 || result.status === 405) return
+        if (result.status === 403)
           throw new Error("PTY connect ticket rejected by origin or CSRF checks. Check the server CORS config.")
-        throw new Error(`PTY connect ticket failed with ${result.response.status}`)
+        throw new Error(`PTY connect ticket failed with ${result.status}`)
       }
 
       const retry = (err: unknown) => {
@@ -549,18 +541,13 @@ export const Terminal = (props: TerminalProps) => {
         if (once.value) return
         if (disposed) return
 
+        const transport = (await backend).capabilities.ptyTransport
+        if (!transport) {
+          fail(new Error("PTY transport is not supported by this server"))
+          return
+        }
         const socket = new WebSocket(
-          terminalWebSocketURL({
-            url,
-            id,
-            directory,
-            cursor: seek,
-            ticket,
-            sameOrigin,
-            username,
-            password,
-            authToken,
-          }),
+          transport.connectURL({ ptyID: id, location: { directory }, cursor: seek, ticket }),
         )
         socket.binaryType = "arraybuffer"
         ws = socket

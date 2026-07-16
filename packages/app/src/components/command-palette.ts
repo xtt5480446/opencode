@@ -169,7 +169,7 @@ export function createCommandPaletteModel(props: { filesOnly?: () => boolean; on
       const name = store.vcs?.branch ?? getFilename(directory)
       return `${kind} : ${name || path}`
     },
-    load: (directory) => serverSDK.client.session.list({ directory, roots: true }),
+    load: async (directory) => (await serverSDK.backend).common.sessions.list({ location: { directory }, roots: true }),
     untitled: () => language.t("command.session.new"),
     category: () => language.t("command.category.session"),
   })
@@ -233,7 +233,7 @@ function createCommandEntry(option: CommandOption, category: string): CommandPal
 function createSessionEntries(props: {
   workspaces: () => string[]
   label: (directory: string) => string
-  load: (directory: string) => ReturnType<ServerSDK["client"]["session"]["list"]>
+  load: (directory: string) => ReturnType<Awaited<ServerSDK["backend"]>["common"]["sessions"]["list"]>
   untitled: () => string
   category: () => string
 }) {
@@ -263,7 +263,7 @@ function createSessionEntries(props: {
         return props
           .load(directory)
           .then((result) =>
-            (result.data ?? [])
+            result.items
               .filter((session) => !!session?.id)
               .map((session) => ({
                 id: session.id,

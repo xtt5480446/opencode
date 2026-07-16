@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { PermissionRequest, Session } from "@opencode-ai/sdk/v2/client"
+import type { AppPermissionRequest as PermissionRequest, AppSession as Session } from "./backend"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { autoRespondsPermission, isDirectoryAutoAccepting } from "./permission-auto-respond"
 

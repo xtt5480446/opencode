@@ -1,4 +1,4 @@
-import type { FileDiffInfo, VcsFileDiff } from "@opencode-ai/sdk/v2"
+import type { AppFileDiff as FileDiffInfo, AppVcsFileDiff as VcsFileDiff } from "@/context/backend"
 import type { Kind } from "@/components/file-tree-v2"
 import { normalizeFileTreeV2Path } from "@/components/file-tree-v2-model"
 

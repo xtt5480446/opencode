@@ -14,7 +14,7 @@ import { IconButtonV2 } from "@opencode-ai/ui/v2/icon-button-v2"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { Spinner } from "@opencode-ai/ui/spinner"
 import { Tooltip } from "@opencode-ai/ui/tooltip"
-import { type Session } from "@opencode-ai/sdk/v2/client"
+import type { AppSession as Session } from "@/context/backend"
 import { type LocalProject } from "@/context/layout"
 import { useServerSync, useQueryOptions } from "@/context/server-sync"
 import { useLanguage } from "@/context/language"
@@ -42,6 +42,7 @@ export type WorkspaceSidebarContext = {
   clearHoverProjectSoon: () => void
   prefetchSession: (session: Session, priority?: "high" | "low") => void
   archiveSession: (session: Session) => Promise<void>
+  canArchive: Accessor<boolean>
   workspaceName: (directory: string, projectId?: string, branch?: string) => string | undefined
   renameWorkspace: (directory: string, next: string, projectId?: string, branch?: string) => void
   editorOpen: (id: string) => boolean
@@ -272,6 +273,7 @@ const WorkspaceSessionList = (props: {
           clearHoverProjectSoon={props.ctx.clearHoverProjectSoon}
           prefetchSession={props.ctx.prefetchSession}
           archiveSession={props.ctx.archiveSession}
+          canArchive={props.ctx.canArchive}
         />
       )}
     </For>

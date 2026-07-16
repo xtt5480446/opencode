@@ -25,8 +25,8 @@ import { IconButton } from "@opencode-ai/ui/icon-button"
 import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { Dialog } from "@opencode-ai/ui/dialog"
-import { getFilename } from "@opencode-ai/core/util/path"
-import { Session } from "@opencode-ai/sdk/v2/client"
+import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
+import type { AppSession as Session } from "@/context/backend"
 import { usePlatform } from "@/context/platform"
 import { useSettings } from "@/context/settings"
 import { createStore, produce, reconcile } from "solid-js/store"
@@ -66,6 +66,7 @@ import {
   errorMessage,
   latestRootSession,
   sortedRootSessions,
+  workspaceCopyCreateInput,
 } from "./layout/helpers"
 import {
   collectNewSessionDeepLinks,
@@ -85,6 +86,11 @@ import { SidebarContent } from "./layout/sidebar-shell"
 
 export default function LegacyLayout(props: ParentProps) {
   const serverSDK = useServerSDK()
+  const [backend] = createResource(
+    () => serverSDK().backend,
+    (value) => value,
+  )
+  const canArchive = () => !!backend()?.capabilities.sessionExtrasV1
   const [store, setStore, , ready] = persisted(
     Persist.serverGlobal(serverSDK().scope, "layout.page", ["layout.page.v1"]),
     createStore({
@@ -398,7 +404,7 @@ export default function LegacyLayout(props: ParentProps) {
           WorktreeState.failed(
             serverSDK().scope,
             e.name,
-            e.details.properties?.message ?? language.t("common.requestFailed"),
+            e.details.message ?? language.t("common.requestFailed"),
           )
           return
         }
@@ -408,21 +414,21 @@ export default function LegacyLayout(props: ParentProps) {
           e.details?.type === "question.rejected" ||
           e.details?.type === "permission.replied"
         ) {
-          const props = e.details.properties as { sessionID: string }
+          const props = e.details
           const sessionKey = `${e.name}:${props.sessionID}`
           dismissSessionAlert(sessionKey)
           return
         }
 
-        if (e.details?.type !== "permission.asked" && e.details?.type !== "question.asked") return
+        if (e.details?.type !== "permission.requested" && e.details?.type !== "question.requested") return
         const title =
-          e.details.type === "permission.asked"
+          e.details.type === "permission.requested"
             ? language.t("notification.permission.title")
             : language.t("notification.question.title")
-        const icon = e.details.type === "permission.asked" ? ("checklist" as const) : ("bubble-5" as const)
+        const icon = e.details.type === "permission.requested" ? ("checklist" as const) : ("bubble-5" as const)
         const directory = e.name
-        const props = e.details.properties
-        if (e.details.type === "permission.asked" && permission.autoResponds(e.details.properties, directory)) return
+        const props = e.details.request
+        if (e.details.type === "permission.requested" && permission.autoResponds(e.details.request, directory)) return
 
         const [store] = serverSync().child(directory, { bootstrap: false })
         const session = store.session.find((s) => s.id === props.sessionID)
@@ -431,7 +437,7 @@ export default function LegacyLayout(props: ParentProps) {
         const sessionTitle = session?.title ?? language.t("command.session.new")
         const projectName = getFilename(directory)
         const description =
-          e.details.type === "permission.asked"
+          e.details.type === "permission.requested"
             ? language.t("notification.permission.description", { sessionTitle, projectName })
             : language.t("notification.question.description", { sessionTitle, projectName })
         const href = `/${base64Encode(directory)}/session/${props.sessionID}`
@@ -441,7 +447,7 @@ export default function LegacyLayout(props: ParentProps) {
         if (now - lastAlerted < cooldownMs) return
         alertedAtBySession.set(sessionKey, now)
 
-        if (e.details.type === "permission.asked") {
+        if (e.details.type === "permission.requested") {
           if (settings.sounds.permissionsEnabled()) {
             void playSoundById(settings.sounds.permissions())
           }
@@ -450,7 +456,7 @@ export default function LegacyLayout(props: ParentProps) {
           }
         }
 
-        if (e.details.type === "question.asked") {
+        if (e.details.type === "question.requested") {
           if (settings.notifications.agent()) {
             void platform.notify(title, description, href)
           }
@@ -874,10 +880,12 @@ export default function LegacyLayout(props: ParentProps) {
     const index = sessions.findIndex((s) => s.id === session.id)
     const nextSession = sessions[index + 1] ?? sessions[index - 1]
 
-    await serverSDK().client.session.update({
-      directory: session.directory,
+    const capability = (await serverSDK().backend).capabilities.sessionExtrasV1
+    if (!capability) return
+    await capability.archive({
+      location: { directory: session.directory },
       sessionID: session.id,
-      time: { archived: Date.now() },
+      archivedAt: Date.now(),
     })
     setStore(
       produce((draft) => {
@@ -976,7 +984,7 @@ export default function LegacyLayout(props: ParentProps) {
         title: language.t("command.session.archive"),
         category: language.t("command.category.session"),
         keybind: "mod+shift+backspace",
-        disabled: !params.dir || !params.id,
+        disabled: !params.dir || !params.id || !canArchive(),
         onSelect: () => {
           const session = currentSessions().find((s) => s.id === params.id)
           if (session) void archiveSession(session)
@@ -1185,8 +1193,15 @@ export default function LegacyLayout(props: ParentProps) {
     const refreshDirs = async (target?: string) => {
       if (!target || target === root || canOpen(target)) return canOpen(target)
       const listed = await serverSDK()
-        .client.worktree.list({ directory: root })
-        .then((x) => x.data ?? [])
+        .backend.then((client) => {
+          const location = { directory: root }
+          if (client.capabilities.worktreesV1) return client.capabilities.worktreesV1.list({ location })
+          if (project?.id && client.capabilities.projectCopiesV2?.directories)
+            return client.capabilities.projectCopiesV2
+              .directories({ projectID: project.id, location })
+              .then((items) => items.map((item) => item.directory))
+          return []
+        })
         .catch(() => [] as string[])
       dirs = effectiveWorkspaceOrder(root, [root, ...listed], store.workspaceOrder[root])
       return canOpen(target)
@@ -1231,8 +1246,11 @@ export default function LegacyLayout(props: ParentProps) {
         dirs.map(async (item) => ({
           path: { directory: item },
           session: await serverSDK()
-            .client.session.list({ directory: item })
-            .then((x) => x.data ?? [])
+            .backend.then((client) =>
+              client.common.sessions
+                .list({ location: { directory: item } })
+                .then((page) => [...page.items]),
+            )
             .catch(() => []),
         })),
       ),
@@ -1293,7 +1311,9 @@ export default function LegacyLayout(props: ParentProps) {
     const name = next === getFilename(project.worktree) ? "" : next
 
     if (project.id && project.id !== "global") {
-      await serverSDK().client.project.update({ projectID: project.id, directory: project.worktree, name })
+      const editing = (await serverSDK().backend).capabilities.projectEditing
+      if (!editing) throw new Error("Project editing is not supported by this server")
+      await editing.update({ projectID: project.id, location: { directory: project.worktree }, name })
       return
     }
 
@@ -1387,8 +1407,15 @@ export default function LegacyLayout(props: ParentProps) {
     setBusy(directory, true)
 
     const result = await serverSDK()
-      .client.worktree.remove({ directory: root, worktreeRemoveInput: { directory } })
-      .then((x) => x.data)
+      .backend.then(async (client) => {
+        const location = { directory: root }
+        if (client.capabilities.worktreesV1) return client.capabilities.worktreesV1.remove({ location, directory })
+        const copies = client.capabilities.projectCopiesV2
+        const project = layout.projects.list().find((item) => item.worktree === root)
+        if (!copies || !project?.id) throw new Error("Project copy removal is not supported by this server")
+        await copies.remove({ projectID: project.id, location, directory, force: true })
+        return true
+      })
       .catch((err) => {
         showToast({
           title: language.t("workspace.delete.failed.title"),
@@ -1444,9 +1471,12 @@ export default function LegacyLayout(props: ParentProps) {
     })
     const dismiss = () => toaster.dismiss(progress)
 
-    const sessions: Session[] = await serverSDK()
-      .client.session.list({ directory })
-      .then((x) => x.data ?? [])
+    const sessions = await serverSDK()
+      .backend.then((client) =>
+        client.common.sessions
+          .list({ location: { directory } })
+          .then((page) => [...page.items]),
+      )
       .catch(() => [])
 
     clearWorkspaceTerminals(
@@ -1456,12 +1486,26 @@ export default function LegacyLayout(props: ParentProps) {
       serverSDK().scope,
     )
     await serverSDK()
-      .client.instance.dispose({ directory })
+      .backend.then((client) => client.capabilities.runtimeV1?.disposeLocation({ location: { directory } }))
       .catch(() => undefined)
 
     const result = await serverSDK()
-      .client.worktree.reset({ directory: root, worktreeResetInput: { directory } })
-      .then((x) => x.data)
+      .backend.then(async (client) => {
+        const location = { directory: root }
+        if (client.capabilities.worktreesV1) return client.capabilities.worktreesV1.reset({ location, directory })
+        const copies = client.capabilities.projectCopiesV2
+        const project = layout.projects.list().find((item) => item.worktree === root)
+        if (!copies || !project?.id) throw new Error("Project copy reset is not supported by this server")
+        await copies.remove({ projectID: project.id, location, directory, force: true })
+        await copies.create({
+          projectID: project.id,
+          location,
+          strategy: "git_worktree",
+          directory: getDirectory(directory),
+          name: getFilename(directory),
+        })
+        return true
+      })
       .catch((err) => {
         showToast({
           title: language.t("workspace.reset.failed.title"),
@@ -1482,10 +1526,14 @@ export default function LegacyLayout(props: ParentProps) {
         .filter((session) => session.time.archived === undefined)
         .map((session) =>
           serverSDK()
-            .client.session.update({
-              sessionID: session.id,
-              directory: session.directory,
-              time: { archived: archivedAt },
+            .backend.then(async (client) => {
+              const capability = client.capabilities.sessionExtrasV1
+              if (!capability) return
+              await capability.archive({
+                location: { directory: session.directory },
+                sessionID: session.id,
+                archivedAt,
+              })
             })
             .catch(() => undefined),
         ),
@@ -1523,9 +1571,8 @@ export default function LegacyLayout(props: ParentProps) {
 
     onMount(() => {
       serverSDK()
-        .client.vcs.status({ directory: props.directory })
-        .then((x) => {
-          const files = x.data ?? []
+        .backend.then((client) => client.capabilities.vcs?.status({ location: { directory: props.directory } }) ?? [])
+        .then((files) => {
           const dirty = files.length > 0
           setData({ status: "ready", dirty })
         })
@@ -1582,8 +1629,11 @@ export default function LegacyLayout(props: ParentProps) {
 
     const refresh = async () => {
       const sessions = await serverSDK()
-        .client.session.list({ directory: props.directory })
-        .then((x) => x.data ?? [])
+        .backend.then((client) =>
+          client.common.sessions
+            .list({ location: { directory: props.directory } })
+            .then((page) => [...page.items]),
+        )
         .catch(() => [])
       const active = sessions.filter((session) => session.time.archived === undefined)
       setState({ sessions: active })
@@ -1591,9 +1641,8 @@ export default function LegacyLayout(props: ParentProps) {
 
     onMount(() => {
       serverSDK()
-        .client.vcs.status({ directory: props.directory })
-        .then((x) => {
-          const files = x.data ?? []
+        .backend.then((client) => client.capabilities.vcs?.status({ location: { directory: props.directory } }) ?? [])
+        .then((files) => {
           const dirty = files.length > 0
           setState({ status: "ready", dirty })
           void refresh()
@@ -1822,8 +1871,17 @@ export default function LegacyLayout(props: ParentProps) {
   const createWorkspace = async (project: LocalProject) => {
     clearSidebarHoverState()
     const created = await serverSDK()
-      .client.worktree.create({ directory: project.worktree })
-      .then((x) => x.data)
+      .backend.then((client) => {
+        const location = { directory: project.worktree }
+        if (client.capabilities.worktreesV1) return client.capabilities.worktreesV1.create({ location })
+        const copies = client.capabilities.projectCopiesV2
+        const input = workspaceCopyCreateInput(project)
+        if (!copies || !input) throw new Error("Project copy creation is not supported by this server")
+        return copies.create({
+          ...input,
+          location,
+        })
+      })
       .catch((err) => {
         showToast({
           title: language.t("workspace.create.failed.title"),
@@ -1834,7 +1892,8 @@ export default function LegacyLayout(props: ParentProps) {
 
     if (!created?.directory) return
 
-    setWorkspaceName(created.directory, created.branch ?? getFilename(created.directory), project.id, created.branch)
+    const branch = "branch" in created && typeof created.branch === "string" ? created.branch : undefined
+    setWorkspaceName(created.directory, branch ?? getFilename(created.directory), project.id, branch)
 
     const local = project.worktree
     const key = pathKey(created.directory)
@@ -1867,6 +1926,7 @@ export default function LegacyLayout(props: ParentProps) {
     clearHoverProjectSoon,
     prefetchSession,
     archiveSession,
+    canArchive,
     workspaceName,
     renameWorkspace,
     editorOpen,
@@ -1913,6 +1973,7 @@ export default function LegacyLayout(props: ParentProps) {
       clearHoverProjectSoon,
       prefetchSession,
       archiveSession,
+      canArchive,
     },
   }
 

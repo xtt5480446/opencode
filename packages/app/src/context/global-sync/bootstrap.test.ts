@@ -1,14 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import { createStore } from "solid-js/store"
 import { QueryClient } from "@tanstack/solid-query"
-import type { Config, OpencodeClient, Project, Session } from "@opencode-ai/sdk/v2/client"
-import type { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
+import type { AppClient, AppProject as Project, AppSession as Session } from "../backend"
+import { createAppClient } from "../backend.test-fixture"
+import type { ProviderStore } from "./types"
 import { bootstrapDirectory, loadPathQuery, loadProvidersQuery } from "./bootstrap"
 import type { State, VcsCache } from "./types"
 import { createServerSession } from "../server-session"
 import { ServerScope } from "@/utils/server-scope"
 
-const provider = { all: new Map(), connected: [], default: {} } satisfies NormalizedProviderListResponse
+const provider = { all: new Map(), connected: [], default: {} } satisfies ProviderStore
 
 function directoryState() {
   return createStore<State>({
@@ -30,6 +31,7 @@ function directoryState() {
       return this.session_status[id]?.type !== "idle"
     },
     session_diff: {},
+    todo: {},
     permission: {},
     question: {},
     mcp_ready: true,
@@ -55,33 +57,35 @@ describe("bootstrapDirectory", () => {
       scope: ServerScope.local,
       mcp: false,
       global: {
-        config: {} satisfies Config,
+        config: {},
         path: { state: "", config: "", worktree: "/project", directory: "/project", home: "/home" },
         project: [{ id: "project", worktree: "/project" } as Project],
         provider,
       },
-      sdk: {
-        app: { agents: async () => ({ data: [{ name: "build", mode: "primary" }] }) },
-        config: { get: async () => ({ data: {} }) },
-        session: { status: async () => ({ data: {} }) },
-        vcs: { get: async () => ({ data: undefined }) },
-        command: {
-          list: async () => {
-            mcpReads.push("command")
-            return { data: [] }
-          },
+      backend: {
+        version: "v1",
+        capabilities: {
+          configuration: { get: async () => ({}), getGlobal: async () => ({}), updateGlobal: async () => {} },
+          vcsInfo: { get: async () => ({}) },
         },
-        permission: { list: async () => ({ data: [] }) },
-        question: { list: async () => ({ data: [] }) },
-        v2: { reference: { list: async () => ({ data: { data: [] } }) } },
-        mcp: {
-          status: async () => {
-            mcpReads.push("status")
-            return { data: {} }
+        common: {
+          catalog: {
+            agents: async () => [{ id: "build", name: "build", mode: "primary", hidden: false }],
+            providers: async () => ({ providers: new Map(), connected: [], defaults: {} }),
           },
+          sessions: { activity: async () => ({}) },
+          projects: { current: async () => ({ id: "project", directory: "/project" }) },
+          commands: {
+            list: async () => {
+              mcpReads.push("command")
+              return []
+            },
+          },
+          permissions: { pending: async () => [] },
+          questions: { pending: async () => [] },
+          references: { list: async () => [] },
         },
-        provider: { list: async () => ({ data: { all: [], connected: [], default: {} } }) },
-      } as unknown as OpencodeClient,
+      } as unknown as AppClient,
       store,
       setStore,
       vcsCache: { setStore() {} } as unknown as VcsCache,
@@ -101,22 +105,26 @@ describe("bootstrapDirectory", () => {
   test("seeds session status even while warming session info stalls", async () => {
     const [store, setStore] = directoryState()
     const stalled = Promise.withResolvers<never>()
-    const client = {
-      app: { agents: async () => ({ data: [{ name: "build", mode: "primary" }] }) },
-      config: { get: async () => ({ data: {} }) },
-      session: {
-        status: async () => ({ data: { ses_busy: { type: "busy" } } }),
-        get: () => stalled.promise,
+    const backend = createAppClient({
+      version: "v1",
+      capabilities: {
+        configuration: { get: async () => ({}), getGlobal: async () => ({}), updateGlobal: async () => {} },
+        vcsInfo: { get: async () => ({}) },
       },
-      vcs: { get: async () => ({ data: undefined }) },
-      command: { list: async () => ({ data: [] }) },
-      permission: { list: async () => ({ data: [] }) },
-      question: { list: async () => ({ data: [] }) },
-      v2: { reference: { list: async () => ({ data: { data: [] } }) } },
-      mcp: { status: async () => ({ data: {} }) },
-      provider: { list: async () => ({ data: { all: [], connected: [], default: {} } }) },
-    } as unknown as OpencodeClient
-    const session = createServerSession(client)
+      common: {
+        catalog: {
+          agents: async () => [{ id: "build", name: "build", mode: "primary", hidden: false }],
+          providers: async () => ({ providers: new Map(), connected: [], defaults: {} }),
+        },
+        sessions: { activity: async () => ({ ses_busy: { type: "busy" } }), get: () => stalled.promise },
+        projects: { current: async () => ({ id: "project", directory: "/project" }) },
+        commands: { list: async () => [] },
+        permissions: { pending: async () => [] },
+        questions: { pending: async () => [] },
+        references: { list: async () => [] },
+      },
+    })
+    const session = createServerSession(backend)
     const stale: Session = {
       id: "ses_stale",
       slug: "ses_stale",
@@ -134,12 +142,12 @@ describe("bootstrapDirectory", () => {
       scope: ServerScope.local,
       mcp: false,
       global: {
-        config: {} satisfies Config,
+        config: {},
         path: { state: "", config: "", worktree: "/project", directory: "/project", home: "/home" },
         project: [{ id: "project", worktree: "/project" } as Project],
         provider,
       },
-      sdk: client,
+      backend,
       store,
       setStore,
       vcsCache: { setStore() {} } as unknown as VcsCache,
@@ -161,12 +169,12 @@ describe("bootstrapDirectory", () => {
 
 describe("query keys", () => {
   test("partitions identical directories by server scope", () => {
-    const client = {} as OpencodeClient
+    const backend = Promise.resolve({} as AppClient)
     const remote = "https://debian.example" as typeof ServerScope.local
 
-    expect([...loadPathQuery(ServerScope.local, "/repo", client).queryKey]).toEqual(["local", "/repo", "path"])
-    expect([...loadPathQuery(remote, "/repo", client).queryKey]).toEqual(["https://debian.example", "/repo", "path"])
-    expect([...loadProvidersQuery(remote, null, client).queryKey]).toEqual([
+    expect([...loadPathQuery(ServerScope.local, "/repo", backend).queryKey]).toEqual(["local", "/repo", "path"])
+    expect([...loadPathQuery(remote, "/repo", backend).queryKey]).toEqual(["https://debian.example", "/repo", "path"])
+    expect([...loadProvidersQuery(remote, null, backend).queryKey]).toEqual([
       "https://debian.example",
       null,
       "providers",

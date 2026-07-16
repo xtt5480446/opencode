@@ -1,21 +1,21 @@
-import type { PermissionRequest, Session } from "@opencode-ai/sdk/v2/client"
+import type { AppSession } from "../backend"
 import { cmp } from "./utils"
 import { SESSION_RECENT_LIMIT, SESSION_RECENT_WINDOW } from "./types"
 
-export function sessionUpdatedAt(session: Session) {
+export function sessionUpdatedAt(session: AppSession) {
   return session.time.updated ?? session.time.created
 }
 
-export function compareSessionRecent(a: Session, b: Session) {
+export function compareSessionRecent(a: AppSession, b: AppSession) {
   const aUpdated = sessionUpdatedAt(a)
   const bUpdated = sessionUpdatedAt(b)
   if (aUpdated !== bUpdated) return bUpdated - aUpdated
   return cmp(a.id, b.id)
 }
 
-export function takeRecentSessions(sessions: Session[], limit: number, cutoff: number) {
-  if (limit <= 0) return [] as Session[]
-  const selected: Session[] = []
+export function takeRecentSessions(sessions: AppSession[], limit: number, cutoff: number) {
+  if (limit <= 0) return [] as AppSession[]
+  const selected: AppSession[] = []
   const seen = new Set<string>()
   for (const session of sessions) {
     if (!session?.id) continue
@@ -31,8 +31,8 @@ export function takeRecentSessions(sessions: Session[], limit: number, cutoff: n
 }
 
 export function trimSessions(
-  input: Session[],
-  options: { limit: number; permission: Record<string, PermissionRequest[]>; now?: number },
+  input: AppSession[],
+  options: { limit: number; permission: Record<string, readonly unknown[]>; now?: number },
 ) {
   const limit = Math.max(0, options.limit)
   const cutoff = (options.now ?? Date.now()) - SESSION_RECENT_WINDOW

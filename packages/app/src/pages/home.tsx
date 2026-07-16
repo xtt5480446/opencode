@@ -1,4 +1,4 @@
-import type { Session } from "@opencode-ai/sdk/v2/client"
+import type { AppSession as Session } from "@/context/backend"
 import {
   type ComponentProps,
   createEffect,
@@ -508,7 +508,15 @@ export function NewHome() {
     await archiveHomeSession({
       server: ServerConnection.key(conn),
       session,
-      update: (value) => ctx.sdk.client.session.update(value),
+      update: async (value) => {
+        const capability = (await ctx.sdk.backend).capabilities.sessionExtrasV1
+        if (!capability) throw new Error("Session archiving is not supported by this server")
+        await capability.archive({
+          location: { directory: value.directory },
+          sessionID: value.sessionID,
+          archivedAt: value.time.archived,
+        })
+      },
       remove: () =>
         setStore(
           produce((draft) => {

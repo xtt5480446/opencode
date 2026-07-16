@@ -126,11 +126,11 @@ export const SettingsGeneral: Component = () => {
   const serverSdk = useServerSDK()
 
   const [shells] = createResource(
-    () =>
-      serverSdk()
-        .client.pty.shells()
-        .then((res) => res.data ?? [])
-        .catch(() => [] as ShellOption[]),
+    async () => {
+      const capability = (await serverSdk().backend).capabilities.shellDiscovery
+      if (!capability) return []
+      return capability.list().catch(() => [] as ShellOption[])
+    },
     { initialValue: [] as ShellOption[] },
   )
 

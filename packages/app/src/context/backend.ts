@@ -21,8 +21,10 @@ export type ModelRef = {
 
 export type Page<T> = {
   readonly items: readonly T[]
-  readonly previous?: string
-  readonly next?: string
+  /** Cursor for items older than this page. */
+  readonly older?: string
+  /** Cursor for items newer than this page. */
+  readonly newer?: string
 }
 
 export type Health = {
@@ -34,6 +36,12 @@ export type Health = {
 export type AppProject = {
   readonly id: string
   readonly worktree: string
+  readonly vcs?: "git"
+  readonly time: {
+    readonly created: number
+    readonly updated: number
+    readonly initialized?: number
+  }
   readonly name?: string
   readonly icon?: {
     readonly url?: string
@@ -43,7 +51,7 @@ export type AppProject = {
   readonly commands?: {
     readonly start?: string
   }
-  readonly sandboxes: readonly string[]
+  sandboxes: string[]
 }
 
 export type CurrentProject = {
@@ -83,6 +91,8 @@ export type AppModel = {
 export type AppProvider = {
   readonly id: string
   readonly name: string
+  readonly source?: "env" | "config" | "custom" | "api"
+  readonly integrationID?: string
   readonly models: Readonly<Record<string, AppModel>>
 }
 
@@ -137,15 +147,19 @@ export type TokenUsage = {
 
 export type AppSession = {
   readonly id: string
+  readonly slug: string
+  readonly version: string
   readonly parentID?: string
   readonly projectID: string
-  readonly location: LocationRef
-  readonly title: string
-  readonly cost: number
+  readonly location?: LocationRef
+  readonly directory: string
+  readonly workspaceID?: string
+  title: string
+  readonly cost?: number
   readonly tokens?: TokenUsage
   readonly time: {
     readonly created: number
-    readonly updated?: number
+    readonly updated: number
     readonly archived?: number
   }
   readonly share?: {
@@ -157,6 +171,8 @@ export type AppSession = {
 }
 
 export type SessionActivity =
+  | { readonly type: "idle" }
+  | { readonly type: "busy" }
   | { readonly type: "running" }
   | {
       readonly type: "retry"
@@ -205,27 +221,138 @@ export type ToolState =
   | {
       readonly status: "pending"
       readonly input: Readonly<Record<string, unknown>>
-      readonly raw?: string
+      readonly raw: string
     }
   | {
       readonly status: "running"
       readonly input: Readonly<Record<string, unknown>>
       readonly title?: string
       readonly metadata?: Readonly<Record<string, unknown>>
+      readonly time: { readonly start: number }
+      readonly content?: readonly ToolOutputContent[]
+      readonly provider?: ToolProviderInfo
     }
   | {
       readonly status: "completed"
       readonly input: Readonly<Record<string, unknown>>
       readonly output: string
-      readonly title?: string
-      readonly metadata?: Readonly<Record<string, unknown>>
+      readonly title: string
+      readonly metadata: Readonly<Record<string, unknown>>
+      readonly time: { readonly start: number; readonly end: number; readonly compacted?: number }
+      readonly attachments?: AppFilePart[]
+      readonly content?: readonly ToolOutputContent[]
+      readonly outputPaths?: readonly string[]
+      readonly result?: unknown
+      readonly provider?: ToolProviderInfo
     }
   | {
       readonly status: "error"
       readonly input: Readonly<Record<string, unknown>>
       readonly error: string
       readonly metadata?: Readonly<Record<string, unknown>>
+      readonly time: { readonly start: number; readonly end: number }
+      readonly content?: readonly ToolOutputContent[]
+      readonly result?: unknown
+      readonly provider?: ToolProviderInfo
     }
+
+export type ToolOutputContent =
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "file"; readonly uri: string; readonly mime: string; readonly name?: string }
+
+export type ToolProviderInfo = {
+  readonly executed: boolean
+  readonly metadata?: Readonly<Record<string, Readonly<Record<string, unknown>>>>
+  readonly resultMetadata?: Readonly<Record<string, Readonly<Record<string, unknown>>>>
+}
+
+export type AppMessage = AppUserMessage | AppAssistantMessage
+
+export type AppUserMessage = {
+  readonly id: string
+  readonly sessionID: string
+  readonly role: "user"
+  readonly time: { readonly created: number }
+  readonly format?:
+    | { readonly type: "text" }
+    | { readonly type: "json_schema"; readonly schema: Readonly<Record<string, unknown>>; readonly retryCount?: number }
+  readonly summary?: {
+    readonly title?: string
+    readonly body?: string
+    readonly diffs: (Omit<AppFileDiff, "file"> & { readonly file?: string })[]
+  }
+  readonly agent: string
+  readonly model: { readonly providerID: string; readonly modelID: string; readonly variant?: string }
+  readonly system?: string
+  readonly tools?: Readonly<Record<string, boolean>>
+}
+
+export type AppAssistantMessage = {
+  readonly id: string
+  readonly sessionID: string
+  readonly role: "assistant"
+  readonly time: { readonly created: number; readonly completed?: number }
+  readonly parentID: string
+  readonly modelID: string
+  readonly providerID: string
+  readonly mode: string
+  readonly agent: string
+  readonly path: { readonly cwd: string; readonly root: string }
+  readonly summary?: boolean
+  readonly cost: number
+  readonly tokens: TokenUsage & { readonly total?: number }
+  readonly structured?: unknown
+  readonly variant?: string
+  readonly finish?: string
+  readonly error?: AppMessageError
+}
+
+export type AppMessageError =
+  | { readonly name: "ProviderAuthError"; readonly data: { readonly providerID: string; readonly message: string } }
+  | { readonly name: "UnknownError"; readonly data: { readonly message: string; readonly ref?: string } }
+  | { readonly name: "MessageOutputLengthError"; readonly data: Readonly<Record<string, unknown>> }
+  | { readonly name: "MessageAbortedError"; readonly data: { readonly message: string } }
+  | { readonly name: "StructuredOutputError"; readonly data: { readonly message: string; readonly retries: number } }
+  | { readonly name: "ContextOverflowError"; readonly data: { readonly message: string; readonly responseBody?: string } }
+  | { readonly name: "ContentFilterError"; readonly data: { readonly message: string } }
+  | { readonly name: "APIError"; readonly data: { readonly message: string; readonly statusCode?: number; readonly isRetryable: boolean; readonly responseHeaders?: Readonly<Record<string, string>>; readonly responseBody?: string; readonly metadata?: Readonly<Record<string, string>> } }
+
+export type AppRetryError = Extract<AppMessageError, { readonly name: "APIError" }>
+
+export type AppSessionError = AppMessageError | { readonly type: "unknown"; readonly message: string }
+
+type AppPartBase = {
+  readonly id: string
+  readonly sessionID: string
+  readonly messageID: string
+}
+
+export type AppFilePart = AppPartBase & {
+  readonly type: "file"
+  readonly mime: string
+  readonly filename?: string
+  readonly url: string
+  readonly source?: AppFilePartSource
+}
+
+export type AppFilePartSource =
+  | { readonly type: "file"; readonly path: string; readonly text: { readonly value: string; readonly start: number; readonly end: number } }
+  | { readonly type: "symbol"; readonly path: string; readonly name: string; readonly kind: number; readonly range: { readonly start: { readonly line: number; readonly character: number }; readonly end: { readonly line: number; readonly character: number } }; readonly text: { readonly value: string; readonly start: number; readonly end: number } }
+  | { readonly type: "resource"; readonly clientName: string; readonly uri: string; readonly text: { readonly value: string; readonly start: number; readonly end: number } }
+
+export type AppPart =
+  | (AppPartBase & { readonly type: "text"; readonly text: string; readonly synthetic?: boolean; readonly ignored?: boolean; readonly time?: { readonly start: number; readonly end?: number }; readonly metadata?: Readonly<Record<string, unknown>> })
+  | (AppPartBase & { readonly type: "reasoning"; readonly text: string; readonly metadata?: Readonly<Record<string, unknown>>; readonly time: { readonly start: number; readonly end?: number } })
+  | AppFilePart
+  | (AppPartBase & { readonly type: "agent"; readonly name: string; readonly source?: { readonly value: string; readonly start: number; readonly end: number } })
+  | (AppPartBase & { readonly type: "tool"; readonly callID: string; readonly tool: string; readonly state: ToolState; readonly metadata?: Readonly<Record<string, unknown>> })
+  | (AppPartBase & { readonly type: "subtask"; readonly prompt: string; readonly description: string; readonly agent: string; readonly model?: { readonly providerID: string; readonly modelID: string }; readonly command?: string })
+  | (AppPartBase & { readonly type: "step-start"; readonly snapshot?: string })
+  | (AppPartBase & { readonly type: "step-finish"; readonly reason: string; readonly snapshot?: string; readonly cost: number; readonly tokens: TokenUsage & { readonly total?: number } })
+  | (AppPartBase & { readonly type: "snapshot"; readonly snapshot: string })
+  | (AppPartBase & { readonly type: "patch"; readonly hash: string; readonly files: string[] })
+  | (AppPartBase & { readonly type: "retry"; readonly attempt: number; readonly error: AppRetryError; readonly time: { readonly created: number } })
+  | (AppPartBase & { readonly type: "compaction"; readonly auto: boolean })
 
 export type TimelineContent =
   | {
@@ -235,11 +362,14 @@ export type TimelineContent =
       readonly synthetic?: boolean
       readonly ignored?: boolean
       readonly metadata?: Readonly<Record<string, unknown>>
+      readonly time?: { readonly start: number; readonly end?: number }
     }
   | {
       readonly type: "reasoning"
       readonly id: string
       readonly text: string
+      readonly metadata?: Readonly<Record<string, unknown>>
+      readonly time?: { readonly start: number; readonly end?: number }
     }
   | {
       readonly type: "file"
@@ -261,7 +391,15 @@ export type TimelineContent =
       readonly callID?: string
       readonly tool: string
       readonly state: ToolState
+      readonly metadata?: Readonly<Record<string, unknown>>
     }
+  | { readonly type: "subtask"; readonly id: string; readonly prompt: string; readonly description: string; readonly agent: string; readonly model?: ModelRef; readonly command?: string }
+  | { readonly type: "step-start"; readonly id: string; readonly snapshot?: string }
+  | { readonly type: "step-finish"; readonly id: string; readonly reason: string; readonly snapshot?: string; readonly cost: number; readonly tokens: TokenUsage & { readonly total?: number } }
+  | { readonly type: "snapshot"; readonly id: string; readonly snapshot: string }
+  | { readonly type: "patch"; readonly id: string; readonly hash: string; readonly files: string[] }
+  | { readonly type: "retry"; readonly id: string; readonly attempt: number; readonly error: AppRetryError; readonly time: { readonly created: number } }
+  | { readonly type: "compaction"; readonly id: string; readonly auto: boolean }
 
 export type TimelineItem =
   | {
@@ -272,7 +410,10 @@ export type TimelineItem =
       readonly content: readonly TimelineContent[]
       readonly agent?: string
       readonly model?: ModelRef
-      readonly raw?: unknown
+      readonly format?: AppUserMessage["format"]
+      readonly summary?: AppUserMessage["summary"]
+      readonly system?: string
+      readonly tools?: Readonly<Record<string, boolean>>
     }
   | {
       readonly type: "assistant"
@@ -285,16 +426,157 @@ export type TimelineItem =
       readonly agent?: string
       readonly model?: ModelRef
       readonly tokens?: TokenUsage
-      readonly error?: unknown
-      readonly raw?: unknown
+      readonly error?: AppMessageError
+      readonly mode?: string
+      readonly path?: AppAssistantMessage["path"]
+      readonly cost?: number
+      readonly structured?: unknown
+      readonly finish?: string
+      readonly summary?: boolean
+      readonly snapshot?: { readonly start?: string; readonly end?: string; readonly files?: readonly string[] }
     }
   | {
       readonly type: "agent-switch" | "model-switch" | "synthetic" | "system" | "skill" | "shell" | "compaction"
       readonly id: string
       readonly sessionID: string
       readonly created: number
-      readonly raw?: unknown
+      readonly metadata?: Readonly<Record<string, unknown>>
+      readonly text?: string
+      readonly reason?: "auto" | "manual"
+      readonly summary?: string
+      readonly recent?: string
+      readonly callID?: string
+      readonly command?: string
+      readonly output?: string
     }
+
+export function timelineMessage(item: TimelineItem): AppMessage | undefined {
+  if (item.type === "user")
+    return {
+      id: item.id,
+      sessionID: item.sessionID,
+      role: "user",
+      time: { created: item.created },
+      format: item.format,
+      summary: item.summary,
+      agent: item.agent ?? "",
+      model: {
+        providerID: item.model?.providerID ?? "",
+        modelID: item.model?.id ?? "",
+        variant: item.model?.variant,
+      },
+      system: item.system,
+      tools: item.tools,
+    }
+  if (item.type !== "assistant") return
+  return {
+    id: item.id,
+    sessionID: item.sessionID,
+    role: "assistant",
+    time: { created: item.created, completed: item.completed },
+    parentID: item.parentID ?? "",
+    modelID: item.model?.id ?? "",
+    providerID: item.model?.providerID ?? "",
+    variant: item.model?.variant,
+    mode: item.mode ?? item.agent ?? "",
+    agent: item.agent ?? "",
+    path: item.path ?? { cwd: "", root: "" },
+    summary: item.summary,
+    cost: item.cost ?? 0,
+    tokens: item.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    structured: item.structured,
+    finish: item.finish,
+    error: item.error,
+  }
+}
+
+export function timelineParts(item: TimelineItem): AppPart[] {
+  if (item.type !== "user" && item.type !== "assistant") return []
+  return item.content.map((content): AppPart => {
+    const base = { id: content.id, sessionID: item.sessionID, messageID: item.id }
+    if (content.type === "file")
+      return {
+        ...base,
+        type: content.type,
+        mime: content.mime ?? "application/octet-stream",
+        filename: content.name,
+        url: content.uri,
+        source:
+          content.source?.type === "resource"
+            ? {
+                type: content.source.type,
+                clientName: content.source.clientName,
+                uri: content.source.uri,
+                text: {
+                  value: content.source.text.text,
+                  start: content.source.text.start,
+                  end: content.source.text.end,
+                },
+              }
+            : content.source?.type === "symbol"
+              ? {
+                  type: content.source.type,
+                  path: content.source.path,
+                  name: content.source.name ?? "",
+                  kind: content.source.kind ?? 0,
+                  range: {
+                    start: { line: 0, character: content.source.text.start },
+                    end: { line: 0, character: content.source.text.end },
+                  },
+                  text: {
+                    value: content.source.text.text,
+                    start: content.source.text.start,
+                    end: content.source.text.end,
+                  },
+                }
+              : content.source && {
+                  type: "file",
+                  path: content.source.path,
+                  text: {
+                    value: content.source.text.text,
+                    start: content.source.text.start,
+                    end: content.source.text.end,
+                  },
+                },
+      }
+    if (content.type === "agent")
+      return {
+        ...base,
+        type: content.type,
+        name: content.name,
+        source: content.source && {
+          value: content.source.text,
+          start: content.source.start,
+          end: content.source.end,
+        },
+      }
+    if (content.type === "tool")
+      return {
+        ...base,
+        type: content.type,
+        callID: content.callID ?? content.id,
+        tool: content.tool,
+        state: content.state,
+        metadata: content.metadata,
+      }
+    if (content.type === "subtask")
+      return {
+        ...base,
+        ...content,
+        model: content.model && { providerID: content.model.providerID, modelID: content.model.id },
+      }
+    if (content.type === "reasoning")
+      return {
+        ...base,
+        ...content,
+        time: content.time ?? {
+          start: item.created,
+          end: item.type === "assistant" ? item.completed : undefined,
+        },
+      }
+    return { ...base, ...content }
+  })
+}
 
 export type PromptFile = {
   readonly uri: string
@@ -312,12 +594,60 @@ export type PromptAgentMention = {
   readonly text?: string
 }
 
-export type PromptInput = {
+export type PromptPart =
+  | {
+      readonly id: string
+      readonly type: "text"
+      readonly text: string
+      readonly synthetic?: boolean
+      readonly ignored?: boolean
+      readonly time?: { readonly start: number; readonly end?: number }
+      readonly metadata?: Readonly<Record<string, unknown>>
+    }
+  | {
+      readonly id: string
+      readonly type: "file"
+      readonly mime: string
+      readonly url: string
+      readonly filename?: string
+      readonly source?:
+        | {
+            readonly type: "file"
+            readonly path: string
+            readonly text: { readonly value: string; readonly start: number; readonly end: number }
+          }
+        | {
+            readonly type: "symbol"
+            readonly path: string
+            readonly name: string
+            readonly kind: number
+            readonly range: {
+              readonly start: { readonly line: number; readonly character: number }
+              readonly end: { readonly line: number; readonly character: number }
+            }
+            readonly text: { readonly value: string; readonly start: number; readonly end: number }
+          }
+        | {
+            readonly type: "resource"
+            readonly clientName: string
+            readonly uri: string
+            readonly text: { readonly value: string; readonly start: number; readonly end: number }
+          }
+    }
+  | {
+      readonly id: string
+      readonly type: "agent"
+      readonly name: string
+      readonly source?: { readonly value: string; readonly start: number; readonly end: number }
+    }
+
+export type PromptInput = LocationInput & {
   readonly sessionID: string
   readonly id: string
   readonly text: string
   readonly files?: readonly PromptFile[]
   readonly agents?: readonly PromptAgentMention[]
+  readonly parts?: readonly PromptPart[]
   readonly selection?: {
     readonly agent?: string
     readonly model?: ModelRef
@@ -325,7 +655,7 @@ export type PromptInput = {
   readonly delivery?: "steer" | "queue"
 }
 
-export type CommandInput = {
+export type CommandInput = LocationInput & {
   readonly sessionID: string
   readonly id?: string
   readonly command: string
@@ -338,7 +668,17 @@ export type CommandInput = {
 
 export type FileEntry = {
   readonly path: string
+  readonly name?: string
+  readonly absolute?: string
   readonly type: "file" | "directory"
+}
+
+export type AppFileNode = {
+  readonly name: string
+  readonly path: string
+  readonly absolute: string
+  readonly type: "file" | "directory"
+  readonly ignored: boolean
 }
 
 export type FileContent = {
@@ -355,20 +695,26 @@ export type AppFileDiff = {
   readonly status?: "added" | "deleted" | "modified"
 }
 
+export type AppSnapshotFileDiff = Omit<AppFileDiff, "file"> & { readonly file?: string }
+export type AppVcsFileDiff = AppFileDiff
+
 export type AppPermissionRequest = {
   readonly id: string
   readonly sessionID: string
   readonly action: string
   readonly resources: readonly string[]
-  readonly metadata?: Readonly<Record<string, unknown>>
+  readonly permission: string
+  readonly patterns: string[]
+  readonly always: string[]
+  readonly metadata: Record<string, unknown>
 }
 
 export type AppQuestion = {
   readonly question: string
-  readonly header?: string
-  readonly options: readonly {
+  readonly header: string
+  readonly options: {
     readonly label: string
-    readonly description?: string
+    readonly description: string
   }[]
   readonly multiple?: boolean
   readonly custom?: boolean
@@ -377,7 +723,15 @@ export type AppQuestion = {
 export type AppQuestionRequest = {
   readonly id: string
   readonly sessionID: string
-  readonly questions: readonly AppQuestion[]
+  readonly questions: AppQuestion[]
+}
+
+export type AppQuestionAnswer = string[]
+
+export type AppSessionNotFoundError = {
+  readonly _tag: "SessionNotFoundError"
+  readonly sessionID: string
+  readonly message: string
 }
 
 export type AppMcpStatus =
@@ -423,20 +777,56 @@ export type AppEventEnvelope = {
 export type AppEvent =
   | { readonly type: "server.connected" }
   | { readonly type: "server.disposed"; readonly location?: LocationRef }
+  | { readonly type: "instance.disposed"; readonly location: LocationRef }
   | { readonly type: "project.updated"; readonly project: AppProject }
   | { readonly type: "session.created"; readonly session: AppSession }
   | { readonly type: "session.updated"; readonly session: AppSession }
   | { readonly type: "session.deleted"; readonly sessionID: string }
-  | { readonly type: "session.activity"; readonly sessionID: string; readonly activity: SessionActivity }
-  | { readonly type: "session.error"; readonly sessionID?: string; readonly error?: unknown }
+  | { readonly type: "session.moved"; readonly sessionID: string; readonly location: LocationRef }
+  | { readonly type: "session.revert"; readonly sessionID: string; readonly revert?: { readonly messageID: string } }
+  | {
+      readonly type: "session.activity"
+      readonly sessionID: string
+      readonly activity: SessionActivity
+      readonly item?: TimelineItem
+    }
+  | { readonly type: "session.diff"; readonly sessionID: string; readonly diff: readonly AppFileDiff[] }
+  | { readonly type: "todo.updated"; readonly sessionID: string; readonly todos: readonly AppTodo[] }
+  | { readonly type: "session.error"; readonly sessionID?: string; readonly error?: AppSessionError }
   | { readonly type: "timeline.updated"; readonly item: TimelineItem }
+  | {
+      readonly type: "timeline.content.updated"
+      readonly sessionID: string
+      readonly itemID: string
+      readonly content: TimelineContent
+    }
   | { readonly type: "timeline.removed"; readonly sessionID: string; readonly itemID: string }
+  | {
+      readonly type: "timeline.delta"
+      readonly sessionID: string
+      readonly itemID: string
+      readonly contentID: string
+      readonly field: string
+      readonly delta: string
+    }
+  | {
+      readonly type: "timeline.part.removed"
+      readonly sessionID: string
+      readonly itemID: string
+      readonly contentID: string
+    }
   | { readonly type: "permission.requested"; readonly request: AppPermissionRequest }
   | { readonly type: "permission.replied"; readonly sessionID: string; readonly requestID: string }
   | { readonly type: "question.requested"; readonly request: AppQuestionRequest }
   | { readonly type: "question.replied" | "question.rejected"; readonly sessionID: string; readonly requestID: string }
   | { readonly type: "file.changed"; readonly path: string; readonly change: "add" | "change" | "unlink" }
   | { readonly type: "vcs.branch.updated"; readonly branch?: string }
+  | { readonly type: "worktree.ready"; readonly name: string; readonly branch?: string }
+  | { readonly type: "worktree.failed"; readonly message: string }
+  | { readonly type: "lsp.updated" }
+  | { readonly type: "reference.updated" }
+  | { readonly type: "mcp.updated"; readonly server?: string }
+  | { readonly type: "provider.updated" }
   | { readonly type: "pty.exited"; readonly ptyID: string }
   | { readonly type: "unknown"; readonly raw: unknown }
 
@@ -445,8 +835,11 @@ export interface HealthApi {
 }
 
 export interface ProjectApi {
-  list(options?: RequestOptions): Promise<readonly AppProject[]>
   current(input?: LocationInput, options?: RequestOptions): Promise<CurrentProject>
+}
+
+export interface ProjectListCapability {
+  list(options?: RequestOptions): Promise<readonly AppProject[]>
 }
 
 export interface CatalogApi {
@@ -469,7 +862,21 @@ export interface SessionApi {
     options?: RequestOptions,
   ): Promise<AppSession>
   get(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<AppSession>
-  remove(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<void>
+  interrupt(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<void>
+  activity(input?: LocationInput, options?: RequestOptions): Promise<Readonly<Record<string, SessionActivity>>>
+  history(
+    input: LocationInput & { readonly sessionID: string; readonly limit?: number; readonly cursor?: string },
+    options?: RequestOptions,
+  ): Promise<Page<TimelineItem>>
+  message(
+    input: LocationInput & { readonly sessionID: string; readonly messageID: string },
+    options?: RequestOptions,
+  ): Promise<TimelineItem>
+  prompt(input: PromptInput, options?: RequestOptions): Promise<void>
+}
+
+export interface SessionActionsV1Capability {
+  remove(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<boolean>
   fork(
     input: LocationInput & { readonly sessionID: string; readonly messageID?: string },
     options?: RequestOptions,
@@ -478,22 +885,11 @@ export interface SessionApi {
     input: LocationInput & { readonly sessionID: string; readonly title: string },
     options?: RequestOptions,
   ): Promise<void>
-  interrupt(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<void>
-  activity(input?: LocationInput, options?: RequestOptions): Promise<Readonly<Record<string, SessionActivity>>>
-  history(
-    input: { readonly sessionID: string; readonly limit?: number; readonly cursor?: string },
-    options?: RequestOptions,
-  ): Promise<Page<TimelineItem>>
-  message(
-    input: { readonly sessionID: string; readonly messageID: string },
-    options?: RequestOptions,
-  ): Promise<TimelineItem>
-  prompt(input: PromptInput, options?: RequestOptions): Promise<void>
   command(input: CommandInput, options?: RequestOptions): Promise<void>
 }
 
 export interface FileApi {
-  list(input: LocationInput & { readonly path?: string }, options?: RequestOptions): Promise<readonly FileEntry[]>
+  list(input: LocationInput & { readonly path?: string }, options?: RequestOptions): Promise<readonly AppFileNode[]>
   find(
     input: LocationInput & {
       readonly query: string
@@ -508,7 +904,7 @@ export interface FileApi {
 export interface PermissionApi {
   pending(input?: LocationInput, options?: RequestOptions): Promise<readonly AppPermissionRequest[]>
   reply(
-    input: {
+    input: LocationInput & {
       readonly sessionID: string
       readonly requestID: string
       readonly reply: "once" | "always" | "reject"
@@ -521,14 +917,17 @@ export interface PermissionApi {
 export interface QuestionApi {
   pending(input?: LocationInput, options?: RequestOptions): Promise<readonly AppQuestionRequest[]>
   reply(
-    input: {
+    input: LocationInput & {
       readonly sessionID: string
       readonly requestID: string
       readonly answers: readonly (readonly string[])[]
     },
     options?: RequestOptions,
   ): Promise<void>
-  reject(input: { readonly sessionID: string; readonly requestID: string }, options?: RequestOptions): Promise<void>
+  reject(
+    input: LocationInput & { readonly sessionID: string; readonly requestID: string },
+    options?: RequestOptions,
+  ): Promise<void>
 }
 
 export interface VcsApi {
@@ -598,11 +997,8 @@ export interface CommonClient {
   readonly files: FileApi
   readonly permissions: PermissionApi
   readonly questions: QuestionApi
-  readonly vcs: VcsApi
-  readonly mcp: McpApi
   readonly pty: PtyApi
   readonly events: EventApi
-  disposeLocation(input: LocationInput, options?: RequestOptions): Promise<void>
 }
 
 export type AppProviderConfig = {
@@ -654,6 +1050,8 @@ export type ProviderAuthMethod = {
   readonly label: string
   readonly prompts?: readonly ProviderAuthPrompt[]
 }
+
+export type AppProviderAuthResponse = Readonly<Record<string, readonly ProviderAuthMethod[]>>
 
 export type ProviderAuthorization = {
   readonly url: string
@@ -710,14 +1108,15 @@ export type AppWorktree = {
 export interface WorktreesV1Capability {
   list(input: LocationInput, options?: RequestOptions): Promise<readonly string[]>
   create(input: LocationInput, options?: RequestOptions): Promise<AppWorktree>
-  remove(input: LocationInput & { readonly directory: string }, options?: RequestOptions): Promise<void>
-  reset(input: LocationInput & { readonly directory: string }, options?: RequestOptions): Promise<void>
+  remove(input: LocationInput & { readonly directory: string }, options?: RequestOptions): Promise<boolean>
+  reset(input: LocationInput & { readonly directory: string }, options?: RequestOptions): Promise<boolean>
 }
 
 export type AppTodo = {
   readonly id?: string
   readonly content: string
   readonly status: "pending" | "in_progress" | "completed" | "cancelled" | (string & {})
+  readonly priority: "high" | "medium" | "low" | (string & {})
 }
 
 export type LegacySessionShellInput = LocationInput & {
@@ -729,14 +1128,23 @@ export type LegacySessionShellInput = LocationInput & {
 }
 
 export interface SessionExtrasV1Capability {
-  archive(sessionID: string, archivedAt: number, options?: RequestOptions): Promise<void>
-  share(sessionID: string, options?: RequestOptions): Promise<string>
-  unshare(sessionID: string, options?: RequestOptions): Promise<void>
-  diff(sessionID: string, options?: RequestOptions): Promise<readonly AppFileDiff[]>
-  todos(sessionID: string, options?: RequestOptions): Promise<readonly AppTodo[]>
-  summarize(sessionID: string, model: ModelRef, options?: RequestOptions): Promise<void>
-  revert(sessionID: string, messageID: string, options?: RequestOptions): Promise<void>
-  clearRevert(sessionID: string, options?: RequestOptions): Promise<void>
+  archive(
+    input: LocationInput & { readonly sessionID: string; readonly archivedAt: number },
+    options?: RequestOptions,
+  ): Promise<void>
+  share(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<string>
+  unshare(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<void>
+  diff(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<readonly AppFileDiff[]>
+  todos(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<readonly AppTodo[]>
+  summarize(
+    input: LocationInput & { readonly sessionID: string; readonly model: ModelRef },
+    options?: RequestOptions,
+  ): Promise<void>
+  revert(
+    input: LocationInput & { readonly sessionID: string; readonly messageID: string },
+    options?: RequestOptions,
+  ): Promise<AppSession>
+  clearRevert(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<AppSession>
   shell(input: LegacySessionShellInput, options?: RequestOptions): Promise<void>
 }
 
@@ -784,7 +1192,18 @@ export type DecoratedFileContent = {
   readonly encoding?: "base64"
   readonly mimeType?: string
   readonly patch?: {
-    readonly hunks: readonly { readonly lines: readonly string[] }[]
+    readonly oldFileName: string
+    readonly newFileName: string
+    readonly oldHeader?: string
+    readonly newHeader?: string
+    readonly hunks: readonly {
+      readonly oldStart: number
+      readonly oldLines: number
+      readonly newStart: number
+      readonly newLines: number
+      readonly lines: readonly string[]
+    }[]
+    readonly index?: string
   }
 }
 
@@ -793,11 +1212,28 @@ export interface DecoratedFileCapability {
 }
 
 export type PtyTicket = {
-  readonly ticket: string
+  readonly status: number
+  readonly ticket?: string
+}
+
+export type PtyTransportConfig = {
+  readonly baseUrl: string
+  readonly fetch: typeof globalThis.fetch
+  readonly username?: string
+  readonly password?: string
+  readonly sameOrigin: boolean
+  readonly authToken: boolean
 }
 
 export interface PtyTransportCapability {
   connectToken(input: LocationInput & { readonly ptyID: string }, options?: RequestOptions): Promise<PtyTicket>
+  exists(input: LocationInput & { readonly ptyID: string }, options?: RequestOptions): Promise<boolean>
+  connectURL(input: {
+    readonly ptyID: string
+    readonly location: LocationRef
+    readonly cursor: number
+    readonly ticket?: string
+  }): URL
 }
 
 export type ShellOption = {
@@ -811,6 +1247,7 @@ export interface ShellDiscoveryCapability {
 }
 
 export interface RuntimeV1Capability {
+  disposeLocation(input: LocationInput, options?: RequestOptions): Promise<void>
   disposeAll(options?: RequestOptions): Promise<void>
 }
 
@@ -833,6 +1270,11 @@ export type IntegrationMethod =
 export type IntegrationConnection = {
   readonly id: string
   readonly label: string
+  readonly kind: "credential" | "environment"
+}
+
+export function credentialConnectionIDs(connections: readonly IntegrationConnection[]) {
+  return connections.filter((connection) => connection.kind === "credential").map((connection) => connection.id)
 }
 
 export type IntegrationInfo = {
@@ -914,18 +1356,37 @@ export type InstructionEntry = {
 }
 
 export interface SessionExtrasV2Capability {
-  switchAgent(input: { readonly sessionID: string; readonly agent: string }, options?: RequestOptions): Promise<void>
-  switchModel(input: { readonly sessionID: string; readonly model: ModelRef }, options?: RequestOptions): Promise<void>
-  move(
-    input: { readonly sessionID: string; readonly directory: string; readonly moveChanges?: boolean },
+  diff?(
+    input: LocationInput & { readonly sessionID: string },
+    options?: RequestOptions,
+  ): Promise<readonly AppFileDiff[]>
+  todos?(
+    input: LocationInput & { readonly sessionID: string },
+    options?: RequestOptions,
+  ): Promise<readonly AppTodo[]>
+  switchAgent(
+    input: LocationInput & { readonly sessionID: string; readonly agent: string },
     options?: RequestOptions,
   ): Promise<void>
-  skill(
-    input: { readonly sessionID: string; readonly id?: string; readonly skill: string; readonly resume?: boolean },
+  switchModel(
+    input: LocationInput & { readonly sessionID: string; readonly model: ModelRef },
     options?: RequestOptions,
   ): Promise<void>
-  synthetic(
-    input: {
+  move?(
+    input: LocationInput & { readonly sessionID: string; readonly directory: string; readonly moveChanges?: boolean },
+    options?: RequestOptions,
+  ): Promise<void>
+  skill?(
+    input: LocationInput & {
+      readonly sessionID: string
+      readonly id?: string
+      readonly skill: string
+      readonly resume?: boolean
+    },
+    options?: RequestOptions,
+  ): Promise<void>
+  synthetic?(
+    input: LocationInput & {
       readonly sessionID: string
       readonly id?: string
       readonly text: string
@@ -936,40 +1397,50 @@ export interface SessionExtrasV2Capability {
     },
     options?: RequestOptions,
   ): Promise<PendingSessionInput>
-  shell(
-    input: { readonly sessionID: string; readonly id?: string; readonly command: string },
+  shell?(
+    input: LocationInput & { readonly sessionID: string; readonly id?: string; readonly command: string },
     options?: RequestOptions,
   ): Promise<void>
-  compact(
-    input: { readonly sessionID: string; readonly id?: string },
+  compact?(
+    input: LocationInput & { readonly sessionID: string; readonly id?: string },
     options?: RequestOptions,
   ): Promise<PendingSessionInput>
-  wait(input: { readonly sessionID: string }, options?: RequestOptions): Promise<void>
-  context(input: { readonly sessionID: string }, options?: RequestOptions): Promise<readonly TimelineItem[]>
-  pending(input: { readonly sessionID: string }, options?: RequestOptions): Promise<readonly PendingSessionInput[]>
-  instructionEntries(
-    input: { readonly sessionID: string },
+  wait(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<void>
+  context(
+    input: LocationInput & { readonly sessionID: string },
+    options?: RequestOptions,
+  ): Promise<readonly TimelineItem[]>
+  pending?(
+    input: LocationInput & { readonly sessionID: string },
+    options?: RequestOptions,
+  ): Promise<readonly PendingSessionInput[]>
+  instructionEntries?(
+    input: LocationInput & { readonly sessionID: string },
     options?: RequestOptions,
   ): Promise<readonly InstructionEntry[]>
-  putInstructionEntry(
-    input: { readonly sessionID: string; readonly key: string; readonly value: JsonValue },
+  putInstructionEntry?(
+    input: LocationInput & { readonly sessionID: string; readonly key: string; readonly value: JsonValue },
     options?: RequestOptions,
   ): Promise<void>
-  removeInstructionEntry(
-    input: { readonly sessionID: string; readonly key: string },
+  removeInstructionEntry?(
+    input: LocationInput & { readonly sessionID: string; readonly key: string },
     options?: RequestOptions,
   ): Promise<void>
   log(
-    input: { readonly sessionID: string; readonly after?: number; readonly follow?: boolean },
+    input: LocationInput & { readonly sessionID: string; readonly after?: number; readonly follow?: boolean },
     options?: RequestOptions,
   ): AsyncIterable<SessionLogItem>
-  background(input: { readonly sessionID: string }, options?: RequestOptions): Promise<void>
+  background?(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<void>
   stageRevert(
-    input: { readonly sessionID: string; readonly messageID: string; readonly files?: readonly string[] },
+    input: LocationInput & {
+      readonly sessionID: string
+      readonly messageID: string
+      readonly files?: readonly string[]
+    },
     options?: RequestOptions,
   ): Promise<{ readonly messageID: string }>
-  clearRevert(input: { readonly sessionID: string }, options?: RequestOptions): Promise<void>
-  commitRevert(input: { readonly sessionID: string }, options?: RequestOptions): Promise<void>
+  clearRevert(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<void>
+  commitRevert(input: LocationInput & { readonly sessionID: string }, options?: RequestOptions): Promise<void>
 }
 
 export type ProjectDirectory = {
@@ -978,7 +1449,7 @@ export type ProjectDirectory = {
 }
 
 export interface ProjectCopiesV2Capability {
-  directories(
+  directories?(
     input: LocationInput & { readonly projectID: string },
     options?: RequestOptions,
   ): Promise<readonly ProjectDirectory[]>
@@ -1161,6 +1632,9 @@ export interface DiscoveryV2Capability {
 }
 
 export interface Capabilities {
+  readonly projectList?: ProjectListCapability
+  readonly vcs?: VcsApi
+  readonly mcp?: McpApi
   readonly configuration?: ConfigurationCapability
   readonly providerAuthV1?: ProviderAuthV1Capability
   readonly integrationsV2?: IntegrationsV2Capability
@@ -1168,6 +1642,7 @@ export interface Capabilities {
   readonly worktreesV1?: WorktreesV1Capability
   readonly projectCopiesV2?: ProjectCopiesV2Capability
   readonly sessionExtrasV1?: SessionExtrasV1Capability
+  readonly sessionActionsV1?: SessionActionsV1Capability
   readonly sessionExtrasV2?: SessionExtrasV2Capability
   readonly lsp?: LspCapability
   readonly mcpControl?: McpControlCapability

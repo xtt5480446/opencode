@@ -13,16 +13,40 @@ function abortFromInput(input: RequestInfo | URL, init?: RequestInit) {
 }
 
 describe("checkServerHealth", () => {
-  test("returns healthy response with version", async () => {
+  test("prefers native v2 health", async () => {
+    const paths: string[] = []
     const fetch = (async () =>
-      new Response(JSON.stringify({ healthy: true, version: "1.2.3" }), {
+      new Response(JSON.stringify({ healthy: true }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })) as unknown as typeof globalThis.fetch
 
+    const trackingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      paths.push(new URL(input instanceof Request ? input.url : input).pathname)
+      return fetch(input, init)
+    }) as typeof globalThis.fetch
+
+    const result = await checkServerHealth(server, trackingFetch)
+
+    expect(result).toEqual({ healthy: true, version: "v2" })
+    expect(paths).toEqual(["/api/health"])
+  })
+
+  test("falls back to v1 and preserves installation version", async () => {
+    const paths: string[] = []
+    const fetch = (async (input: RequestInfo | URL) => {
+      const path = new URL(input instanceof Request ? input.url : input).pathname
+      paths.push(path)
+      if (path === "/api/health") return new Response(null, { status: 404 })
+      return new Response(JSON.stringify({ healthy: true, version: "1.2.3" }), {
+        headers: { "content-type": "application/json" },
+      })
+    }) as typeof globalThis.fetch
+
     const result = await checkServerHealth(server, fetch)
 
-    expect(result).toEqual({ healthy: true, version: "1.2.3" })
+    expect(result).toEqual({ healthy: true, version: "v1", installationVersion: "1.2.3" })
+    expect(paths).toEqual(["/api/health", "/global/health"])
   })
 
   test("allows slow servers thirty seconds by default", async () => {
@@ -57,7 +81,7 @@ describe("checkServerHealth", () => {
 
     const result = await checkServerHealth(server, fetch)
 
-    expect(result).toEqual({ healthy: false })
+    expect(result).toEqual({ healthy: false, version: "v2" })
   })
 
   test("uses timeout fallback when AbortSignal.timeout is unavailable", async () => {
@@ -89,7 +113,7 @@ describe("checkServerHealth", () => {
     })
 
     expect(aborted).toBe(true)
-    expect(result).toEqual({ healthy: false })
+    expect(result).toEqual({ healthy: false, version: "v2" })
   })
 
   test("uses provided abort signal", async () => {
@@ -127,7 +151,7 @@ describe("checkServerHealth", () => {
     })
 
     expect(count).toBe(3)
-    expect(result).toEqual({ healthy: true, version: "1.2.3" })
+    expect(result).toEqual({ healthy: true, version: "v2" })
   })
 
   test("returns unhealthy when retries are exhausted", async () => {
@@ -143,6 +167,56 @@ describe("checkServerHealth", () => {
     })
 
     expect(count).toBe(3)
-    expect(result).toEqual({ healthy: false })
+    expect(result).toEqual({ healthy: false, version: "v2" })
+  })
+
+  test("does not fall back to v1 for a transient v2 server response", async () => {
+    const paths: string[] = []
+    const fetch = (async (input: RequestInfo | URL) => {
+      paths.push(new URL(input instanceof Request ? input.url : input).pathname)
+      return new Response(null, { status: 503 })
+    }) as typeof globalThis.fetch
+
+    const result = await checkServerHealth(server, fetch, { retryCount: 0 })
+
+    expect(result).toEqual({ healthy: false, version: "v2" })
+    expect(paths).toEqual(["/api/health"])
+  })
+
+  test("retries transient v2 responses before succeeding", async () => {
+    const paths: string[] = []
+    const fetch = (async (input: RequestInfo | URL) => {
+      const path = new URL(input instanceof Request ? input.url : input).pathname
+      paths.push(path)
+      if (paths.length === 1) return new Response(null, { status: 503 })
+      return new Response(JSON.stringify({ healthy: true }), {
+        headers: { "content-type": "application/json" },
+      })
+    }) as typeof globalThis.fetch
+
+    expect(await checkServerHealth(server, fetch, { retryCount: 1, retryDelayMs: 1 })).toEqual({
+      healthy: true,
+      version: "v2",
+    })
+    expect(paths).toEqual(["/api/health", "/api/health"])
+  })
+
+  test("falls back to v1 for method-not-allowed v2 health", async () => {
+    const paths: string[] = []
+    const fetch = (async (input: RequestInfo | URL) => {
+      const path = new URL(input instanceof Request ? input.url : input).pathname
+      paths.push(path)
+      if (path === "/api/health") return new Response(null, { status: 405 })
+      return new Response(JSON.stringify({ healthy: true, version: "1.2.3" }), {
+        headers: { "content-type": "application/json" },
+      })
+    }) as typeof globalThis.fetch
+
+    expect(await checkServerHealth(server, fetch)).toEqual({
+      healthy: true,
+      version: "v1",
+      installationVersion: "1.2.3",
+    })
+    expect(paths).toEqual(["/api/health", "/global/health"])
   })
 })

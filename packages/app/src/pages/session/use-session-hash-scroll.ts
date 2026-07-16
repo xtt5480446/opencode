@@ -1,4 +1,4 @@
-import type { UserMessage } from "@opencode-ai/sdk/v2"
+import type { AppUserMessage as UserMessage } from "@/context/backend"
 import { useLocation, useNavigate } from "@solidjs/router"
 import { createEffect, createMemo, onCleanup, onMount } from "solid-js"
 import { messageIdFromHash } from "./message-id-from-hash"

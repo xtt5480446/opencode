@@ -6,7 +6,7 @@ import { DockPrompt } from "@opencode-ai/session-ui/dock-prompt"
 import { Icon } from "@opencode-ai/ui/icon"
 import { useSpring } from "@opencode-ai/ui/motion-spring"
 import { showToast } from "@/utils/toast"
-import type { QuestionAnswer, QuestionRequest } from "@opencode-ai/sdk/v2"
+import type { AppQuestionAnswer as QuestionAnswer, AppQuestionRequest as QuestionRequest } from "@/context/backend"
 import { useLanguage } from "@/context/language"
 import { useSDK } from "@/context/sdk"
 import { makeEventListener } from "@solid-primitives/event-listener"
@@ -223,7 +223,15 @@ export const SessionQuestionDock: Component<{ request: QuestionRequest; onSubmit
   }
 
   const replyMutation = useMutation(() => ({
-    mutationFn: (answers: QuestionAnswer[]) => sdk().client.question.reply({ requestID: props.request.id, answers }),
+    mutationFn: (answers: QuestionAnswer[]) =>
+      sdk().backend.then((client) =>
+        client.common.questions.reply({
+          sessionID: props.request.sessionID,
+          requestID: props.request.id,
+          answers,
+          location: { directory: sdk().directory },
+        }),
+      ),
     onMutate: () => {
       props.onSubmit()
     },
@@ -235,7 +243,14 @@ export const SessionQuestionDock: Component<{ request: QuestionRequest; onSubmit
   }))
 
   const rejectMutation = useMutation(() => ({
-    mutationFn: () => sdk().client.question.reject({ requestID: props.request.id }),
+    mutationFn: () =>
+      sdk().backend.then((client) =>
+        client.common.questions.reject({
+          sessionID: props.request.sessionID,
+          requestID: props.request.id,
+          location: { directory: sdk().directory },
+        }),
+      ),
     onMutate: () => {
       props.onSubmit()
     },

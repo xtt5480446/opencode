@@ -1,4 +1,7 @@
-import type { AgentPart as MessageAgentPart, FilePart, Part, TextPart } from "@opencode-ai/sdk/v2"
+import type { AppFilePart as FilePart, AppPart } from "@/context/backend"
+type Part = AppPart
+type TextPart = Extract<AppPart, { type: "text" }>
+type MessageAgentPart = Extract<AppPart, { type: "agent" }>
 import type { AgentPart, FileAttachmentPart, ImageAttachmentPart, Prompt } from "@/context/prompt"
 
 type Inline =

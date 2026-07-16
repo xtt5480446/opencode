@@ -9,7 +9,7 @@ import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { Mark } from "@opencode-ai/ui/logo"
 import { DragDropProvider, DragDropSensors, DragOverlay, SortableProvider, closestCenter } from "@thisbeyond/solid-dnd"
 import type { DragEvent } from "@thisbeyond/solid-dnd"
-import type { FileDiffInfo, VcsFileDiff } from "@opencode-ai/sdk/v2"
+import type { AppFileDiff as FileDiffInfo, AppVcsFileDiff as VcsFileDiff } from "@/context/backend"
 import { ConstrainDragYAxis, getDraggableId } from "@/utils/solid-dnd"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 

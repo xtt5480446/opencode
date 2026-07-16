@@ -247,7 +247,7 @@ export function nativePickerPath(path: string) {
 }
 import { getFilename } from "@opencode-ai/core/util/path"
 import fuzzysort from "fuzzysort"
-import { ServerSDK } from "@/context/server-sdk"
+import type { AppClient } from "@/context/backend"
 
 export function cleanPickerInput(value: string) {
   const first = (value ?? "").split(/\r?\n/)[0] ?? ""
@@ -321,7 +321,11 @@ export function displayPickerPath(path: string, input: string, home: string) {
   return pickerTilde(value, home) || value
 }
 
-export function createDirectorySearch(args: { sdk: ServerSDK; base: () => string | undefined; home: () => string }) {
+export function createDirectorySearch(args: {
+  backend: Promise<AppClient>
+  base: () => string | undefined
+  home: () => string
+}) {
   const cache = new Map<string, Promise<Array<{ name: string; absolute: string }>>>()
   let current = 0
 
@@ -342,14 +346,16 @@ export function createDirectorySearch(args: { sdk: ServerSDK; base: () => string
     const key = trimPickerPath(directory)
     const existing = cache.get(key)
     if (existing) return existing
-    const request = args.sdk.client.file
-      .list({ directory: key, path: "" })
-      .then((result) => result.data ?? [])
+    const request = args.backend
+      .then((client) => client.common.files.list({ location: { directory: key }, path: "" }))
       .catch(() => [])
       .then((nodes) =>
         nodes
           .filter((node) => node.type === "directory")
-          .map((node) => ({ name: node.name, absolute: trimPickerPath(normalizePickerDrive(node.absolute)) })),
+          .map((node) => ({
+            name: node.name ?? getFilename(node.path),
+            absolute: trimPickerPath(normalizePickerDrive(node.absolute ?? joinPickerPath(key, node.path))),
+          })),
       )
     cache.set(key, request)
     return request
@@ -371,12 +377,18 @@ export function createDirectorySearch(args: { sdk: ServerSDK; base: () => string
     const pathInput = raw.startsWith("~") || !!pickerRoot(raw) || raw.includes("/")
     const query = normalizePickerDrive(input.path)
     if (!pathInput) {
-      const results = await args.sdk.client.find
-        .files({ directory: input.directory, query, type: "directory", limit: 50 })
-        .then((result) => result.data ?? [])
+      const results = await args.backend
+        .then((client) =>
+          client.common.files.find({
+            location: { directory: input.directory },
+            query,
+            type: "directory",
+            limit: 50,
+          }),
+        )
         .catch(() => [])
       if (!active()) return []
-      return results.map((path) => joinPickerPath(input.directory, path)).slice(0, 50)
+      return results.map((item) => item.absolute ?? joinPickerPath(input.directory, item.path)).slice(0, 50)
     }
     const segments = query.replace(/^\/+/, "").split("/")
     const head = segments.slice(0, -1).filter((part) => part && part !== ".")

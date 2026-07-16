@@ -68,9 +68,8 @@ export function DialogSelectDirectoryV2(props: DialogSelectDirectoryV2Props) {
   const [fallbackPath] = createResource(
     () => (missingBase() ? true : undefined),
     () =>
-      sdk.client.path
-        .get()
-        .then((result) => result.data)
+      sdk.backend
+        .then((client) => client.capabilities.pathInfo?.get())
         .catch(() => undefined),
     { initialValue: undefined },
   )
@@ -83,20 +82,26 @@ export function DialogSelectDirectoryV2(props: DialogSelectDirectoryV2Props) {
       fallbackPath()?.home ||
       fallbackPath()?.directory,
   )
-  const search = createDirectorySearch({ sdk, home, base: () => root() || start() })
+  const search = createDirectorySearch({ backend: sdk.backend, home, base: () => root() || start() })
   const [suggestions] = createResource(input, async (value) => {
     const typed = cleanPickerInput(value).replace(/\/+$/, "")
     const current = displayPickerPath(root(), value, home()).replace(/\/+$/, "")
     if (!typed || typed === current) return { query: value, items: [] }
     const directories = (await search(value)).map((absolute) => ({ absolute, type: "directory" as const }))
     if (!policy.includeFiles) return { query: value, items: directories.slice(0, 5) }
-    const files = await sdk.client.find
-      .files({ directory: root(), query: pickerFileSearchQuery(root(), value, home()), type: "file", limit: 20 })
-      .then((result) => result.data ?? [])
+    const files = await sdk.backend
+      .then((client) =>
+        client.common.files.find({
+          location: { directory: root() },
+          query: pickerFileSearchQuery(root(), value, home()),
+          type: "file",
+          limit: 20,
+        }),
+      )
       .catch(() => [])
     const results = [
       ...directories,
-      ...files.map((path) => ({ absolute: absoluteTreePath(root(), path), type: "file" as const })),
+      ...files.map((file) => ({ absolute: file.absolute ?? absoluteTreePath(root(), file.path), type: "file" as const })),
     ]
     return {
       query: value,
@@ -115,9 +120,9 @@ export function DialogSelectDirectoryV2(props: DialogSelectDirectoryV2Props) {
       existing ??
       loads.schedule(`${generation}:${key}`, eager ? "background" : "user", () => {
         if (!activeTreeNavigation(generation, navigation)) return Promise.resolve(undefined)
-        return sdk.client.file
-          .list({ directory: absolute, path: "" })
-          .then((result) => result.data ?? [])
+        return sdk.backend
+          .then((client) => client.common.files.list({ location: { directory: absolute }, path: "" }))
+          .then((nodes) => nodes.map((node) => ({ name: node.name ?? node.path, type: node.type })))
           .catch(() => undefined)
       })
     listings.set(key, request)

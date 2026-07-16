@@ -118,7 +118,7 @@ export function CustomProviderForm() {
     const output = validateCustomProvider({
       form,
       t: language.t,
-      disabledProviders: serverSync().data.config.disabled_providers ?? [],
+      disabledProviders: [...(serverSync().data.config.disabledProviders ?? [])],
       existingProviderIDs: new Set(serverSync().data.provider.all.keys()),
     })
     batch(() => {
@@ -131,23 +131,26 @@ export function CustomProviderForm() {
 
   const saveMutation = useMutation(() => ({
     mutationFn: async (result: NonNullable<ReturnType<typeof validate>>) => {
-      const disabledProviders = serverSync().data.config.disabled_providers ?? []
+      const disabledProviders = serverSync().data.config.disabledProviders ?? []
       const nextDisabled = disabledProviders.filter((id) => id !== result.providerID)
+      const backend = await serverSDK().backend
 
-      if (result.key) {
-        await serverSDK().client.auth.set({
-          providerID: result.providerID,
-          auth: {
-            type: "api",
-            key: result.key,
-          },
-        })
+      if (result.key && backend.version === "v1") {
+        const capability = backend.capabilities.providerAuthV1
+        if (!capability) throw new Error("Server does not support provider authentication")
+        await capability.setApiKey({ providerID: result.providerID, key: result.key })
       }
 
       await serverSync().updateConfig({
         provider: { [result.providerID]: result.config },
-        disabled_providers: nextDisabled,
+        disabledProviders: nextDisabled,
       })
+      if (result.key && backend.version === "v2") {
+        const capability = backend.capabilities.integrationsV2
+        if (!capability) throw new Error("Server does not support provider integrations")
+        await capability.connectKey({ integrationID: result.providerID, key: result.key })
+        await serverSync().refreshProviders()
+      }
       return result
     },
     onSuccess: (result) => {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { coalesceServerEvents, enqueueServerEvent, resumeStreamAfterPageShow } from "./server-sdk"
-import type { Event } from "@opencode-ai/sdk/v2/client"
+import type { AppEvent } from "./backend"
 
 describe("resumeStreamAfterPageShow", () => {
   test("restarts a stream only after a back-forward cache restore", () => {
@@ -18,34 +18,36 @@ describe("coalesceServerEvents", () => {
   const delta = (value: string, field = "text", partID = "part") => ({
     directory: "/repo",
     payload: {
-      type: "message.part.delta",
-      properties: { messageID: "msg", partID, field, delta: value },
-    } as Event,
+      type: "timeline.delta",
+      sessionID: "ses",
+      itemID: "msg",
+      contentID: partID,
+      field,
+      delta: value,
+    } as AppEvent,
   })
 
   test("merges adjacent deltas for the same field", () => {
     const first = delta("hello ")
     const second = delta("world")
-    first.payload.id = "first"
-    second.payload.id = "second"
     const result = coalesceServerEvents([first, second])
 
     expect(result).toHaveLength(1)
-    expect(result[0]?.payload).toMatchObject({ id: "second", properties: { delta: "hello world" } })
+    expect(result[0]?.payload).toMatchObject({ delta: "hello world" })
   })
 
   test("preserves event boundaries and distinct fields", () => {
     const status = {
       directory: "/repo",
-      payload: { type: "session.status", properties: { sessionID: "ses", status: { type: "idle" } } } as Event,
+      payload: { type: "session.activity", sessionID: "ses", activity: { type: "idle" } } as AppEvent,
     }
     const result = coalesceServerEvents([delta("a"), delta("b", "metadata"), status, delta("c")])
 
     expect(result.map((event) => event.payload.type)).toEqual([
-      "message.part.delta",
-      "message.part.delta",
-      "session.status",
-      "message.part.delta",
+      "timeline.delta",
+      "timeline.delta",
+      "session.activity",
+      "timeline.delta",
     ])
   })
 
@@ -53,104 +55,99 @@ describe("coalesceServerEvents", () => {
     const first = delta("a")
     const other = delta("b", "text", "other")
     const last = delta("c")
-    first.payload.id = "1"
-    other.payload.id = "2"
-    last.payload.id = "3"
-
     const result = coalesceServerEvents([first, other, last])
 
-    expect(result.map((event) => event.payload.id)).toEqual(["1", "2", "3"])
+    expect(result.map((event) => event.payload.type)).toEqual(["timeline.delta", "timeline.delta", "timeline.delta"])
   })
 })
 
 describe("enqueueServerEvent", () => {
   const partUpdated = (text: string) =>
     ({
-      type: "message.part.updated",
-      properties: {
+      type: "timeline.updated",
+      item: {
+        type: "user",
+        id: "message",
         sessionID: "session",
-        part: { id: "part", sessionID: "session", messageID: "message", type: "text", text },
+        created: 1,
+        content: [{ id: "part", type: "text", text }],
       },
-    }) as Event
+    }) as AppEvent
 
   test("preserves part updates across message remove and re-add barriers", () => {
-    const events: Array<{ directory: string; payload: Event }> = []
-    const enqueue = (payload: Event) => enqueueServerEvent(events, { directory: "/repo", payload })
+    const events: Array<{ directory: string; payload: AppEvent }> = []
+    const enqueue = (payload: AppEvent) => enqueueServerEvent(events, { directory: "/repo", payload })
 
     enqueue(partUpdated("old"))
-    enqueue({ type: "message.removed", properties: { sessionID: "session", messageID: "message" } } as Event)
+    enqueue({ type: "timeline.removed", sessionID: "session", itemID: "message" })
     enqueue({
-      type: "message.updated",
-      properties: {
+      type: "timeline.updated",
+      item: {
+        type: "user",
+        created: 1,
+        content: [],
         sessionID: "session",
-        info: {
-          id: "message",
-          sessionID: "session",
-          role: "user",
-          time: { created: 1 },
-          agent: "build",
-          model: { providerID: "provider", modelID: "model" },
-        },
+        id: "message",
       },
-    } as Event)
+    })
     enqueue(partUpdated("new"))
 
     expect(events.map((event) => event.payload.type)).toEqual([
-      "message.part.updated",
-      "message.removed",
-      "message.updated",
-      "message.part.updated",
+      "timeline.updated",
+      "timeline.removed",
+      "timeline.updated",
     ])
   })
 
   test("preserves deltas after a replacement snapshot", () => {
-    const events: Array<{ directory: string; payload: Event }> = []
-    const enqueue = (payload: Event) => enqueueServerEvent(events, { directory: "/repo", payload })
+    const events: Array<{ directory: string; payload: AppEvent }> = []
+    const enqueue = (payload: AppEvent) => enqueueServerEvent(events, { directory: "/repo", payload })
 
     enqueue(partUpdated("a"))
     enqueue(partUpdated("ab"))
     enqueue({
-      type: "message.part.delta",
-      properties: { sessionID: "session", messageID: "message", partID: "part", field: "text", delta: "c" },
-    } as Event)
+      type: "timeline.delta",
+      sessionID: "session",
+      itemID: "message",
+      contentID: "part",
+      field: "text",
+      delta: "c",
+    })
 
     const result = coalesceServerEvents(events)
-    expect(result.map((event) => event.payload.type)).toEqual(["message.part.updated", "message.part.delta"])
-    expect(result[0]?.payload).toMatchObject({ properties: { part: { text: "ab" } } })
-    expect(result[1]?.payload).toMatchObject({ properties: { delta: "c" } })
+    expect(result.map((event) => event.payload.type)).toEqual(["timeline.updated", "timeline.delta"])
+    expect(result[0]?.payload).toMatchObject({ item: { content: [{ text: "ab" }] } })
+    expect(result[1]?.payload).toMatchObject({ delta: "c" })
   })
 
   test("preserves updates after session deletion", () => {
-    const events: Array<{ directory: string; payload: Event }> = []
-    const enqueue = (payload: Event) => enqueueServerEvent(events, { directory: "/repo", payload })
+    const events: Array<{ directory: string; payload: AppEvent }> = []
+    const enqueue = (payload: AppEvent) => enqueueServerEvent(events, { directory: "/repo", payload })
 
     enqueue(partUpdated("old"))
     enqueue({
-      id: "event-delete",
       type: "session.deleted",
-      properties: { sessionID: "session" },
-    } as Event)
+      sessionID: "session",
+    })
     enqueue(partUpdated("new"))
 
     expect(events.map((event) => event.payload.type)).toEqual([
-      "message.part.updated",
+      "timeline.updated",
       "session.deleted",
-      "message.part.updated",
+      "timeline.updated",
     ])
   })
 
   test("does not coalesce edge-triggered session statuses", () => {
-    const events: Array<{ directory: string; payload: Event }> = []
+    const events: Array<{ directory: string; payload: AppEvent }> = []
     const enqueue = (status: "retry" | "busy") =>
       enqueueServerEvent(events, {
         directory: "/repo",
         payload: {
-          type: "session.status",
-          properties: {
-            sessionID: "session",
-            status: status === "retry" ? { type: "retry", attempt: 1, message: "retry", next: 1 } : { type: "busy" },
-          },
-        } as Event,
+          type: "session.activity",
+          sessionID: "session",
+          activity: status === "retry" ? { type: "retry", attempt: 1, message: "retry", next: 1 } : { type: "running" },
+        },
       })
 
     enqueue("retry")

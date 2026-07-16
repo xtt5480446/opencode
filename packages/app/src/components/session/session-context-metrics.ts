@@ -1,4 +1,4 @@
-import type { AssistantMessage, Message } from "@opencode-ai/sdk/v2/client"
+import type { AppAssistantMessage, AppMessage } from "@/context/backend"
 
 type Provider = {
   id: string
@@ -14,7 +14,7 @@ type Model = {
 }
 
 type Context = {
-  message: AssistantMessage
+  message: AppAssistantMessage
   provider?: Provider
   model?: Model
   providerLabel: string
@@ -25,11 +25,11 @@ type Context = {
   usage: number | null
 }
 
-const tokenTotal = (msg: AssistantMessage) => {
+const tokenTotal = (msg: AppAssistantMessage) => {
   return msg.tokens.input + msg.tokens.output + msg.tokens.reasoning + msg.tokens.cache.read + msg.tokens.cache.write
 }
 
-const lastAssistantWithTokens = (messages: Message[]) => {
+const lastAssistantWithTokens = (messages: AppMessage[]) => {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]
     if (msg.role !== "assistant") continue
@@ -38,7 +38,7 @@ const lastAssistantWithTokens = (messages: Message[]) => {
   }
 }
 
-const build = (messages: Message[] = [], providers: Provider[] = []): Context | undefined => {
+const build = (messages: AppMessage[] = [], providers: Provider[] = []): Context | undefined => {
   const message = lastAssistantWithTokens(messages)
   if (!message) return undefined
 
@@ -60,6 +60,6 @@ const build = (messages: Message[] = [], providers: Provider[] = []): Context | 
   }
 }
 
-export function getSessionContext(messages: Message[] = [], providers: Provider[] = []) {
+export function getSessionContext(messages: AppMessage[] = [], providers: Provider[] = []) {
   return build(messages, providers)
 }

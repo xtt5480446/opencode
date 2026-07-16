@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import type { PermissionRequest, QuestionRequest, Session } from "@opencode-ai/sdk/v2/client"
+import type {
+  AppPermissionRequest as PermissionRequest,
+  AppQuestionRequest as QuestionRequest,
+  AppSession as Session,
+} from "@/context/backend"
 import { sessionPermissionRequest, sessionQuestionRequest } from "./session-request-tree"
 
 const session = (input: { id: string; parentID?: string }) =>
@@ -12,6 +16,12 @@ const permission = (id: string, sessionID: string) =>
   ({
     id,
     sessionID,
+    action: "read",
+    resources: ["*"],
+    permission: "read",
+    patterns: ["*"],
+    always: [],
+    metadata: {},
   }) as PermissionRequest
 
 const question = (id: string, sessionID: string) =>

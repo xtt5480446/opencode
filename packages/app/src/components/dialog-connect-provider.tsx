@@ -1,4 +1,4 @@
-import type { ProviderAuthAuthorization, ProviderAuthMethod } from "@opencode-ai/sdk/v2/client"
+import type { ProviderAuthorization, ProviderAuthMethod } from "@/context/backend"
 import { Button } from "@opencode-ai/ui/button"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Dialog } from "@opencode-ai/ui/dialog"
@@ -31,6 +31,7 @@ import { popularProviders, useProviders } from "@/hooks/use-providers"
 import { CustomProviderForm } from "./dialog-custom-provider"
 
 const CUSTOM_ID = "_custom"
+type AuthMethod = ProviderAuthMethod & { readonly id?: string }
 
 export function useProviderConnectController(options: { onBack?: () => void } = {}) {
   const [store, setStore] = createStore({ selected: undefined as string | undefined })
@@ -176,6 +177,7 @@ function ProviderConnection(props: {
   const providers = useProviders(props.directory)
 
   const alive = { value: true }
+  const connected = { value: false }
   const timer = { current: undefined as ReturnType<typeof setTimeout> | undefined }
 
   onCleanup(() => {
@@ -188,7 +190,16 @@ function ProviderConnection(props: {
   const provider = createMemo(
     () => providers.all().get(props.provider) ?? serverSync().data.provider.all.get(props.provider)!,
   )
-  const fallback = createMemo<ProviderAuthMethod[]>(() => [
+  const integrationID = () => {
+    const value = provider()
+    if (!("integrationID" in value) || typeof value.integrationID !== "string") return props.provider
+    return value.integrationID
+  }
+  const location = () => {
+    const directory = props.directory?.()
+    return directory ? { location: { directory } } : {}
+  }
+  const fallback = createMemo<AuthMethod[]>(() => [
     {
       type: "api" as const,
       label: language.t("provider.connect.method.apiKey"),
@@ -197,19 +208,52 @@ function ProviderConnection(props: {
   const [auth] = createResource(
     () => props.provider,
     async () => {
+      const backend = await serverSDK().backend
+      if (backend.version === "v2") {
+        const capability = backend.capabilities.integrationsV2
+        if (!capability) throw new Error("Server does not support provider integrations")
+        const integration = await capability.get({ ...location(), integrationID: integrationID() })
+        if (!alive.value) return fallback()
+        return (
+          integration?.methods.flatMap((method): AuthMethod[] => {
+            if (method.type === "environment") return []
+            if (method.type === "key") return [{ type: "api", label: method.label }]
+            return [{ type: "oauth", id: method.id, label: method.label, prompts: method.prompts }]
+          }) ?? fallback()
+        )
+      }
+
       const cached = serverSync().data.provider_auth[props.provider]
       if (cached) return cached
-      const res = await serverSDK().client.provider.auth()
+      const capability = backend.capabilities.providerAuthV1
+      if (!capability) throw new Error("Server does not support provider authentication")
+      const result = await capability.methods(location())
       if (!alive.value) return fallback()
-      serverSync().set("provider_auth", res.data ?? {})
-      return res.data?.[props.provider] ?? fallback()
+      const normalized = Object.fromEntries(
+        Object.entries(result).map(([id, methods]) => [
+          id,
+          methods.map((method) => ({
+            ...method,
+            prompts: method.prompts?.map((prompt) =>
+              prompt.type === "select"
+                ? { ...prompt, options: prompt.options.map((option) => ({ ...option })) }
+                : { ...prompt },
+            ),
+          })),
+        ]),
+      )
+      serverSync().set("provider_auth", normalized)
+      return normalized[props.provider] ?? fallback()
     },
   )
   const loading = createMemo(() => auth.loading && !serverSync().data.provider_auth[props.provider])
-  const methods = createMemo(() => auth.latest ?? serverSync().data.provider_auth[props.provider] ?? fallback())
+  const methods = createMemo<AuthMethod[]>(() => [
+    ...(auth.latest ?? serverSync().data.provider_auth[props.provider] ?? fallback()),
+  ])
   const [store, setStore] = createStore({
     methodIndex: undefined as undefined | number,
-    authorization: undefined as undefined | ProviderAuthAuthorization,
+    authorization: undefined as undefined | ProviderAuthorization,
+    attemptID: undefined as string | undefined,
     promptInputs: undefined as undefined | Record<string, string>,
     state: "pending" as undefined | "pending" | "complete" | "error" | "prompt",
     error: undefined as string | undefined,
@@ -221,7 +265,7 @@ function ProviderConnection(props: {
     | { type: "auth.prompt" }
     | { type: "auth.inputs"; inputs: Record<string, string> }
     | { type: "auth.pending" }
-    | { type: "auth.complete"; authorization: ProviderAuthAuthorization }
+    | { type: "auth.complete"; authorization: ProviderAuthorization; attemptID?: string }
     | { type: "auth.error"; error: string }
 
   function dispatch(action: Action) {
@@ -230,6 +274,7 @@ function ProviderConnection(props: {
         if (action.type === "method.select") {
           draft.methodIndex = action.index
           draft.authorization = undefined
+          draft.attemptID = undefined
           draft.promptInputs = undefined
           draft.state = undefined
           draft.error = undefined
@@ -238,6 +283,7 @@ function ProviderConnection(props: {
         if (action.type === "method.reset") {
           draft.methodIndex = undefined
           draft.authorization = undefined
+          draft.attemptID = undefined
           draft.promptInputs = undefined
           draft.state = undefined
           draft.error = undefined
@@ -262,6 +308,7 @@ function ProviderConnection(props: {
         if (action.type === "auth.complete") {
           draft.state = "complete"
           draft.authorization = action.authorization
+          draft.attemptID = action.attemptID
           draft.error = undefined
           return
         }
@@ -272,6 +319,16 @@ function ProviderConnection(props: {
   }
 
   const method = createMemo(() => (store.methodIndex !== undefined ? methods().at(store.methodIndex!) : undefined))
+
+  onCleanup(() => {
+    if (!store.attemptID || connected.value) return
+    void (async () => {
+      const backend = await serverSDK().backend
+      await backend.capabilities.integrationsV2
+        ?.cancelAttempt({ ...location(), attemptID: store.attemptID! })
+        .catch(() => undefined)
+    })()
+  })
 
   const methodLabel = (value?: { type?: string; label?: string }) => {
     if (!value) return ""
@@ -322,15 +379,33 @@ function ProviderConnection(props: {
       }
       dispatch({ type: "auth.pending" })
       const start = Date.now()
-      await serverSDK()
-        .client.provider.oauth.authorize(
-          {
-            providerID: props.provider,
-            method: index,
-            inputs,
-          },
-          { throwOnError: true },
-        )
+      const backend = await serverSDK().backend
+      const request =
+        backend.version === "v1"
+          ? (() => {
+              const capability = backend.capabilities.providerAuthV1
+              if (!capability) throw new Error("Server does not support provider authentication")
+              return capability.authorize({ ...location(), providerID: props.provider, method: index, values: inputs })
+            })()
+          : (() => {
+              const capability = backend.capabilities.integrationsV2
+              if (!capability) throw new Error("Server does not support provider integrations")
+              if (!method.id) throw new Error("Provider OAuth method is missing an ID")
+              return capability
+                .connectOauth({
+                  ...location(),
+                  integrationID: integrationID(),
+                  methodID: method.id,
+                  values: inputs ?? {},
+                })
+                .then((attempt) => ({
+                  url: attempt.url,
+                  method: attempt.mode,
+                  instructions: attempt.instructions,
+                  attemptID: attempt.attemptID,
+                }))
+            })()
+      await request
         .then((x) => {
           if (!alive.value) return
           const elapsed = Date.now() - start
@@ -341,11 +416,19 @@ function ProviderConnection(props: {
             timer.current = setTimeout(() => {
               timer.current = undefined
               if (!alive.value) return
-              dispatch({ type: "auth.complete", authorization: x.data! })
+              dispatch({
+                type: "auth.complete",
+                authorization: x,
+                attemptID: "attemptID" in x && typeof x.attemptID === "string" ? x.attemptID : undefined,
+              })
             }, delay)
             return
           }
-          dispatch({ type: "auth.complete", authorization: x.data! })
+          dispatch({
+            type: "auth.complete",
+            authorization: x,
+            attemptID: "attemptID" in x && typeof x.attemptID === "string" ? x.attemptID : undefined,
+          })
         })
         .catch((e) => {
           if (!alive.value) return
@@ -445,7 +528,7 @@ function ProviderConnection(props: {
               <div>
                 <List
                   class="px-3"
-                  items={select()?.options ?? []}
+                  items={[...(select()?.options ?? [])]}
                   key={(x) => x.value}
                   current={select()?.options.find((x) => x.value === formStore.value[select()!.key])}
                   onSelect={(value) => {
@@ -498,7 +581,10 @@ function ProviderConnection(props: {
   })
 
   async function complete() {
-    await serverSDK().client.global.dispose()
+    const backend = await serverSDK().backend
+    if (backend.version === "v1") await backend.capabilities.runtimeV1?.disposeAll()
+    if (backend.version === "v2") await serverSync().refreshProviders()
+    connected.value = true
     dialog.close()
     showToast({
       variant: "success",
@@ -570,14 +656,20 @@ function ProviderConnection(props: {
       }
 
       setFormStore("error", undefined)
-      await serverSDK().client.auth.set({
-        providerID: props.provider,
-        auth: {
-          type: "api",
+      const backend = await serverSDK().backend
+      if (backend.version === "v1") {
+        const capability = backend.capabilities.providerAuthV1
+        if (!capability) throw new Error("Server does not support provider authentication")
+        await capability.setApiKey({ providerID: props.provider, key: apiKey, metadata: store.promptInputs })
+      } else {
+        const capability = backend.capabilities.integrationsV2
+        if (!capability) throw new Error("Server does not support provider integrations")
+        await capability.connectKey({
+          ...location(),
+          integrationID: integrationID(),
           key: apiKey,
-          ...(store.promptInputs ? { metadata: store.promptInputs } : {}),
-        },
-      })
+        })
+      }
       await complete()
     }
 
@@ -642,13 +734,20 @@ function ProviderConnection(props: {
       }
 
       setFormStore("error", undefined)
-      const result = await serverSDK()
-        .client.provider.oauth.callback({
-          providerID: props.provider,
-          method: store.methodIndex,
-          code,
-        })
-        .then((value) => (value.error ? { ok: false as const, error: value.error } : { ok: true as const }))
+      const result = await (async () => {
+        const backend = await serverSDK().backend
+        if (backend.version === "v1") {
+          const capability = backend.capabilities.providerAuthV1
+          if (!capability) throw new Error("Server does not support provider authentication")
+          await capability.callback({ providerID: props.provider, method: store.methodIndex!, code })
+          return
+        }
+        const capability = backend.capabilities.integrationsV2
+        if (!capability) throw new Error("Server does not support provider integrations")
+        if (!store.attemptID) throw new Error("Provider OAuth attempt is missing")
+        await capability.completeAttempt({ ...location(), attemptID: store.attemptID, code })
+      })()
+        .then(() => ({ ok: true as const }))
         .catch((error) => ({ ok: false as const, error }))
       if (result.ok) {
         await complete()
@@ -695,12 +794,26 @@ function ProviderConnection(props: {
 
     onMount(() => {
       void (async () => {
-        const result = await serverSDK()
-          .client.provider.oauth.callback({
-            providerID: props.provider,
-            method: store.methodIndex,
-          })
-          .then((value) => (value.error ? { ok: false as const, error: value.error } : { ok: true as const }))
+        const result = await (async () => {
+          const backend = await serverSDK().backend
+          if (backend.version === "v1") {
+            const capability = backend.capabilities.providerAuthV1
+            if (!capability) throw new Error("Server does not support provider authentication")
+            await capability.callback({ providerID: props.provider, method: store.methodIndex! })
+            return
+          }
+          const capability = backend.capabilities.integrationsV2
+          if (!capability) throw new Error("Server does not support provider integrations")
+          if (!store.attemptID) throw new Error("Provider OAuth attempt is missing")
+          while (alive.value) {
+            const status = await capability.attemptStatus({ ...location(), attemptID: store.attemptID })
+            if (status.status === "complete") return
+            if (status.status === "failed") throw new Error(status.error ?? "Authorization failed")
+            if (status.status === "expired") throw new Error("Authorization expired")
+            await new Promise((resolve) => setTimeout(resolve, 500))
+          }
+        })()
+          .then(() => ({ ok: true as const }))
           .catch((error) => ({ ok: false as const, error }))
 
         if (!alive.value) return

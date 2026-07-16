@@ -60,9 +60,8 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
   const [fallbackPath] = createResource(
     () => (missingBase() ? true : undefined),
     async () => {
-      return sdk.client.path
-        .get()
-        .then((x) => x.data)
+      return sdk.backend
+        .then((client) => client.capabilities.pathInfo?.get())
         .catch(() => undefined)
     },
     { initialValue: undefined },
@@ -74,7 +73,7 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
   )
 
   const directories = createDirectorySearch({
-    sdk,
+    backend: sdk.backend,
     home,
     base: start,
   })

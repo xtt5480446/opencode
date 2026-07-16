@@ -1,7 +1,6 @@
-import type { FileDiffInfo } from "@opencode-ai/sdk/v2"
-import type { Message } from "@opencode-ai/sdk/v2/client"
+import type { AppFileDiff, AppMessage } from "@/context/backend"
 
-type Diff = FileDiffInfo
+type Diff = AppFileDiff
 
 function diff(value: unknown): value is Diff {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
@@ -25,7 +24,7 @@ export function diffs(value: unknown): Diff[] {
   return Object.values(value).filter(diff)
 }
 
-export function message(value: Message): Message {
+export function message(value: AppMessage): AppMessage {
   if (value.role !== "user") return value
 
   const raw = value.summary as unknown

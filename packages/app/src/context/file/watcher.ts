@@ -1,8 +1,10 @@
-import type { FileNode } from "@opencode-ai/sdk/v2"
+import type { AppFileNode as FileNode } from "../backend"
 
 type WatcherEvent = {
   type: string
-  properties: unknown
+  path?: string
+  change?: string
+  properties?: unknown
 }
 
 type WatcherOps = {
@@ -16,11 +18,11 @@ type WatcherOps = {
 }
 
 export function invalidateFromWatcher(event: WatcherEvent, ops: WatcherOps) {
-  if (event.type !== "filesystem.changed") return
+  if (event.type !== "filesystem.changed" && event.type !== "file.changed" && event.type !== "file.watcher.updated") return
   const props =
     typeof event.properties === "object" && event.properties ? (event.properties as Record<string, unknown>) : undefined
-  const rawPath = typeof props?.file === "string" ? props.file : undefined
-  const kind = typeof props?.event === "string" ? props.event : undefined
+  const rawPath = event.path ?? (typeof props?.file === "string" ? props.file : undefined)
+  const kind = event.change ?? (typeof props?.event === "string" ? props.event : undefined)
   if (!rawPath) return
   if (!kind) return
 

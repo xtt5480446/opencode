@@ -1,4 +1,4 @@
-import type { UserMessage } from "@opencode-ai/sdk/v2"
+import type { AppUserMessage as UserMessage } from "@/context/backend"
 
 type Local = {
   session: {

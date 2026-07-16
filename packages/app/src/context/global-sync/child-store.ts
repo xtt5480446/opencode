@@ -1,7 +1,7 @@
 import { createRoot, createSignal, getOwner, onCleanup, runWithOwner, type Owner } from "solid-js"
 import { createStore, type SetStoreFunction, type Store } from "solid-js/store"
 import { Persist, persisted } from "@/utils/persist"
-import type { VcsInfo } from "@opencode-ai/sdk/v2/client"
+import type { AppVcsInfo } from "../backend"
 import {
   DIR_IDLE_TTL_MS,
   MAX_DIR_STORES,
@@ -10,6 +10,7 @@ import {
   type IconCache,
   type MetaCache,
   type ProjectMeta,
+  type ProviderStore,
   type State,
   type VcsCache,
 } from "./types"
@@ -17,7 +18,6 @@ import { canDisposeDirectory, pickDirectoriesToEvict } from "./eviction"
 import { useQuery } from "@tanstack/solid-query"
 import { QueryOptionsApi } from "../server-sync"
 import { directoryKey, type DirectoryKey } from "./utils"
-import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
 import type { ServerScope } from "@/utils/server-scope"
 
 export function createChildStoreManager(input: {
@@ -32,7 +32,7 @@ export function createChildStoreManager(input: {
   translate: (key: string, vars?: Record<string, string | number>) => string
   queryOptions: QueryOptionsApi
   global: {
-    provider: NormalizedProviderListResponse
+    provider: ProviderStore
   }
 }) {
   const children: Record<string, [Store<State>, SetStoreFunction<State>]> = {}
@@ -152,7 +152,7 @@ export function createChildStoreManager(input: {
       const vcs = runWithOwner(input.owner, () =>
         input.persist(
           Persist.serverWorkspace(input.scope, directory, "vcs", ["vcs.v1"]),
-          createStore({ value: undefined as VcsInfo | undefined }),
+          createStore({ value: undefined as AppVcsInfo | undefined }),
         ),
       )
       if (!vcs) throw new Error(input.translate("error.childStore.persistedCacheCreateFailed"))
@@ -223,6 +223,7 @@ export function createChildStoreManager(input: {
               return (type ?? "idle") !== "idle"
             },
             session_diff: {},
+            todo: {},
             permission: {},
             question: {},
             get mcp_ready() {

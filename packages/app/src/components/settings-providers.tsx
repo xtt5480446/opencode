@@ -12,6 +12,7 @@ import { DialogConnectProvider, useProviderConnectController } from "./dialog-co
 import { DialogCustomProvider } from "./dialog-custom-provider"
 import { SettingsList } from "./settings-list"
 import { SettingsServerPicker, SettingsServerScope } from "./settings-server-picker"
+import { credentialConnectionIDs } from "@/context/backend"
 
 type ProviderSource = "env" | "api" | "config" | "custom"
 type ProviderItem = ReturnType<ReturnType<typeof useProviders>["connected"]>[number]
@@ -96,12 +97,12 @@ const SettingsProvidersContent: Component<{ onBack?: () => void }> = (props) => 
   }
 
   const disableProvider = async (providerID: string, name: string) => {
-    const before = serverSync().data.config.disabled_providers ?? []
+    const before = serverSync().data.config.disabledProviders ?? []
     const next = before.includes(providerID) ? before : [...before, providerID]
-    serverSync().set("config", "disabled_providers", next)
+    serverSync().set("config", "disabledProviders", next)
 
     await serverSync()
-      .updateConfig({ disabled_providers: next })
+      .updateConfig({ disabledProviders: next })
       .then(() => {
         showToast({
           variant: "success",
@@ -111,29 +112,47 @@ const SettingsProvidersContent: Component<{ onBack?: () => void }> = (props) => 
         })
       })
       .catch((err: unknown) => {
-        serverSync().set("config", "disabled_providers", before)
+        serverSync().set("config", "disabledProviders", before)
         const message = err instanceof Error ? err.message : String(err)
         showToast({ title: language.t("common.requestFailed"), description: message })
       })
   }
 
-  const disconnect = async (providerID: string, name: string) => {
-    if (isConfigCustom(providerID)) {
-      await serverSDK()
-        .client.auth.remove({ providerID })
-        .catch(() => undefined)
-      await disableProvider(providerID, name)
+  const disconnect = async (item: ProviderItem) => {
+    const backend = await serverSDK().backend
+    const remove = async () => {
+      if (backend.version === "v1") {
+        const capability = backend.capabilities.providerAuthV1
+        if (!capability) throw new Error("Server does not support provider authentication")
+        await capability.remove({ providerID: item.id })
+        return
+      }
+      const capability = backend.capabilities.integrationsV2
+      if (!capability) throw new Error("Server does not support provider integrations")
+      const integrationID =
+        "integrationID" in item && typeof item.integrationID === "string" ? item.integrationID : item.id
+      const integration = await capability.get({ integrationID })
+      await Promise.all(
+        credentialConnectionIDs(integration?.connections ?? []).map((credentialID) =>
+          capability.removeCredential({ credentialID }),
+        ),
+      )
+    }
+
+    if (isConfigCustom(item.id)) {
+      await remove().catch(() => undefined)
+      await disableProvider(item.id, item.name)
       return
     }
-    await serverSDK()
-      .client.auth.remove({ providerID })
+    await remove()
       .then(async () => {
-        await serverSDK().client.global.dispose()
+        if (backend.version === "v1") await backend.capabilities.runtimeV1?.disposeAll()
+        if (backend.version === "v2") await serverSync().refreshProviders()
         showToast({
           variant: "success",
           icon: "circle-check",
-          title: language.t("provider.disconnect.toast.disconnected.title", { provider: name }),
-          description: language.t("provider.disconnect.toast.disconnected.description", { provider: name }),
+          title: language.t("provider.disconnect.toast.disconnected.title", { provider: item.name }),
+          description: language.t("provider.disconnect.toast.disconnected.description", { provider: item.name }),
         })
       })
       .catch((err: unknown) => {
@@ -179,7 +198,7 @@ const SettingsProvidersContent: Component<{ onBack?: () => void }> = (props) => 
                         </span>
                       }
                     >
-                      <Button size="large" variant="ghost" onClick={() => void disconnect(item.id, item.name)}>
+                      <Button size="large" variant="ghost" onClick={() => void disconnect(item)}>
                         {language.t("common.disconnect")}
                       </Button>
                     </Show>

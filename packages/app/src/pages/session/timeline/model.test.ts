@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import type { AssistantMessage, Message, UserMessage } from "@opencode-ai/sdk/v2"
+import type {
+  AppAssistantMessage as AssistantMessage,
+  AppMessage as Message,
+  AppUserMessage as UserMessage,
+} from "@/context/backend"
 import { isTimelineReady, loadOlderTimeline, selectUserMessages, selectVisibleUserMessages } from "./model"
 
 const user = (id: string) => ({ id, role: "user" }) as UserMessage

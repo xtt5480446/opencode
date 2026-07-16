@@ -1,9 +1,8 @@
-import type { Event } from "@opencode-ai/sdk/v2/client"
+import type { AppClient, AppEvent } from "./backend"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { type Accessor, batch, createMemo, onCleanup, onMount } from "solid-js"
-import { createSdkForServer } from "@/utils/server"
 import { useLanguage } from "./language"
 import { usePlatform } from "./platform"
 import { ServerConnection, useServer } from "./server"
@@ -15,14 +14,15 @@ const isAbortError = (error: unknown) =>
   error !== null && typeof error === "object" && "name" in error && error.name === "AbortError"
 
 const isStreamClosed = (error: unknown, signal?: AbortSignal) => isAbortError(error) || signal?.aborted === true
-type QueuedServerEvent = { directory: string; payload: Event }
+type QueuedServerEvent = { directory: string; payload: AppEvent }
 
 const coalescedKey = (event: QueuedServerEvent) => {
   if (event.payload.type === "lsp.updated") return `lsp.updated:${event.directory}`
-  if (event.payload.type === "message.part.updated") {
-    const part = event.payload.properties.part
-    return `message.part.updated:${event.directory}:${part.messageID}:${part.id}`
+  if (event.payload.type === "timeline.updated") {
+    return `timeline.updated:${event.directory}:${event.payload.item.id}`
   }
+  if (event.payload.type === "timeline.content.updated")
+    return `timeline.content.updated:${event.directory}:${event.payload.itemID}:${event.payload.content.id}`
   return undefined
 }
 
@@ -40,23 +40,22 @@ export function enqueueServerEvent(queue: QueuedServerEvent[], event: QueuedServ
 export function coalesceServerEvents(events: QueuedServerEvent[]) {
   const output: QueuedServerEvent[] = []
   events.forEach((event) => {
-    if (event.payload.type !== "message.part.delta") {
+    if (event.payload.type !== "timeline.delta") {
       output.push(event)
       return
     }
-    const props = event.payload.properties
     const previous = output[output.length - 1]
     if (
       !previous ||
-      previous.payload.type !== "message.part.delta" ||
+      previous.payload.type !== "timeline.delta" ||
       previous.directory !== event.directory ||
-      previous.payload.properties.messageID !== props.messageID ||
-      previous.payload.properties.partID !== props.partID ||
-      previous.payload.properties.field !== props.field
+      previous.payload.itemID !== event.payload.itemID ||
+      previous.payload.contentID !== event.payload.contentID ||
+      previous.payload.field !== event.payload.field
     ) {
       output.push({
         directory: event.directory,
-        payload: { ...event.payload, properties: { ...props } },
+        payload: { ...event.payload },
       })
       return
     }
@@ -64,7 +63,7 @@ export function coalesceServerEvents(events: QueuedServerEvent[]) {
       directory: event.directory,
       payload: {
         ...event.payload,
-        properties: { ...props, delta: previous.payload.properties.delta + props.delta },
+        delta: previous.payload.delta + event.payload.delta,
       },
     }
   })
@@ -76,7 +75,7 @@ export function resumeStreamAfterPageShow(event: PageTransitionEvent, start: () 
   start()
 }
 
-function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerScope) {
+function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerScope, backend: Promise<AppClient>) {
   const platform = usePlatform()
   const abort = new AbortController()
 
@@ -91,13 +90,8 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     }
   })()
 
-  const eventSdk = createSdkForServer({
-    signal: abort.signal,
-    fetch: eventFetch,
-    server: server.http,
-  })
   const emitter = createGlobalEmitter<{
-    [key: string]: Event
+    [key: string]: AppEvent
   }>()
 
   type Queued = QueuedServerEvent
@@ -174,29 +168,13 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
         }
         abort.signal.addEventListener("abort", onAbort)
         try {
-          const events = await eventSdk.global.event({
-            signal: attempt.signal,
-            onSseError: (error) => {
-              if (isStreamClosed(error, attempt?.signal)) return
-              if (streamErrorLogged) return
-              streamErrorLogged = true
-              console.error("[global-sdk] event stream error", {
-                url: server.http.url,
-                fetch: eventFetch ? "platform" : "webview",
-                error,
-              })
-            },
-          })
           let yielded = Date.now()
           resetHeartbeat()
-          for await (const event of events.stream) {
+          for await (const envelope of (await backend).common.events.subscribe({ signal: attempt.signal })) {
             resetHeartbeat()
             streamErrorLogged = false
-            if (event.payload.type !== "sync") {
-              const directory = event.directory ?? "global"
-              const payload = event.payload as Event
-              if (enqueueServerEvent(queue, { directory, payload })) schedule()
-            }
+            const directory = envelope.location?.directory ?? "global"
+            if (enqueueServerEvent(queue, { directory, payload: envelope.event })) schedule()
 
             if (Date.now() - yielded < STREAM_YIELD_MS) continue
             yielded = Date.now()
@@ -253,39 +231,30 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     flush()
   })
 
-  const sdk = createSdkForServer({
-    server: server.http,
-    fetch: platform.fetch,
-    throwOnError: true,
-  })
-
   return {
     server,
     scope,
     url: server.http.url,
-    client: sdk,
     event: {
       on: emitter.on.bind(emitter),
       listen: emitter.listen.bind(emitter),
       start,
     },
-    createClient(opts: Omit<Parameters<typeof createSdkForServer>[0], "server" | "fetch">) {
-      return createSdkForServer({
-        server: server.http,
-        fetch: platform.fetch,
-        ...opts,
-      })
-    },
   }
 }
 
 type ServerSDKBase = ReturnType<typeof createServerSdkContextBase>
-export type ServerSDK = ServerSDKBase & {
+type ServerSDKWithBackend = ServerSDKBase & { backend: Promise<AppClient> }
+export type ServerSDK = ServerSDKWithBackend & {
   ensureDirSdkContext: (directory: string) => ReturnType<typeof createDirSdkContext>
 }
 
-export function createServerSdkContext(server: ServerConnection.Any, scope: ServerScope): ServerSDK {
-  const sdk = createServerSdkContextBase(server, scope)
+export function createServerSdkContext(
+  server: ServerConnection.Any,
+  scope: ServerScope,
+  backend: Promise<AppClient>,
+): ServerSDK {
+  const sdk = Object.assign(createServerSdkContextBase(server, scope, backend), { backend })
   return Object.assign(sdk, {
     ensureDirSdkContext: createRefCountMap((dir) => createDirSdkContext(dir, sdk)),
   })
@@ -309,15 +278,10 @@ export const { use: useServerSDK, provider: ServerSDKProvider } = createSimpleCo
 })
 
 type SDKEventMap = {
-  [key in Event["type"]]: Extract<Event, { type: key }>
+  [key in AppEvent["type"]]: AppEvent
 }
 
-function createDirSdkContext(directory: string, serverSDK: ServerSDKBase) {
-  const client = serverSDK.createClient({
-    directory,
-    throwOnError: true,
-  })
-
+function createDirSdkContext(directory: string, serverSDK: ServerSDKWithBackend) {
   const emitter = createGlobalEmitter<SDKEventMap>()
 
   const unsub = serverSDK.event.on(directory, (event) => {
@@ -328,13 +292,10 @@ function createDirSdkContext(directory: string, serverSDK: ServerSDKBase) {
   return {
     scope: serverSDK.scope,
     directory,
-    client,
+    backend: serverSDK.backend,
     event: emitter,
     get url() {
       return serverSDK.url
-    },
-    createClient(opts: Parameters<typeof serverSDK.createClient>[0]) {
-      return serverSDK.createClient(opts)
     },
   }
 }

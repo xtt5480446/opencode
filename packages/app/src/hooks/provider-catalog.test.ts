@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test"
-import type { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
+import type { ProviderStore } from "@/context/global-sync/types"
 import { selectProviderCatalog } from "./provider-catalog"
 
-const catalog = (id: string): NormalizedProviderListResponse => ({
-  all: new Map([[id, { id, name: id, source: "api", env: [], options: {}, models: {} }]]),
+const catalog = (id: string): ProviderStore => ({
+  all: new Map([[id, { id, name: id, source: "api", models: {} }]]),
   connected: [id],
   default: { [id]: `${id}-model` },
 })

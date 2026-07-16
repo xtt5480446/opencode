@@ -1,6 +1,6 @@
 import { useSDK } from "@/context/sdk"
 import { Persist, persisted } from "@/utils/persist"
-import { SessionStatus } from "@opencode-ai/sdk/v2"
+import type { SessionActivity } from "@/context/backend"
 import { onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useSessionLayout } from "./session-layout"
@@ -15,7 +15,7 @@ const GO_UPSELL_ACCOUNT_RATE_LIMIT_DONT_SHOW = "go_upsell_account_rate_limit_don
 const GO_UPSELL_WINDOW = 86_400_000 // 24 hrs
 const GO_UPSELL_PROVIDERS = new Set(["opencode", "opencode-go"])
 
-function goUpsellKeys(status: SessionStatus) {
+function goUpsellKeys(status: SessionActivity) {
   if (status.type !== "retry" || !status.action) return
   const { action } = status
   if (!GO_UPSELL_PROVIDERS.has(action.provider)) return
@@ -51,14 +51,14 @@ export function useUsageExceededDialogs() {
   )
 
   onCleanup(
-    sdk().event.on("session.status", (evt) => {
-      if (evt.properties.sessionID !== params.id) return
-      if (evt.properties.status.type !== "retry") return
-      const { action } = evt.properties.status
+    sdk().event.on("session.activity", (evt) => {
+      if (evt.type !== "session.activity" || evt.sessionID !== params.id) return
+      if (evt.activity.type !== "retry") return
+      const { action } = evt.activity
       if (!action) return
       if (dialog.active) return
 
-      const keys = goUpsellKeys(evt.properties.status)
+      const keys = goUpsellKeys(evt.activity)
       if (!keys) return
 
       const seen = goUpsellState[keys.lastSeenAt]

@@ -1,7 +1,7 @@
 import { Binary } from "@opencode-ai/core/util/binary"
-import type { Message, Part, Session } from "@opencode-ai/sdk/v2/client"
+import type { AppMessage, AppPart, AppSession } from "./backend"
 import { createMemo } from "solid-js"
-import { produce, reconcile, type SetStoreFunction } from "solid-js/store"
+import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store"
 import type { createServerSdkContext } from "./server-sdk"
 import type { createServerSyncContextInner } from "./server-sync"
 import type { State } from "./global-sync/types"
@@ -23,8 +23,8 @@ export const createDirSyncContext = (
   serverSync: ReturnType<typeof createServerSyncContextInner>,
   serverSDK: ReturnType<typeof createServerSdkContext>,
 ) => {
-  const client = serverSDK.createClient({ directory, throwOnError: true })
   const current = createMemo(() => serverSync.child(directory, { mcp: true }))
+  const [sessionPage, setSessionPage] = createStore({ cursor: undefined as string | undefined, complete: false })
   const absolute = (path: string) => (current()[0].path.directory + "/" + path).replace("//", "/")
   const data = new Proxy({} as State, {
     get(_, property: keyof State) {
@@ -72,7 +72,7 @@ export const createDirSyncContext = (
       if (match.found) return serverSync.data.project[match.index]
     },
     session: {
-      remember(session: Session) {
+      remember(session: AppSession) {
         serverSync.session.remember(session)
         index(session.id)
       },
@@ -81,7 +81,7 @@ export const createDirSyncContext = (
         if (session?.directory === directory) return session
       },
       optimistic: {
-        add(input: { directory?: string; sessionID: string; message: Message; parts: Part[] }) {
+        add(input: { directory?: string; sessionID: string; message: AppMessage; parts: AppPart[] }) {
           serverSync.session.optimistic.add(input)
         },
         remove(input: { directory?: string; sessionID: string; messageID: string }) {
@@ -91,7 +91,7 @@ export const createDirSyncContext = (
       addOptimisticMessage(input: {
         sessionID: string
         messageID: string
-        parts: Part[]
+        parts: AppPart[]
         agent: string
         model: { providerID: string; modelID: string }
         variant?: string
@@ -110,7 +110,7 @@ export const createDirSyncContext = (
         })
       },
       async sync(sessionID: string, options?: { force?: boolean }) {
-        await serverSync.session.sync(sessionID, options)
+        await serverSync.session.sync(sessionID, { ...options, location: { directory } })
         index(sessionID)
       },
       diff: serverSync.session.diff,
@@ -121,17 +121,25 @@ export const createDirSyncContext = (
       fetch: async (count = 10) => {
         const [store, setStore] = current()
         setStore("limit", (value) => value + count)
-        const response = await client.session.list()
-        const sessions = (response.data ?? [])
-          .filter((session) => !!session?.id)
+        const backend = await serverSDK.backend
+        const response = await backend.common.sessions.list({
+          location: { directory },
+          roots: true,
+          limit: count,
+          cursor: sessionPage.cursor,
+        })
+        const sessions = [...new Map([...store.session, ...response.items].map((session) => [session.id, session])).values()]
           .sort((a, b) => cmp(a.id, b.id))
-          .slice(0, store.limit)
         sessions.forEach(serverSync.session.remember)
         setStore("session", reconcile(sessions, { key: "id" }))
+        setSessionPage({ cursor: response.older, complete: !response.older })
       },
-      more: createMemo(() => current()[0].session.length >= current()[0].limit),
+      more: createMemo(() => !sessionPage.complete),
       archive: async (sessionID: string) => {
-        await serverSDK.client.session.update({ sessionID, time: { archived: Date.now() } })
+        const backend = await serverSDK.backend
+        const capability = backend.capabilities.sessionExtrasV1
+        if (!capability) throw new Error("Server does not support session archiving")
+        await capability.archive({ sessionID, archivedAt: Date.now(), location: { directory } })
         current()[1](
           "session",
           produce((draft) => {

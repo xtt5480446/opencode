@@ -2,25 +2,25 @@ import { Binary } from "@opencode-ai/core/util/binary"
 import { createMemo } from "solid-js"
 import { useServerSync } from "./server-sync"
 import { useSDK } from "./sdk"
-import type { Message, Part } from "@opencode-ai/sdk/v2/client"
+import type { AppMessage, AppPart } from "./backend"
 
 const SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
 
-function sortParts(parts: Part[]) {
+function sortParts(parts: AppPart[]) {
   return parts.filter((part) => !!part?.id).sort((a, b) => cmp(a.id, b.id))
 }
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 
 type OptimisticStore = {
-  message: Record<string, Message[] | undefined>
-  part: Record<string, Part[] | undefined>
+  message: Record<string, AppMessage[] | undefined>
+  part: Record<string, AppPart[] | undefined>
 }
 
 type OptimisticAddInput = {
   sessionID: string
-  message: Message
-  parts: Part[]
+  message: AppMessage
+  parts: AppPart[]
 }
 
 type OptimisticRemoveInput = {
@@ -29,23 +29,23 @@ type OptimisticRemoveInput = {
 }
 
 type OptimisticItem = {
-  message: Message
-  parts: Part[]
+  message: AppMessage
+  parts: AppPart[]
 }
 
 type MessagePage = {
-  session: Message[]
-  part: { id: string; part: Part[] }[]
+  session: AppMessage[]
+  part: { id: string; part: AppPart[] }[]
   cursor?: string
   complete: boolean
 }
 
-const hasParts = (parts: Part[] | undefined, want: Part[]) => {
+const hasParts = (parts: AppPart[] | undefined, want: AppPart[]) => {
   if (!parts) return want.length === 0
   return want.every((part) => Binary.search(parts, part.id, (item) => item.id).found)
 }
 
-const mergeParts = (parts: Part[] | undefined, want: Part[]) => {
+const mergeParts = (parts: AppPart[] | undefined, want: AppPart[]) => {
   if (!parts) return sortParts(want)
   const next = [...parts]
   let changed = false

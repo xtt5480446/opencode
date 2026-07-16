@@ -1,5 +1,5 @@
-import { getFilename } from "@opencode-ai/core/util/path"
-import { type Session } from "@opencode-ai/sdk/v2/client"
+import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
+import type { AppSession as Session } from "@/context/backend"
 import { pathKey } from "@/utils/path-key"
 import type { ServerConnection } from "@/context/server"
 import type { HomeProjectSelection } from "@/context/layout"
@@ -7,6 +7,15 @@ import type { HomeProjectSelection } from "@/context/layout"
 type SessionStore = {
   session?: Session[]
   path: { directory: string }
+}
+
+export function workspaceCopyCreateInput(project: { id?: string; worktree: string }) {
+  if (!project.id) return
+  return {
+    projectID: project.id,
+    strategy: "git_worktree",
+    directory: getDirectory(project.worktree),
+  }
 }
 
 function sortSessions(now: number) {

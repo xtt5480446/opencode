@@ -34,6 +34,7 @@ import type {
   Page,
   PromptFile,
   PromptInput,
+  PtyTransportConfig,
   ProviderCatalog,
   RequestOptions,
   SessionActivity,
@@ -47,7 +48,12 @@ type CachedMessage = {
   parts: Part[]
 }
 
-export function createV1Backend(client: OpencodeClient, defaultLocation?: LocationRef): AppClient {
+export function createV1Backend(
+  client: OpencodeClient,
+  defaultLocation?: LocationRef,
+  eventClient: OpencodeClient = client,
+  transportConfig?: PtyTransportConfig,
+): AppClient {
   const messages = new Map<string, CachedMessage>()
 
   const options = (input?: RequestOptions) => ({ signal: input?.signal, throwOnError: true as const })
@@ -57,12 +63,57 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
     return toTimelineItem(input.info, input.parts)
   }
 
-  const loadMessage = async (input: { sessionID: string; messageID: string }, request?: RequestOptions) => {
+  const loadMessage = async (
+    input: LocationInput & { sessionID: string; messageID: string },
+    request?: RequestOptions,
+    force?: boolean,
+  ) => {
     const cached = messages.get(input.messageID)
-    if (cached) return cached
-    const result = await client.session.message({ ...input, ...legacyLocation(defaultLocation) }, options(request))
+    if (cached && !force) return cached
+    const result = await client.session.message(
+      { sessionID: input.sessionID, messageID: input.messageID, ...location(input) },
+      options(request),
+    )
     messages.set(input.messageID, result.data)
     return result.data
+  }
+  const sessionActions = {
+    remove: async (input: LocationInput & { sessionID: string }, request?: RequestOptions) => {
+      const result = await client.session.delete(
+        { sessionID: input.sessionID, ...location(input) },
+        options(request),
+      )
+      return result.data
+    },
+    fork: async (input: LocationInput & { sessionID: string; messageID?: string }, request?: RequestOptions) => {
+      const result = await client.session.fork(
+        { sessionID: input.sessionID, messageID: input.messageID, ...location(input) },
+        options(request),
+      )
+      return toSession(result.data)
+    },
+    rename: async (input: LocationInput & { sessionID: string; title: string }, request?: RequestOptions) => {
+      await client.session.update(
+        { sessionID: input.sessionID, title: input.title, ...location(input) },
+        options(request),
+      )
+    },
+    command: async (input: CommandInput, request?: RequestOptions) => {
+      await client.session.command(
+        {
+          sessionID: input.sessionID,
+          messageID: input.id,
+          command: input.command,
+          arguments: input.arguments ?? "",
+          agent: input.agent,
+          model: input.model && `${input.model.providerID}/${input.model.id}`,
+          variant: input.model?.variant,
+          parts: input.files?.map(toFilePart),
+          ...location(input),
+        },
+        options(request),
+      )
+    },
   }
 
   return {
@@ -75,10 +126,6 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
         },
       },
       projects: {
-        list: async (request) => {
-          const result = await client.project.list(undefined, options(request))
-          return result.data.map(toProject)
-        },
         current: async (input, request) => {
           const params = location(input)
           const [project, path] = await Promise.all([
@@ -130,7 +177,7 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
           )
           return {
             items: result.data.map(toSession),
-            next: result.response.headers.get("x-next-cursor") ?? undefined,
+            older: result.response.headers.get("x-next-cursor") ?? undefined,
           }
         },
         create: async (input, request) => {
@@ -147,22 +194,6 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
         get: async (input, request) => {
           const result = await client.session.get({ sessionID: input.sessionID, ...location(input) }, options(request))
           return toSession(result.data)
-        },
-        remove: async (input, request) => {
-          await client.session.delete({ sessionID: input.sessionID, ...location(input) }, options(request))
-        },
-        fork: async (input, request) => {
-          const result = await client.session.fork(
-            { sessionID: input.sessionID, messageID: input.messageID, ...location(input) },
-            options(request),
-          )
-          return toSession(result.data)
-        },
-        rename: async (input, request) => {
-          await client.session.update(
-            { sessionID: input.sessionID, title: input.title, ...location(input) },
-            options(request),
-          )
         },
         interrupt: async (input, request) => {
           await client.session.abort({ sessionID: input.sessionID, ...location(input) }, options(request))
@@ -182,16 +213,16 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
               sessionID: input.sessionID,
               limit: input.limit,
               before: input.cursor,
-              ...legacyLocation(defaultLocation),
+              ...location(input),
             },
             options(request),
           )
           return {
             items: result.data.map(cache),
-            next: result.response.headers.get("x-next-cursor") ?? undefined,
+            older: result.response.headers.get("x-next-cursor") ?? undefined,
           }
         },
-        message: async (input, request) => cache(await loadMessage(input, request)),
+        message: async (input, request) => cache(await loadMessage(input, request, true)),
         prompt: async (input, request) => {
           await client.session.promptAsync(
             {
@@ -204,23 +235,7 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
               },
               variant: input.selection?.model?.variant,
               parts: toPromptParts(input),
-              ...legacyLocation(defaultLocation),
-            },
-            options(request),
-          )
-        },
-        command: async (input, request) => {
-          await client.session.command(
-            {
-              sessionID: input.sessionID,
-              messageID: input.id,
-              command: input.command,
-              arguments: input.arguments ?? "",
-              agent: input.agent,
-              model: input.model && `${input.model.providerID}/${input.model.id}`,
-              variant: input.model?.variant,
-              parts: input.files?.map(toFilePart),
-              ...legacyLocation(defaultLocation),
+              ...location(input),
             },
             options(request),
           )
@@ -229,7 +244,13 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
       files: {
         list: async (input, request) => {
           const result = await client.file.list({ path: input.path ?? "", ...location(input) }, options(request))
-          return result.data.map((item) => ({ path: item.path, type: item.type }))
+          return result.data.map((item) => ({
+            path: item.path,
+            name: item.name,
+            absolute: item.absolute,
+            type: item.type,
+            ignored: false,
+          }))
         },
         find: async (input, request) => {
           const find = async (type: FileEntry["type"]) => {
@@ -259,7 +280,7 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
               requestID: input.requestID,
               reply: input.reply,
               message: input.message,
-              ...legacyLocation(defaultLocation),
+              ...location(input),
             },
             options(request),
           )
@@ -275,52 +296,13 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
             {
               requestID: input.requestID,
               answers: input.answers.map((answer) => [...answer]),
-              ...legacyLocation(defaultLocation),
+              ...location(input),
             },
             options(request),
           )
         },
         reject: async (input, request) => {
-          await client.question.reject(
-            { requestID: input.requestID, ...legacyLocation(defaultLocation) },
-            options(request),
-          )
-        },
-      },
-      vcs: {
-        status: async (input, request) => {
-          const result = await client.vcs.status(location(input), options(request))
-          return result.data
-        },
-        diff: async (input, request) => {
-          const result = await client.vcs.diff(
-            {
-              mode: input.mode === "working" ? "git" : "branch",
-              context: input.context,
-              ...location(input),
-            },
-            options(request),
-          )
-          return result.data
-        },
-      },
-      mcp: {
-        list: async (input, request) => {
-          const result = await client.mcp.status(location(input), options(request))
-          return Object.entries(result.data).map(([name, status]) => ({ name, status }))
-        },
-        resources: async (input, request) => {
-          const result = await client.experimental.resource.list(location(input), options(request))
-          return {
-            resources: Object.values(result.data).map((item) => ({
-              server: item.client,
-              name: item.name,
-              uri: item.uri,
-              description: item.description,
-              mimeType: item.mimeType,
-            })),
-            templates: [],
-          }
+          await client.question.reject({ requestID: input.requestID, ...location(input) }, options(request))
         },
       },
       pty: {
@@ -365,7 +347,7 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
       events: {
         subscribe: (request) => ({
           async *[Symbol.asyncIterator]() {
-            const result = await client.global.event(options(request))
+            const result = await eventClient.global.event(options(request))
             for await (const input of result.stream) {
               const event = await toEvent(input, messages, loadMessage)
               yield {
@@ -379,11 +361,51 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
           },
         }),
       },
-      disposeLocation: async (input, request) => {
-        await client.instance.dispose(location(input), options(request))
-      },
     },
     capabilities: {
+      projectList: {
+        list: async (request) => {
+          const result = await client.project.list(undefined, options(request))
+          return result.data.map(toProject)
+        },
+      },
+      vcs: {
+        status: async (input, request) => {
+          const result = await client.vcs.status(location(input), options(request))
+          return result.data
+        },
+        diff: async (input, request) => {
+          const result = await client.vcs.diff(
+            {
+              mode: input.mode === "working" ? "git" : "branch",
+              context: input.context,
+              ...location(input),
+            },
+            options(request),
+          )
+          return result.data
+        },
+      },
+      mcp: {
+        list: async (input, request) => {
+          const result = await client.mcp.status(location(input), options(request))
+          return Object.entries(result.data).map(([name, status]) => ({ name, status }))
+        },
+        resources: async (input, request) => {
+          const result = await client.experimental.resource.list(location(input), options(request))
+          return {
+            resources: Object.values(result.data).map((item) => ({
+              server: item.client,
+              name: item.name,
+              uri: item.uri,
+              description: item.description,
+              mimeType: item.mimeType,
+            })),
+            templates: [],
+          }
+        },
+      },
+      sessionActionsV1: sessionActions,
       configuration: {
         getGlobal: async (request) => {
           const result = await client.global.config.get(options(request))
@@ -468,57 +490,74 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
           return { directory: result.data.directory, branch: result.data.branch }
         },
         remove: async (input, request) => {
-          await client.worktree.remove(
+          const result = await client.worktree.remove(
             { ...location(input), worktreeRemoveInput: { directory: input.directory } },
             options(request),
           )
+          return result.data
         },
         reset: async (input, request) => {
-          await client.worktree.reset(
+          const result = await client.worktree.reset(
             { ...location(input), worktreeResetInput: { directory: input.directory } },
             options(request),
           )
+          return result.data
         },
       },
       sessionExtrasV1: {
-        archive: async (sessionID, archivedAt, request) => {
+        archive: async (input, request) => {
           await client.session.update(
-            { sessionID, time: { archived: archivedAt }, ...legacyLocation(defaultLocation) },
+            { sessionID: input.sessionID, time: { archived: input.archivedAt }, ...location(input) },
             options(request),
           )
         },
-        share: async (sessionID, request) => {
-          const result = await client.session.share({ sessionID, ...legacyLocation(defaultLocation) }, options(request))
-          if (!result.data.share) throw new Error(`Session ${sessionID} was shared without a URL`)
+        share: async (input, request) => {
+          const result = await client.session.share(
+            { sessionID: input.sessionID, ...location(input) },
+            options(request),
+          )
+          if (!result.data.share) throw new Error(`Session ${input.sessionID} was shared without a URL`)
           return result.data.share.url
         },
-        unshare: async (sessionID, request) => {
-          await client.session.unshare({ sessionID, ...legacyLocation(defaultLocation) }, options(request))
+        unshare: async (input, request) => {
+          await client.session.unshare({ sessionID: input.sessionID, ...location(input) }, options(request))
         },
-        diff: async (sessionID, request) => {
-          const result = await client.session.diff({ sessionID, ...legacyLocation(defaultLocation) }, options(request))
+        diff: async (input, request) => {
+          const result = await client.session.diff({ sessionID: input.sessionID, ...location(input) }, options(request))
           return result.data.flatMap((item) => (item.file ? [{ ...item, file: item.file }] : []))
         },
-        todos: async (sessionID, request) => {
-          const result = await client.session.todo({ sessionID, ...legacyLocation(defaultLocation) }, options(request))
-          return result.data.map((item) => ({ content: item.content, status: item.status }))
+        todos: async (input, request) => {
+          const result = await client.session.todo({ sessionID: input.sessionID, ...location(input) }, options(request))
+          return result.data.map((item) => ({
+            content: item.content,
+            status: item.status,
+            priority: item.priority,
+          }))
         },
-        summarize: async (sessionID, model, request) => {
+        summarize: async (input, request) => {
           await client.session.summarize(
             {
-              sessionID,
-              providerID: model.providerID,
-              modelID: model.id,
-              ...legacyLocation(defaultLocation),
+              sessionID: input.sessionID,
+              providerID: input.model.providerID,
+              modelID: input.model.id,
+              ...location(input),
             },
             options(request),
           )
         },
-        revert: async (sessionID, messageID, request) => {
-          await client.session.revert({ sessionID, messageID, ...legacyLocation(defaultLocation) }, options(request))
+        revert: async (input, request) => {
+          const result = await client.session.revert(
+            { sessionID: input.sessionID, messageID: input.messageID, ...location(input) },
+            options(request),
+          )
+          return toSession(result.data)
         },
-        clearRevert: async (sessionID, request) => {
-          await client.session.unrevert({ sessionID, ...legacyLocation(defaultLocation) }, options(request))
+        clearRevert: async (input, request) => {
+          const result = await client.session.unrevert(
+            { sessionID: input.sessionID, ...location(input) },
+            options(request),
+          )
+          return toSession(result.data)
         },
         shell: async (input, request) => {
           await client.session.shell(
@@ -569,11 +608,26 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
           return toDecoratedFile(result.data)
         },
       },
-      ptyTransport: {
+      ptyTransport: transportConfig && {
         connectToken: async (input, request) => {
-          const result = await client.pty.connectToken({ ptyID: input.ptyID, ...location(input) }, options(request))
-          return { ticket: result.data.ticket }
+          const result = await client.pty.connectToken(
+            { ptyID: input.ptyID, ...location(input) },
+            {
+              signal: request?.signal,
+              throwOnError: false,
+              headers: { "x-opencode-ticket": "1" },
+            },
+          )
+          return { status: result.response.status, ticket: result.data?.ticket }
         },
+        exists: async (input, request) => {
+          const result = await client.pty.get(
+            { ptyID: input.ptyID, ...location(input) },
+            { signal: request?.signal, throwOnError: false },
+          )
+          return result.response.status !== 404
+        },
+        connectURL: (input) => ptyConnectURL(transportConfig, "/pty", input, legacyLocation(input.location)),
       },
       shellDiscovery: {
         list: async (input, request) => {
@@ -582,6 +636,9 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
         },
       },
       runtimeV1: {
+        disposeLocation: async (input, request) => {
+          await client.instance.dispose(location(input), options(request))
+        },
         disposeAll: async (request) => {
           await client.global.dispose(options(request))
         },
@@ -590,10 +647,31 @@ export function createV1Backend(client: OpencodeClient, defaultLocation?: Locati
   }
 }
 
+function ptyConnectURL(
+  config: PtyTransportConfig,
+  root: string,
+  input: { ptyID: string; cursor: number; ticket?: string },
+  location: { directory?: string; workspace?: string },
+) {
+  const url = new URL(`${config.baseUrl.replace(/\/+$/, "")}${root}/${encodeURIComponent(input.ptyID)}/connect`)
+  if (location.directory) url.searchParams.set("directory", location.directory)
+  if (location.workspace) url.searchParams.set("workspace", location.workspace)
+  url.searchParams.set("cursor", String(input.cursor))
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
+  if (input.ticket) {
+    url.searchParams.set("ticket", input.ticket)
+    return url
+  }
+  if (config.password && (!config.sameOrigin || config.authToken))
+    url.searchParams.set("auth_token", btoa(`${config.username ?? "opencode"}:${config.password}`))
+  return url
+}
+
 function legacyLocation(input?: LocationRef) {
+  if (!input) return {}
   return {
-    directory: input?.directory,
-    workspace: input?.workspaceID,
+    directory: input.directory,
+    workspace: input.workspaceID,
   }
 }
 
@@ -609,6 +687,8 @@ function toProject(input: Project): AppProject {
   return {
     id: input.id,
     worktree: input.worktree,
+    vcs: input.vcs,
+    time: { ...input.time, updated: input.time.updated ?? input.time.created },
     name: input.name,
     icon: input.icon,
     commands: input.commands,
@@ -619,9 +699,13 @@ function toProject(input: Project): AppProject {
 function toSession(input: Session): AppSession {
   return {
     id: input.id,
+    slug: input.slug,
+    version: input.version,
     parentID: input.parentID,
     projectID: input.projectID,
     location: { directory: input.directory, workspaceID: input.workspaceID },
+    directory: input.directory,
+    workspaceID: input.workspaceID,
     title: input.title,
     cost: input.cost ?? 0,
     tokens: input.tokens,
@@ -657,6 +741,7 @@ function toProvider(input: Provider): AppProvider {
   return {
     id: input.id,
     name: input.name,
+    source: input.source,
     models: Object.fromEntries(
       Object.entries(input.models).flatMap(([id, model]) =>
         model.status === "deprecated" ? [] : [[id, toModel(model)]],
@@ -714,8 +799,8 @@ function toReference(input: import("@opencode-ai/sdk-v1/v2/client").ReferenceInf
   return input
 }
 
-function toActivity(input: import("@opencode-ai/sdk-v1/v2/client").SessionStatus): SessionActivity | undefined {
-  if (input.type === "idle") return
+function toActivity(input: import("@opencode-ai/sdk-v1/v2/client").SessionStatus): SessionActivity {
+  if (input.type === "idle") return { type: "idle" }
   if (input.type === "busy") return { type: "running" }
   return input
 }
@@ -734,7 +819,10 @@ function toTimelineItem(info: Message, parts: readonly Part[]): TimelineItem {
         providerID: info.model.providerID,
         variant: info.model.variant,
       },
-      raw: { info, parts },
+      format: info.format,
+      summary: info.summary,
+      system: info.system,
+      tools: info.tools,
     }
   }
   return {
@@ -749,7 +837,12 @@ function toTimelineItem(info: Message, parts: readonly Part[]): TimelineItem {
     model: { id: info.modelID, providerID: info.providerID, variant: info.variant },
     tokens: info.tokens,
     error: info.error,
-    raw: { info, parts },
+    mode: info.mode,
+    path: info.path,
+    cost: info.cost,
+    structured: info.structured,
+    finish: info.finish,
+    summary: info.summary,
   }
 }
 
@@ -763,9 +856,11 @@ function toTimelineContent(input: Part): TimelineContent[] {
         synthetic: input.synthetic,
         ignored: input.ignored,
         metadata: input.metadata,
+        time: input.time,
       },
     ]
-  if (input.type === "reasoning") return [{ type: input.type, id: input.id, text: input.text }]
+  if (input.type === "reasoning")
+    return [{ type: input.type, id: input.id, text: input.text, metadata: input.metadata, time: input.time }]
   if (input.type === "file")
     return [
       {
@@ -794,14 +889,52 @@ function toTimelineContent(input: Part): TimelineContent[] {
       },
     ]
   if (input.type === "tool")
-    return [{ type: input.type, id: input.id, callID: input.callID, tool: input.tool, state: toToolState(input.state) }]
+    return [
+      {
+        type: input.type,
+        id: input.id,
+        callID: input.callID,
+        tool: input.tool,
+        state: toToolState(input.state),
+        metadata: input.metadata,
+      },
+    ]
+  if (input.type === "subtask")
+    return [
+      {
+        type: input.type,
+        id: input.id,
+        prompt: input.prompt,
+        description: input.description,
+        agent: input.agent,
+        model: input.model && { id: input.model.modelID, providerID: input.model.providerID },
+        command: input.command,
+      },
+    ]
+  if (input.type === "step-start") return [{ type: input.type, id: input.id, snapshot: input.snapshot }]
+  if (input.type === "step-finish")
+    return [
+      {
+        type: input.type,
+        id: input.id,
+        reason: input.reason,
+        snapshot: input.snapshot,
+        cost: input.cost,
+        tokens: input.tokens,
+      },
+    ]
+  if (input.type === "snapshot") return [{ type: input.type, id: input.id, snapshot: input.snapshot }]
+  if (input.type === "patch") return [{ type: input.type, id: input.id, hash: input.hash, files: input.files }]
+  if (input.type === "retry")
+    return [{ type: input.type, id: input.id, attempt: input.attempt, error: input.error, time: input.time }]
+  if (input.type === "compaction") return [{ type: input.type, id: input.id, auto: input.auto }]
   return []
 }
 
 function toToolState(input: import("@opencode-ai/sdk-v1/v2/client").ToolState): ToolState {
   if (input.status === "pending") return { status: input.status, input: input.input, raw: input.raw }
   if (input.status === "running")
-    return { status: input.status, input: input.input, title: input.title, metadata: input.metadata }
+    return { status: input.status, input: input.input, title: input.title, metadata: input.metadata, time: input.time }
   if (input.status === "completed")
     return {
       status: input.status,
@@ -809,8 +942,10 @@ function toToolState(input: import("@opencode-ai/sdk-v1/v2/client").ToolState): 
       output: input.output,
       title: input.title,
       metadata: input.metadata,
+      time: input.time,
+      attachments: input.attachments,
     }
-  return { status: input.status, input: input.input, error: input.error, metadata: input.metadata }
+  return { status: input.status, input: input.input, error: input.error, metadata: input.metadata, time: input.time }
 }
 
 function toFilePart(input: PromptFile) {
@@ -830,6 +965,7 @@ function toFilePart(input: PromptFile) {
 }
 
 function toPromptParts(input: PromptInput) {
+  if (input.parts) return input.parts.map(toPromptPart)
   return [
     { type: "text" as const, text: input.text },
     ...(input.files?.map(toFilePart) ?? []),
@@ -842,6 +978,11 @@ function toPromptParts(input: PromptInput) {
           : undefined,
     })) ?? []),
   ]
+}
+
+function toPromptPart(input: NonNullable<PromptInput["parts"]>[number]) {
+  if (input.type === "file" && input.source?.type === "resource") return { ...input, source: undefined }
+  return { ...input }
 }
 
 function toFileContent(input: import("@opencode-ai/sdk-v1/v2/client").FileContent): FileContent {
@@ -862,7 +1003,7 @@ function toDecoratedFile(input: import("@opencode-ai/sdk-v1/v2/client").FileCont
     diff: input.diff,
     encoding: input.encoding,
     mimeType: input.mimeType,
-    patch: input.patch && { hunks: input.patch.hunks.map((hunk) => ({ lines: hunk.lines })) },
+    patch: input.patch,
   }
 }
 
@@ -872,7 +1013,10 @@ function toPermission(input: import("@opencode-ai/sdk-v1/v2/client").PermissionR
     sessionID: input.sessionID,
     action: input.permission,
     resources: input.patterns,
-    metadata: input.metadata,
+    permission: input.permission,
+    patterns: input.patterns,
+    always: input.always,
+    metadata: input.metadata ?? {},
   }
 }
 
@@ -880,7 +1024,11 @@ function toQuestion(input: import("@opencode-ai/sdk-v1/v2/client").QuestionReque
   return {
     id: input.id,
     sessionID: input.sessionID,
-    questions: input.questions,
+    questions: input.questions.map((question) => ({
+      ...question,
+      header: question.header ?? "",
+      options: question.options.map((option) => ({ ...option, description: option.description ?? "" })),
+    })),
   }
 }
 
@@ -891,22 +1039,54 @@ function toPty(input: import("@opencode-ai/sdk-v1/v2/client").Pty) {
 async function toEvent(
   envelope: GlobalEvent,
   messages: Map<string, CachedMessage>,
-  loadMessage: (input: { sessionID: string; messageID: string }) => Promise<CachedMessage>,
+  loadMessage: (input: LocationInput & { sessionID: string; messageID: string }) => Promise<CachedMessage>,
 ): Promise<AppEvent> {
   const input = envelope.payload as Event
-  if (input.type === "server.connected") return { type: input.type }
+  const eventLocation =
+    envelope.directory === "global"
+      ? undefined
+      : { location: { directory: envelope.directory, workspaceID: envelope.workspace } }
+  if (input.type === "server.connected") {
+    messages.clear()
+    return { type: input.type }
+  }
   if (input.type === "global.disposed") return { type: "server.disposed" }
   if (input.type === "server.instance.disposed")
-    return { type: "server.disposed", location: { directory: input.properties.directory } }
+    return { type: "instance.disposed", location: { directory: input.properties.directory } }
   if (input.type === "project.updated") return { type: input.type, project: toProject(input.properties) }
   if (input.type === "session.created" || input.type === "session.updated")
     return { type: input.type, session: toSession(input.properties.info) }
-  if (input.type === "session.deleted") return { type: input.type, sessionID: input.properties.sessionID }
+  if (input.type === "session.deleted") {
+    for (const [messageID, message] of messages) {
+      if (message.info.sessionID === input.properties.sessionID) messages.delete(messageID)
+    }
+    return { type: input.type, sessionID: input.properties.sessionID }
+  }
   if (input.type === "session.status") {
     const activity = toActivity(input.properties.status)
-    if (activity) return { type: "session.activity", sessionID: input.properties.sessionID, activity }
-    return { type: "unknown", raw: input }
+    if (activity.type === "idle") {
+      for (const [messageID, message] of messages) {
+        if (message.info.sessionID === input.properties.sessionID) messages.delete(messageID)
+      }
+    }
+    return { type: "session.activity", sessionID: input.properties.sessionID, activity }
   }
+  if (input.type === "session.diff")
+    return {
+      type: input.type,
+      sessionID: input.properties.sessionID,
+      diff: input.properties.diff.flatMap((item) => (item.file ? [{ ...item, file: item.file }] : [])),
+    }
+  if (input.type === "todo.updated")
+    return {
+      type: input.type,
+      sessionID: input.properties.sessionID,
+      todos: input.properties.todos.map((todo) => ({
+        content: todo.content,
+        status: todo.status,
+        priority: todo.priority,
+      })),
+    }
   if (input.type === "session.error")
     return { type: input.type, sessionID: input.properties.sessionID, error: input.properties.error }
   if (input.type === "message.updated") {
@@ -917,7 +1097,7 @@ async function toEvent(
   }
   if (input.type === "message.part.updated") {
     const messageID = input.properties.part.messageID
-    const value = await loadMessage({ sessionID: input.properties.sessionID, messageID })
+    const value = await loadMessage({ sessionID: input.properties.sessionID, messageID, ...eventLocation })
     const parts = [...value.parts.filter((part) => part.id !== input.properties.part.id), input.properties.part]
     const next = { info: value.info, parts }
     messages.set(messageID, next)
@@ -928,10 +1108,40 @@ async function toEvent(
     return { type: "timeline.removed", sessionID: input.properties.sessionID, itemID: input.properties.messageID }
   }
   if (input.type === "message.part.removed") {
-    const value = await loadMessage({ sessionID: input.properties.sessionID, messageID: input.properties.messageID })
-    const next = { info: value.info, parts: value.parts.filter((part) => part.id !== input.properties.partID) }
-    messages.set(input.properties.messageID, next)
-    return { type: "timeline.updated", item: toTimelineItem(next.info, next.parts) }
+    const cached = messages.get(input.properties.messageID)
+    if (cached)
+      messages.set(input.properties.messageID, {
+        ...cached,
+        parts: cached.parts.filter((part) => part.id !== input.properties.partID),
+      })
+    return {
+      type: "timeline.part.removed",
+      sessionID: input.properties.sessionID,
+      itemID: input.properties.messageID,
+      contentID: input.properties.partID,
+    }
+  }
+  if (input.type === "message.part.delta") {
+    const cached = messages.get(input.properties.messageID)
+    const part = cached?.parts.find((part) => part.id === input.properties.partID)
+    if (cached && part) {
+      const current = part[input.properties.field as keyof Part]
+      if (typeof current === "string")
+        messages.set(input.properties.messageID, {
+          ...cached,
+          parts: cached.parts.map((item) =>
+            item.id === part.id ? { ...item, [input.properties.field]: current + input.properties.delta } : item,
+          ),
+        })
+    }
+    return {
+      type: "timeline.delta",
+      sessionID: input.properties.sessionID,
+      itemID: input.properties.messageID,
+      contentID: input.properties.partID,
+      field: input.properties.field,
+      delta: input.properties.delta,
+    }
   }
   if (input.type === "permission.asked")
     return { type: "permission.requested", request: toPermission(input.properties) }
@@ -942,8 +1152,11 @@ async function toEvent(
         id: input.properties.id,
         sessionID: input.properties.sessionID,
         action: input.properties.action,
-        resources: input.properties.resources,
-        metadata: input.properties.metadata,
+        resources: [...input.properties.resources],
+        permission: input.properties.action,
+        patterns: [...input.properties.resources],
+        always: [],
+        metadata: input.properties.metadata ?? {},
       },
     }
   if (input.type === "permission.replied" || input.type === "permission.v2.replied")
@@ -961,6 +1174,12 @@ async function toEvent(
   if (input.type === "file.watcher.updated")
     return { type: "file.changed", path: input.properties.file, change: input.properties.event }
   if (input.type === "vcs.branch.updated") return { type: input.type, branch: input.properties.branch }
+  if (input.type === "worktree.ready")
+    return { type: input.type, name: input.properties.name, branch: input.properties.branch }
+  if (input.type === "worktree.failed") return { type: input.type, message: input.properties.message }
+  if (input.type === "lsp.updated") return { type: input.type }
+  if (input.type === "reference.updated") return { type: input.type }
+  if (input.type === "mcp.tools.changed") return { type: "mcp.updated", server: input.properties.server }
   if (input.type === "pty.exited") return { type: input.type, ptyID: input.properties.id }
   return { type: "unknown", raw: input }
 }

@@ -46,6 +46,8 @@ describe("buildRequestParts", () => {
     ).toBe(true)
 
     expect(result.optimisticParts).toHaveLength(result.requestParts.length)
+    expect(result.optimisticParts.map((part) => part.id)).toEqual(result.requestParts.map((part) => part.id))
+    expect(result.optimisticParts.map((part) => part.type)).toEqual(result.requestParts.map((part) => part.type))
     expect(result.optimisticParts.every((part) => part.sessionID === "ses_1" && part.messageID === "msg_1")).toBe(true)
   })
 

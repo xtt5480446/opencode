@@ -79,10 +79,16 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     const tree = createFileTreeStore({
       scope,
       normalizeDir: path.normalizeDir,
-      list: (dir) =>
-        sdk()
-          .client.file.list({ path: dir })
-          .then((x) => x.data ?? []),
+      list: async (dir) =>
+        [...(await (await sdk().backend).common.files.list({ location: { directory: scope() }, path: dir }))].map(
+          (node) => ({
+            name: node.name ?? getFilename(node.path),
+            path: node.path,
+            absolute: node.absolute ?? node.path,
+            type: node.type,
+            ignored: node.ignored,
+          }),
+        ),
       onError: (message) => {
         showToast({
           variant: "error",
@@ -181,10 +187,18 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       setLoading(file)
 
       const promise = sdk()
-        .client.file.read({ path: file })
-        .then((x) => {
+        .backend.then(async (client) => {
           if (scope() !== directory) return
-          const content = x.data
+          const content: FileState["content"] = client.capabilities.decoratedFiles
+            ? await client.capabilities.decoratedFiles.read({ location: { directory }, path: file })
+            : await client.common.files.read({ location: { directory }, path: file }).then((value) => {
+                if (value.kind !== "text") return
+                return {
+                  type: "text" as const,
+                  content: new TextDecoder().decode(value.bytes),
+                  mimeType: value.mimeType,
+                }
+              })
           setLoaded(file, content)
 
           if (!content) return
@@ -205,9 +219,19 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
 
     const search = (query: string, dirs: "true" | "false", options?: { limit?: number; signal?: AbortSignal }) =>
       sdk()
-        .client.find.files({ query, dirs, limit: options?.limit }, { signal: options?.signal })
+        .backend.then((client) =>
+          client.common.files.find(
+            {
+              location: { directory: scope() },
+              query,
+              type: dirs === "true" ? undefined : "file",
+              limit: options?.limit,
+            },
+            { signal: options?.signal },
+          ),
+        )
         .then(
-          (x) => (x.data ?? []).map(path.normalize),
+          (items) => items.map((item) => path.normalize(item.path)),
           (error) => {
             if (options?.signal?.aborted) throw error
             return []

@@ -81,19 +81,40 @@ const clientFor = (directory: string) => {
 
 beforeAll(async () => {
   const rootClient = clientFor("/repo/main")
+  const backend = Promise.resolve({
+    common: {
+      sessions: {
+        create: async (input: { location?: { directory?: string } }) => {
+          const directory = input.location?.directory ?? "/repo/main"
+          createdSessions.push(directory)
+          return {
+            id: `session-${createdSessions.length}`,
+            projectID: "project",
+            location: { directory },
+            title: `New session ${createdSessions.length}`,
+            cost: 0,
+            time: { created: Date.now() },
+          }
+        },
+        prompt: async () => undefined,
+        command: async () => undefined,
+        interrupt: async () => undefined,
+      },
+    },
+    capabilities: {
+      sessionExtrasV1: {
+        shell: async (input: { location?: { directory?: string } }) => {
+          sentShell.push(input.location?.directory ?? "/repo/main")
+        },
+      },
+    },
+  })
 
   mock.module("@solidjs/router", () => ({
     useNavigate: () => () => undefined,
     useParams: () => params,
     useLocation: () => ({}),
     useSearchParams: () => [search, () => undefined],
-  }))
-
-  mock.module("@opencode-ai/sdk/v2/client", () => ({
-    createOpencodeClient: (input: { directory: string }) => {
-      createdClients.push(input.directory)
-      return clientFor(input.directory)
-    },
   }))
 
   mock.module("@opencode-ai/ui/toast", () => ({
@@ -161,6 +182,7 @@ beforeAll(async () => {
         scope: "local",
         directory: "/repo/main",
         client: rootClient,
+        backend,
         url: "http://localhost:4096",
         createClient(opts: any) {
           return clientFor(opts.directory)
@@ -282,7 +304,7 @@ describe("prompt submit worktree selection", () => {
     selected = "/repo/worktree-b"
     await submit.handleSubmit(event)
 
-    expect(createdClients).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
+    expect(createdClients).toEqual([])
     expect(createdSessions).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
     expect(sentShell).toEqual(["/repo/worktree-a", "/repo/worktree-b"])
     expect(syncedDirectories).toEqual(["/repo/worktree-a", "/repo/worktree-a", "/repo/worktree-b", "/repo/worktree-b"])
@@ -441,7 +463,13 @@ describe("prompt submit worktree selection", () => {
 
     await submit.handleSubmit(event)
 
-    expect(storedSessions["/repo/worktree-a"]).toEqual([{ id: "session-1", title: "New session 1" }])
+    expect(storedSessions["/repo/worktree-a"]).toEqual([
+      expect.objectContaining({
+        id: "session-1",
+        title: "New session 1",
+        location: { directory: "/repo/worktree-a" },
+      }),
+    ])
     expect(optimisticSeeded).toEqual([true])
   })
 })

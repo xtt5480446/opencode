@@ -21,6 +21,7 @@ import {
   pickerRoot,
   pickerAbsoluteInput,
 } from "./directory-picker-domain"
+import { createAppClient } from "@/context/backend.test-fixture"
 
 test("maps server directory entries into Pierre paths", () => {
   expect(
@@ -132,18 +133,20 @@ test("scopes file autocomplete to the current browser root", () => {
 
 test("resolves directory autocomplete from the current browser root", async () => {
   const directories: string[] = []
-  const sdk = {
-    client: {
-      find: {
-        files: (input: { directory: string }) => {
-          directories.push(input.directory)
-          return Promise.resolve({ data: [] })
+  const backend = Promise.resolve(
+    createAppClient({
+      common: {
+        files: {
+          find: (input) => {
+            directories.push(input.location?.directory ?? "")
+            return Promise.resolve([])
+          },
         },
       },
-    },
-  } as unknown as Parameters<typeof createDirectorySearch>[0]["sdk"]
+    }),
+  )
   let base = "/repo"
-  const search = createDirectorySearch({ sdk, home: () => "/home/luke", base: () => base })
+  const search = createDirectorySearch({ backend, home: () => "/home/luke", base: () => base })
 
   await search("components")
   base = "/repo/src"

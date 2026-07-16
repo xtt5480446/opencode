@@ -1,4 +1,4 @@
-import type { SnapshotFileDiff } from "@opencode-ai/sdk/v2"
+import type { AppFileDiff as SnapshotFileDiff } from "@/context/backend"
 import type { PartGroup } from "@opencode-ai/session-ui/message-part"
 import { Data, Equal } from "effect"
 

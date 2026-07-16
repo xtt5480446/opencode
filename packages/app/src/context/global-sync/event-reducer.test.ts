@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import type { Message, Part, PermissionRequest, Project, QuestionRequest, Session } from "@opencode-ai/sdk/v2/client"
+import type {
+  AppMessage as Message,
+  AppPart as Part,
+  AppPermissionRequest as PermissionRequest,
+  AppProject as Project,
+  AppQuestionRequest as QuestionRequest,
+  AppSession as Session,
+} from "../backend"
 import { createStore } from "solid-js/store"
 import type { State } from "./types"
 import { applyDirectoryEvent, applyGlobalEvent, cleanupDroppedSessionCaches } from "./event-reducer"
@@ -39,7 +46,9 @@ const permissionRequest = (id: string, sessionID: string, title = id) =>
     id,
     sessionID,
     permission: title,
+    action: title,
     patterns: ["*"],
+    resources: ["*"],
     metadata: {},
     always: [],
   }) as PermissionRequest
@@ -523,9 +532,9 @@ describe("applyDirectoryEvent", () => {
   })
 
   test("updates vcs branch in store and cache", () => {
-    const [store, setStore] = createStore(baseState({ vcs: { branch: "main", default_branch: "main" } }))
+    const [store, setStore] = createStore(baseState({ vcs: { branch: "main", defaultBranch: "main" } }))
     const [cacheStore, setCacheStore] = createStore({
-      value: { branch: "main", default_branch: "main" } as State["vcs"],
+      value: { branch: "main", defaultBranch: "main" } as State["vcs"],
     })
 
     applyDirectoryEvent({
@@ -542,8 +551,8 @@ describe("applyDirectoryEvent", () => {
       },
     })
 
-    expect(store.vcs).toEqual({ branch: "feature/test", default_branch: "main" })
-    expect(cacheStore.value).toEqual({ branch: "feature/test", default_branch: "main" })
+    expect(store.vcs).toEqual({ branch: "feature/test", defaultBranch: "main" })
+    expect(cacheStore.value).toEqual({ branch: "feature/test", defaultBranch: "main" })
   })
 
   test("routes disposal and lsp events to side-effect handlers", () => {

@@ -1,4 +1,4 @@
-import type { Message, Part } from "@opencode-ai/sdk/v2/client"
+import type { AppMessage, AppPart } from "@/context/backend"
 
 export type SessionContextBreakdownKey = "system" | "user" | "assistant" | "tool" | "other"
 
@@ -13,14 +13,14 @@ const estimateTokens = (chars: number) => Math.ceil(chars / 4)
 const toPercent = (tokens: number, input: number) => (tokens / input) * 100
 const toPercentLabel = (tokens: number, input: number) => Math.round(toPercent(tokens, input) * 10) / 10
 
-const charsFromUserPart = (part: Part) => {
+const charsFromUserPart = (part: AppPart) => {
   if (part.type === "text") return part.text.length
   if (part.type === "file") return part.source?.text.value.length ?? 0
   if (part.type === "agent") return part.source?.value.length ?? 0
   return 0
 }
 
-const charsFromAssistantPart = (part: Part) => {
+const charsFromAssistantPart = (part: AppPart) => {
   if (part.type === "text") return { assistant: part.text.length, tool: 0 }
   if (part.type === "reasoning") return { assistant: part.text.length, tool: 0 }
   if (part.type !== "tool") return { assistant: 0, tool: 0 }
@@ -68,8 +68,8 @@ const build = (
 }
 
 export function estimateSessionContextBreakdown(args: {
-  messages: Message[]
-  parts: Record<string, Part[] | undefined>
+  messages: AppMessage[]
+  parts: Record<string, AppPart[] | undefined>
   input: number
   systemPrompt?: string
 }) {

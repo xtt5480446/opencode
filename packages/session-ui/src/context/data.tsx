@@ -1,13 +1,13 @@
-import type { FileDiffInfo, Message, Part, Provider, Session, SessionStatus } from "@opencode-ai/sdk/v2"
+import type { Message, Part, Session, SessionStatus, SnapshotFileDiff as FileDiffInfo } from "./data-types"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { PreloadMultiFileDiffResult } from "@pierre/diffs/ssr"
 
 export type NormalizedProviderListResponse = {
-  all: Map<string, Provider>
+  all: ReadonlyMap<string, { name: string; models: Readonly<Record<string, { name: string }>> }>
   default: {
     [key: string]: string
   }
-  connected: Array<string>
+  connected: readonly string[]
 }
 
 type Data = {

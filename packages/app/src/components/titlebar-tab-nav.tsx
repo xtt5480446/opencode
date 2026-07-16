@@ -9,7 +9,7 @@ import { ServerConnection, serverName } from "@/context/server"
 import { displayName, projectForSession } from "@/pages/layout/helpers"
 import { SessionTabAvatar } from "@/pages/layout/session-tab-avatar"
 import { showToast } from "@/utils/toast"
-import type { Session } from "@opencode-ai/sdk/v2"
+import type { AppSession } from "@/context/backend"
 import { canOpenTabRename, forwardTabRef } from "./titlebar-tab-gesture"
 import { TabPreviewPopover } from "./titlebar-tab-popover"
 import "./titlebar-tab-nav.css"
@@ -21,7 +21,7 @@ export function TabNavItem(props: {
   ref?: Ref<HTMLDivElement>
   href: string
   server: ServerConnection.Key
-  session: () => Session | undefined
+  session: () => AppSession | undefined
   fallbackTitle?: string
   onTitleChange?: (title: string) => void
   onTitleChangeFailed?: (title: string) => void
@@ -120,8 +120,10 @@ export function TabNavItem(props: {
     const ctx = serverCtx()
     const session = props.session()
     if (!ctx || !session) return
-    const client = ctx.sdk.createClient({ directory: session.directory, throwOnError: true })
-    await client.session.update({ sessionID: session.id, title })
+    const client = await ctx.sdk.backend
+    const capability = client.capabilities.sessionActionsV1
+    if (!capability) throw new Error("Session renaming is not supported by this server")
+    await capability.rename({ location: { directory: session.directory }, sessionID: session.id, title })
   }
 
   const closeRename = async (save: boolean) => {

@@ -267,9 +267,8 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                 return conn ? { route, sdk: global.ensureServerCtx(conn).sdk } : undefined
               },
               ({ route, sdk }) =>
-                sdk.client.session
-                  .get({ sessionID: route.sessionId })
-                  .then((x) => x.data)
+                sdk.backend
+                  .then((client) => client.common.sessions.get({ sessionID: route.sessionId }))
                   .catch(() => {}),
             )
 

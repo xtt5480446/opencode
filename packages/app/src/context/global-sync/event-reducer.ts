@@ -1,15 +1,18 @@
 import { Binary } from "@opencode-ai/core/util/binary"
 import { produce, reconcile, type SetStoreFunction, type Store } from "solid-js/store"
 import type {
-  Message,
-  Part,
-  PermissionRequest,
-  Project,
-  QuestionRequest,
-  Session,
-  SessionStatus,
-  FileDiffInfo,
-} from "@opencode-ai/sdk/v2/client"
+  AppEvent,
+  AppFileDiff,
+  AppMessage,
+  AppPart,
+  AppPermissionRequest,
+  AppProject,
+  AppQuestionRequest,
+  AppSession,
+  AppTodo,
+  SessionActivity,
+} from "../backend"
+import { timelineMessage } from "../backend"
 import type { State, VcsCache } from "./types"
 import { trimSessions } from "./session-trim"
 import { dropSessionCaches } from "./session-cache"
@@ -31,19 +34,76 @@ const SESSION_CONTENT_EVENTS = new Set([
   "question.rejected",
 ])
 
+type LegacyEvent = { type: string; properties?: unknown }
+type DirectoryLegacyEvent =
+  | { type: string; properties: unknown }
+  | { type: "server.instance.disposed"; properties?: undefined }
+
+function legacyEvent(event: AppEvent): LegacyEvent | undefined {
+  if (event.type === "instance.disposed") return { type: "server.instance.disposed", properties: event }
+  if (event.type === "session.created" || event.type === "session.updated")
+    return { type: event.type, properties: { info: event.session } }
+  if (event.type === "session.deleted") return { type: event.type, properties: { sessionID: event.sessionID } }
+  if (event.type === "session.activity")
+    return { type: "session.status", properties: { sessionID: event.sessionID, status: event.activity } }
+  if (event.type === "session.diff" || event.type === "todo.updated") return { type: event.type, properties: event }
+  if (event.type === "timeline.updated") {
+    const message = timelineMessage(event.item)
+    return message ? { type: "message.updated", properties: { info: message } } : undefined
+  }
+  if (event.type === "timeline.content.updated") return undefined
+  if (event.type === "timeline.removed")
+    return {
+      type: "message.removed",
+      properties: { sessionID: event.sessionID, messageID: event.itemID },
+    }
+  if (event.type === "timeline.part.removed")
+    return {
+      type: "message.part.removed",
+      properties: { sessionID: event.sessionID, messageID: event.itemID, partID: event.contentID },
+    }
+  if (event.type === "timeline.delta")
+    return {
+      type: "message.part.delta",
+      properties: {
+        sessionID: event.sessionID,
+        messageID: event.itemID,
+        partID: event.contentID,
+        field: event.field,
+        delta: event.delta,
+      },
+    }
+  if (event.type === "permission.requested") return { type: "permission.asked", properties: event.request }
+  if (event.type === "permission.replied" || event.type === "question.replied" || event.type === "question.rejected")
+    return { type: event.type, properties: event }
+  if (event.type === "question.requested") return { type: "question.asked", properties: event.request }
+  return { type: event.type, properties: event }
+}
+
+function normalizeDirectoryEvent(event: AppEvent | DirectoryLegacyEvent) {
+  if ("properties" in event) return event
+  if (event.type === "server.instance.disposed") return event
+  return legacyEvent(event)
+}
+
 export function applyGlobalEvent(input: {
-  event: { type: string; properties?: unknown }
-  project: Project[]
-  setGlobalProject: (next: Project[] | ((draft: Project[]) => Project[])) => void
+  event: AppEvent | LegacyEvent
+  project: AppProject[]
+  setGlobalProject: (next: AppProject[] | ((draft: AppProject[]) => AppProject[])) => void
   refresh: () => void
 }) {
-  if (input.event.type === "global.disposed" || input.event.type === "server.connected") {
+  if (
+    input.event.type === "server.disposed" ||
+    input.event.type === "global.disposed" ||
+    input.event.type === "server.connected" ||
+    input.event.type === "provider.updated"
+  ) {
     input.refresh()
     return
   }
 
   if (input.event.type !== "project.updated") return
-  const properties = input.event.properties as Project
+  const properties = "project" in input.event ? input.event.project : (input.event.properties as AppProject)
   const result = Binary.search(input.project, properties.id, (s) => s.id)
   if (result.found) {
     input.setGlobalProject(
@@ -60,7 +120,11 @@ export function applyGlobalEvent(input: {
   )
 }
 
-function cleanupSessionCaches(setStore: SetStoreFunction<State>, sessionID: string) {
+function cleanupSessionCaches(
+  setStore: SetStoreFunction<State>,
+  sessionID: string,
+  setSessionTodo?: (sessionID: string, todos: AppTodo[] | undefined) => void,
+) {
   if (!sessionID) return
   setStore(
     produce((draft) => {
@@ -69,7 +133,12 @@ function cleanupSessionCaches(setStore: SetStoreFunction<State>, sessionID: stri
   )
 }
 
-export function cleanupDroppedSessionCaches(store: Store<State>, setStore: SetStoreFunction<State>, next: Session[]) {
+export function cleanupDroppedSessionCaches(
+  store: Store<State>,
+  setStore: SetStoreFunction<State>,
+  next: AppSession[],
+  setSessionTodo?: (sessionID: string, todos: AppTodo[] | undefined) => void,
+) {
   const keep = new Set(next.map((item) => item.id))
   const stale = [
     ...Object.keys(store.message),
@@ -90,7 +159,7 @@ export function cleanupDroppedSessionCaches(store: Store<State>, setStore: SetSt
 }
 
 export function applyDirectoryEvent(input: {
-  event: { type: string; properties?: unknown }
+  event: AppEvent | DirectoryLegacyEvent
   store: Store<State>
   setStore: SetStoreFunction<State>
   push: (directory: string) => void
@@ -98,11 +167,17 @@ export function applyDirectoryEvent(input: {
   loadLsp: () => void
   loadReferences?: () => void
   vcsCache?: VcsCache
+  setSessionTodo?: (sessionID: string, todos: AppTodo[] | undefined) => void
   retainedLimit?: number
   sessionContent?: boolean
   permission?: State["permission"]
 }) {
-  const event = input.event
+  if (input.event.type === "server.instance.disposed") {
+    input.push(input.directory)
+    return
+  }
+  const event = normalizeDirectoryEvent(input.event)
+  if (!event) return
   if (input.sessionContent === false && SESSION_CONTENT_EVENTS.has(event.type)) return
   const limit = Math.max(input.store.limit, input.retainedLimit ?? 0)
   switch (event.type) {
@@ -111,7 +186,7 @@ export function applyDirectoryEvent(input: {
       return
     }
     case "session.created": {
-      const info = (event.properties as { info: Session }).info
+      const info = (event.properties as { info: AppSession }).info
       const result = Binary.search(input.store.session, info.id, (s) => s.id)
       if (result.found) {
         input.setStore("session", result.index, reconcile(info))
@@ -126,7 +201,7 @@ export function applyDirectoryEvent(input: {
       break
     }
     case "session.updated": {
-      const info = (event.properties as { info: Session }).info
+      const info = (event.properties as { info: AppSession }).info
       const result = Binary.search(input.store.session, info.id, (s) => s.id)
       if (info.time.archived) {
         if (input.store.session[result.index]!.time.archived === info.time.archived) break
@@ -155,8 +230,10 @@ export function applyDirectoryEvent(input: {
       break
     }
     case "session.deleted": {
-      const info = (event.properties as { info: Session }).info
-      const result = Binary.search(input.store.session, info.id, (s) => s.id)
+      const properties = event.properties as { sessionID?: string; info?: { id: string } }
+      const sessionID = properties.sessionID ?? properties.info?.id ?? ""
+      const result = Binary.search(input.store.session, sessionID, (s) => s.id)
+      const info = result.found ? input.store.session[result.index] : undefined
       if (result.found) {
         input.setStore(
           "session",
@@ -165,23 +242,29 @@ export function applyDirectoryEvent(input: {
           }),
         )
       }
-      cleanupSessionCaches(input.setStore, info.id)
-      if (info.parentID) break
+      cleanupSessionCaches(input.setStore, sessionID, input.setSessionTodo)
+      if (info?.parentID) break
       input.setStore("sessionTotal", (value) => Math.max(0, value - 1))
       break
     }
     case "session.diff": {
-      const props = event.properties as { sessionID: string; diff: FileDiffInfo[] }
+      const props = event.properties as { sessionID: string; diff: AppFileDiff[] }
       input.setStore("session_diff", props.sessionID, reconcile(list(props.diff), { key: "file" }))
       break
     }
+    case "todo.updated": {
+      const props = event.properties as { sessionID: string; todos: AppTodo[] }
+      input.setStore("todo", props.sessionID, reconcile(props.todos, { key: "id" }))
+      input.setSessionTodo?.(props.sessionID, props.todos)
+      break
+    }
     case "session.status": {
-      const props = event.properties as { sessionID: string; status: SessionStatus }
+      const props = event.properties as { sessionID: string; status: SessionActivity }
       input.setStore("session_status", props.sessionID, reconcile(props.status))
       break
     }
     case "message.updated": {
-      const info = clean((event.properties as { info: Message }).info)
+      const info = clean((event.properties as { info: AppMessage }).info)
       const messages = input.store.message[info.sessionID]
       if (!messages) {
         input.setStore("message", info.sessionID, [info])
@@ -222,7 +305,7 @@ export function applyDirectoryEvent(input: {
       break
     }
     case "message.part.updated": {
-      const part = (event.properties as { part: Part }).part
+      const part = (event.properties as { part: AppPart }).part
       if (SKIP_PARTS.has(part.type)) break
       input.setStore(
         produce((draft) => {
@@ -306,7 +389,7 @@ export function applyDirectoryEvent(input: {
       break
     }
     case "permission.asked": {
-      const permission = event.properties as PermissionRequest
+      const permission = event.properties as AppPermissionRequest
       const permissions = input.store.permission[permission.sessionID]
       if (!permissions) {
         input.setStore("permission", permission.sessionID, [permission])
@@ -342,7 +425,7 @@ export function applyDirectoryEvent(input: {
       break
     }
     case "question.asked": {
-      const question = event.properties as QuestionRequest
+      const question = event.properties as AppQuestionRequest
       const questions = input.store.question[question.sessionID]
       if (!questions) {
         input.setStore("question", question.sessionID, [question])

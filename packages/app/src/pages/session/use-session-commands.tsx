@@ -16,9 +16,10 @@ import { showToast } from "@/utils/toast"
 import { findLast } from "@opencode-ai/core/util/array"
 import { createSessionTabs } from "@/pages/session/helpers"
 import { extractPromptFromParts } from "@/utils/prompt"
-import { UserMessage } from "@opencode-ai/sdk/v2"
+import type { AppUserMessage as UserMessage } from "@/context/backend"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionOwnership } from "./session-ownership"
+import { createResource } from "solid-js"
 
 export type SessionCommandContext = {
   navigateMessageByOffset: (offset: number) => void
@@ -51,6 +52,10 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   const navigate = useNavigate()
   const { params, sessionKey, tabs, view } = useSessionLayout()
   const sessionOwnership = createSessionOwnership(sessionKey)
+  const [backend] = createResource(
+    () => sdk().backend,
+    (value) => value,
+  )
   const openDialog = async <T,>(load: () => Promise<T>, show: (value: T) => void) => {
     const owner = sessionOwnership.capture()
     const value = await load()
@@ -194,8 +199,9 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     }
 
     const url = await sdk()
-      .client.session.share({ sessionID })
-      .then((res) => res.data?.share?.url)
+      .backend.then((client) =>
+        client.capabilities.sessionExtrasV1?.share({ location: { directory: sdk().directory }, sessionID }),
+      )
       .catch(() => undefined)
     if (!url) {
       showToast({
@@ -214,7 +220,11 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     if (!sessionID) return
 
     await sdk()
-      .client.session.unshare({ sessionID })
+      .backend.then((client) => {
+        const capability = client.capabilities.sessionExtrasV1
+        if (!capability) throw new Error("Session sharing is not supported by this server")
+        return capability.unshare({ location: { directory: sdk().directory }, sessionID })
+      })
       .then(() =>
         showToast({
           title: language.t("toast.session.unshare.success.title"),
@@ -305,7 +315,6 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     const sessionID = params.id
     if (!sessionID) return
     const owner = sessionOwnership.capture()
-    const client = sdk().client
     const directory = sdk().directory
     const promptSession = prompt.capture()
     const revert = info()?.revert?.messageID
@@ -315,13 +324,23 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     const parts = sync().data.part[message.id]
 
     if (sync().data.session_working(sessionID)) {
-      await client.session.abort({ sessionID }).catch(() => {})
+      await sdk()
+        .backend.then((client) => client.common.sessions.interrupt({ location: { directory }, sessionID }))
+        .catch(() => {})
     }
 
     await runCommand({
       owner,
       prompt: promptSession,
-      request: () => client.session.revert({ sessionID, messageID: message.id }),
+      request: () =>
+        sdk().backend.then((client) => {
+          const input = { location: { directory }, sessionID, messageID: message.id }
+          if (client.capabilities.sessionExtrasV1)
+            return client.capabilities.sessionExtrasV1.revert(input).then(() => undefined)
+          if (client.capabilities.sessionExtrasV2)
+            return client.capabilities.sessionExtrasV2.stageRevert(input).then(() => undefined)
+          throw new Error("Session revert is not supported by this server")
+        }),
       updatePrompt: (promptSession) => {
         if (parts) promptSession.set(extractPromptFromParts(parts, { directory }))
       },
@@ -333,7 +352,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     const sessionID = params.id
     if (!sessionID) return
     const owner = sessionOwnership.capture()
-    const client = sdk().client
+    const directory = sdk().directory
     const messages = userMessages()
     const promptSession = prompt.capture()
 
@@ -345,7 +364,14 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       await runCommand({
         owner,
         prompt: promptSession,
-        request: () => client.session.unrevert({ sessionID }),
+        request: () =>
+          sdk().backend.then((client) => {
+            const input = { location: { directory }, sessionID }
+            if (client.capabilities.sessionExtrasV1)
+              return client.capabilities.sessionExtrasV1.clearRevert(input).then(() => undefined)
+            if (client.capabilities.sessionExtrasV2) return client.capabilities.sessionExtrasV2.clearRevert(input)
+            throw new Error("Session revert is not supported by this server")
+          }),
         updatePrompt: (promptSession) => promptSession.reset(),
         updateViewport: () => setActiveMessage(findLast(messages, (x) => x.id >= revertMessageID)),
       })
@@ -355,7 +381,15 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     await runCommand({
       owner,
       prompt: promptSession,
-      request: () => client.session.revert({ sessionID, messageID: next.id }),
+      request: () =>
+        sdk().backend.then((client) => {
+          const input = { location: { directory }, sessionID, messageID: next.id }
+          if (client.capabilities.sessionExtrasV1)
+            return client.capabilities.sessionExtrasV1.revert(input).then(() => undefined)
+          if (client.capabilities.sessionExtrasV2)
+            return client.capabilities.sessionExtrasV2.stageRevert(input).then(() => undefined)
+          throw new Error("Session revert is not supported by this server")
+        }),
       updatePrompt: () => undefined,
       updateViewport: () => setActiveMessage(findLast(messages, (x) => x.id < next.id)),
     })
@@ -374,11 +408,17 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       return
     }
 
-    await sdk().client.session.summarize({
-      sessionID,
-      modelID: model.id,
-      providerID: model.provider.id,
-    })
+    const client = await sdk().backend
+    const location = { directory: sdk().directory }
+    if (client.capabilities.sessionExtrasV1) {
+      await client.capabilities.sessionExtrasV1.summarize({
+        location,
+        sessionID,
+        model: { id: model.id, providerID: model.provider.id },
+      })
+      return
+    }
+    await client.capabilities.sessionExtrasV2?.compact?.({ location, sessionID })
   }
 
   const fork = () => {
@@ -389,7 +429,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   }
 
   const shareCmds = () => {
-    if (sync().data.config.share === "disabled") return []
+    if (sync().data.config.share === "disabled" || !backend()?.capabilities.sessionExtrasV1) return []
     return [
       sessionCommand({
         id: "session.share",
@@ -431,7 +471,10 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.undo"),
       description: language.t("command.session.undo.description"),
       slash: "undo",
-      disabled: !params.id || visibleUserMessages().length === 0,
+      disabled:
+        !params.id ||
+        visibleUserMessages().length === 0 ||
+        (!backend()?.capabilities.sessionExtrasV1 && !backend()?.capabilities.sessionExtrasV2),
       onSelect: undo,
     }),
     sessionCommand({
@@ -439,7 +482,10 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.redo"),
       description: language.t("command.session.redo.description"),
       slash: "redo",
-      disabled: !params.id || !info()?.revert?.messageID,
+      disabled:
+        !params.id ||
+        !info()?.revert?.messageID ||
+        (!backend()?.capabilities.sessionExtrasV1 && !backend()?.capabilities.sessionExtrasV2),
       onSelect: redo,
     }),
     sessionCommand({
@@ -447,7 +493,10 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.compact"),
       description: language.t("command.session.compact.description"),
       slash: "compact",
-      disabled: !params.id || visibleUserMessages().length === 0,
+      disabled:
+        !params.id ||
+        visibleUserMessages().length === 0 ||
+        (!backend()?.capabilities.sessionExtrasV1 && !backend()?.capabilities.sessionExtrasV2?.compact),
       onSelect: compact,
     }),
     sessionCommand({

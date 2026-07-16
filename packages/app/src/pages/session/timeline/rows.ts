@@ -1,5 +1,10 @@
 import { parseCommentNote, readCommentMetadata } from "@/utils/comment-note"
-import { AssistantMessage, Part, SessionStatus, SnapshotFileDiff, UserMessage } from "@opencode-ai/sdk/v2"
+import type {
+  AppAssistantMessage as AssistantMessage,
+  AppPart as Part,
+  AppUserMessage as UserMessage,
+  SessionActivity as SessionStatus,
+} from "@/context/backend"
 import { groupParts, renderable, type PartGroup } from "@opencode-ai/session-ui/message-part"
 import { TimelineRow, type SummaryDiff } from "./timeline-row"
 
@@ -119,7 +124,7 @@ export namespace Timeline {
       assistantGroupIndex += 1
     })
 
-    if (isActive && status === "busy" && !error && (showReasoning ? assistantPartRefs.length === 0 : true)) {
+    if (isActive && (status === "busy" || status === "running") && !error && (showReasoning ? assistantPartRefs.length === 0 : true)) {
       const heading = assistantMessages
         .flatMap((message) => getMessageParts(message.id))
         .map((part) => (part.type === "reasoning" && part.text ? reasoningHeading(part.text) : undefined))
@@ -167,7 +172,9 @@ export namespace Timeline {
     return rows
   }
 
-  function isSummaryDiff(value: SnapshotFileDiff): value is SummaryDiff {
+  function isSummaryDiff(
+    value: NonNullable<UserMessage["summary"]>["diffs"][number],
+  ): value is SummaryDiff {
     return typeof value.file === "string"
   }
 

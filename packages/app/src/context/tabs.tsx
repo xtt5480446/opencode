@@ -1,4 +1,4 @@
-import type { Session } from "@opencode-ai/sdk/v2/client"
+import type { AppSession } from "./backend"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { createStore, produce } from "solid-js/store"
 import { Persist, persisted, removePersisted, draftPersistedKeys } from "@/utils/persist"
@@ -45,7 +45,7 @@ export const tabHref = (tab: Tab) =>
 
 export const tabKey = (tab: Tab) => (tab.type === "draft" ? `draft:${tab.draftID}` : `${tab.server}\n${tabHref(tab)}`)
 
-export function sessionHasOpenTab(tabs: Tab[], server: ServerConnection.Key, session: Session) {
+export function sessionHasOpenTab(tabs: Tab[], server: ServerConnection.Key, session: AppSession) {
   return tabs.some((tab) => tab.type === "session" && tab.server === server && tab.sessionId === session.id)
 }
 
@@ -348,7 +348,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
         for (const key of removed) memory.remove(key)
         for (const key of removed) removeInfo(key)
       },
-      rememberSessionInfo(tab: SessionTab, session: Session) {
+      rememberSessionInfo(tab: SessionTab, session: AppSession) {
         const key = tabKey(tab)
         const next = { title: session.title, directory: session.directory }
         const current = info[key]

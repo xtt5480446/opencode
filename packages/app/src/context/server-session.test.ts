@@ -1,7 +1,51 @@
 import { describe, expect, test } from "bun:test"
 import type { retry } from "@opencode-ai/core/util/retry"
-import type { Message, OpencodeClient, Part, Session } from "@opencode-ai/sdk/v2/client"
-import { createServerSession } from "./server-session"
+import type {
+  AppFileDiff,
+  AppMessage as Message,
+  AppPart as Part,
+  AppSession as Session,
+  AppTodo,
+  TimelineContent,
+  TimelineItem,
+} from "./backend"
+import { createAppClient } from "./backend.test-fixture"
+import { createServerSession as createAppServerSession } from "./server-session"
+
+type FixtureClient = {
+  session: {
+    get(input: unknown): Promise<{ data: Session }>
+    messages(input: unknown): MessageResponse | Promise<MessageResponse>
+    message?(input: unknown): SingleMessageResponse | Promise<SingleMessageResponse>
+    diff?(input: unknown): Promise<{ data: AppFileDiff[] }>
+    todo?(input: unknown): Promise<{ data: AppTodo[] }>
+  }
+}
+
+const createServerSession = (client: FixtureClient, options?: { retry?: typeof retry }) =>
+  createAppServerSession(
+    createAppClient({
+      version: "v1",
+      common: {
+        sessions: {
+          get: async (input) => (await client.session.get(input)).data,
+          history: async (input) => {
+            const result = await client.session.messages(input)
+            return {
+              items: result.data.map((item) => timelineItem(item.info, item.parts)),
+              older: result.response.headers.get("x-next-cursor") ?? undefined,
+            }
+          },
+          message: async (input) => {
+            if (!client.session.message) throw new Error("Message fixture is not configured")
+            const result = await client.session.message(input)
+            return timelineItem(result.data.info, result.data.parts)
+          },
+        },
+      },
+    }),
+    options,
+  )
 
 const session = (id: string, parentID?: string): Session => ({
   id,
@@ -67,6 +111,81 @@ const singleResponse = (info: Message, parts: Part[] = []): SingleMessageRespons
 
 const deferredResponse = () => Promise.withResolvers<MessageResponse>()
 
+function timelineItem(info: Message, parts: Part[]): TimelineItem {
+  const content = parts.map(toTimelineContent)
+  if (info.role === "user")
+    return {
+      type: "user",
+      id: info.id,
+      sessionID: info.sessionID,
+      created: info.time.created,
+      content,
+      agent: info.agent,
+      model: { id: info.model.modelID, providerID: info.model.providerID, variant: info.model.variant },
+      format: info.format,
+      summary: info.summary,
+      system: info.system,
+      tools: info.tools,
+    }
+  return {
+    type: "assistant",
+    id: info.id,
+    sessionID: info.sessionID,
+    parentID: info.parentID,
+    created: info.time.created,
+    completed: info.time.completed,
+    content,
+    agent: info.agent,
+    model: { id: info.modelID, providerID: info.providerID, variant: info.variant },
+    tokens: info.tokens,
+    error: info.error,
+    mode: info.mode,
+    path: info.path,
+    cost: info.cost,
+    structured: info.structured,
+    finish: info.finish,
+    summary: info.summary,
+  }
+}
+
+function toTimelineContent(part: Part): TimelineContent {
+  if (part.type === "agent")
+    return {
+      type: part.type,
+      id: part.id,
+      name: part.name,
+      source: part.source && { text: part.source.value, start: part.source.start, end: part.source.end },
+    }
+  if (part.type === "subtask")
+    return {
+      ...part,
+      model: part.model && { id: part.model.modelID, providerID: part.model.providerID },
+    }
+  if (part.type !== "file") return { ...part }
+  return {
+    type: "file",
+    id: part.id,
+    uri: part.url,
+    name: part.filename,
+    mime: part.mime,
+    source:
+      part.source?.type === "resource"
+        ? {
+            type: part.source.type,
+            clientName: part.source.clientName,
+            uri: part.source.uri,
+            text: { text: part.source.text.value, start: part.source.text.start, end: part.source.text.end },
+          }
+        : part.source && {
+            type: part.source.type,
+            path: part.source.path,
+            name: part.source.type === "symbol" ? part.source.name : undefined,
+            kind: part.source.type === "symbol" ? part.source.kind : undefined,
+            text: { text: part.source.text.value, start: part.source.text.start, end: part.source.text.end },
+          },
+  }
+}
+
 function messageClient(...responses: Array<MessageResponse | Promise<MessageResponse>>) {
   let index = 0
   const requests: unknown[] = []
@@ -81,7 +200,7 @@ function messageClient(...responses: Array<MessageResponse | Promise<MessageResp
         return responses[index++]
       },
     },
-  } as unknown as OpencodeClient
+  } as FixtureClient
   return Object.assign(client, {
     requests,
     requested(count: number) {
@@ -114,7 +233,7 @@ function rootMessageClient(
         return roots[rootIndex++]
       },
     },
-  } as unknown as OpencodeClient
+  } as FixtureClient
   return Object.assign(client, {
     requests,
     rootRequests,
@@ -152,7 +271,7 @@ function setup(sessions: Record<string, Session>) {
       },
       diff: async () => ({ data: [] }),
     },
-  } as unknown as OpencodeClient
+  } as FixtureClient
   return { get, messages, store: createServerSession(client) }
 }
 
@@ -163,7 +282,10 @@ describe("server session", () => {
     const result = await ctx.store.lineage.resolve("child")
 
     expect(result.root.id).toBe("root")
-    expect(ctx.get).toEqual([{ sessionID: "child" }, { sessionID: "root" }])
+    expect(ctx.get).toEqual([
+      { sessionID: "child", location: undefined },
+      { sessionID: "root", location: undefined },
+    ])
     expect(ctx.store.lineage.peek("child")).toEqual(result)
   })
 
@@ -194,7 +316,9 @@ describe("server session", () => {
     await store.sync("child")
 
     expect(client.requests).toEqual([{ sessionID: "child", limit: 2, before: undefined }])
-    expect(client.rootRequests).toEqual([{ sessionID: "child", messageID: user.id }])
+    expect(client.rootRequests).toEqual([
+      { sessionID: "child", messageID: user.id, location: { directory: "/repo" } },
+    ])
     expect(store.data.message.child).toEqual([user, ...assistants])
     expect(store.history.more("child")).toBe(true)
   })
@@ -278,7 +402,9 @@ describe("server session", () => {
 
     await store.sync("child", { force: true })
 
-    expect(client.rootRequests).toEqual([{ sessionID: "child", messageID: stale.id }])
+    expect(client.rootRequests).toEqual([
+      { sessionID: "child", messageID: stale.id, location: { directory: "/repo" } },
+    ])
     expect(store.data.message.child).toEqual([fresh, assistant])
     expect(store.data.part[stale.id]).toEqual([freshPart])
   })
@@ -300,7 +426,9 @@ describe("server session", () => {
 
     await store.sync("child", { force: true })
 
-    expect(client.rootRequests).toEqual([{ sessionID: "child", messageID: stale.id }])
+    expect(client.rootRequests).toEqual([
+      { sessionID: "child", messageID: stale.id, location: { directory: "/repo" } },
+    ])
     expect(store.data.message.child).toEqual([fresh, assistant])
     expect(store.data.part[stale.id]).toEqual([refreshed, pending])
   })
@@ -634,6 +762,21 @@ describe("server session", () => {
     await loading
 
     expect(store.data.part[message.id]).toEqual([fetched])
+  })
+
+  test("reconciles semantically identical native parts to optimistic IDs without duplicates", async () => {
+    const pending = deferredResponse()
+    const message = userMessage("message")
+    const optimistic = textPart(message.id, { id: "optimistic", text: "hello" })
+    const fetched = textPart(message.id, { id: "message:text", text: "hello" })
+    const store = createServerSession(messageClient(pending.promise))
+    const loading = store.sync("child")
+
+    store.optimistic.add({ sessionID: "child", message, parts: [optimistic] })
+    pending.resolve(response([{ info: message, parts: [fetched] }]))
+    await loading
+
+    expect(store.data.part[message.id]).toEqual([optimistic])
   })
 
   test("rolls back only unconfirmed optimistic parts", async () => {
@@ -1207,6 +1350,7 @@ describe("server session", () => {
 
     await store.history.loadMore("child")
 
+    guard.active = false
     expect(store.data.message.child).toEqual([older, latest])
   })
 
@@ -1428,5 +1572,29 @@ describe("server session", () => {
 
     expect(ctx.store.data.message.active?.map((message) => message.id)).toEqual(["message"])
     expect(ctx.store.data.session_status["session-0"]).toBeUndefined()
+  })
+
+  test("force-resyncs pinned sessions after a stream reconnect", async () => {
+    const first = userMessage("first")
+    const second = userMessage("second", { time: { created: 2 } })
+    let messages = response([{ info: first, parts: [] }])
+    let requests = 0
+    const store = createServerSession({
+      session: {
+        get: async () => ({ data: session("child") }),
+        messages: async () => {
+          requests++
+          return messages
+        },
+      },
+    })
+    store.pin("child")
+    await store.sync("child")
+    messages = response([{ info: first, parts: [] }, { info: second, parts: [] }])
+
+    await store.resync()
+
+    expect(requests).toBe(2)
+    expect(store.data.message.child.map((message) => message.id)).toEqual(["first", "second"])
   })
 })

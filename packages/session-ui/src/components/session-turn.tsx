@@ -1,11 +1,11 @@
-import {
+import type {
   AssistantMessage,
-  type FileDiffInfo,
   Message as MessageType,
   Part as PartType,
-  type UserMessage,
-} from "@opencode-ai/sdk/v2/client"
-import type { SessionStatus } from "@opencode-ai/sdk/v2"
+  SessionStatus,
+  SnapshotFileDiff as FileDiffInfo,
+  UserMessage,
+} from "../context/data-types"
 import { useData } from "../context"
 import { useFileComponent } from "@opencode-ai/ui/context/file"
 
@@ -436,7 +436,7 @@ export function SessionTurn(
                   </Show>
                 </div>
               </Show>
-              <SessionRetry status={status()} show={active()} />
+              <SessionRetry status={((value) => (value.type === "running" ? { type: "busy" as const } : value))(status())} show={active()} />
               <Show when={edited() > 0 && !working()}>
                 <div
                   data-slot="session-turn-diffs"

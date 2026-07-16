@@ -1,8 +1,7 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test"
 import { createRoot, getOwner, type Owner } from "solid-js"
 import { createStore } from "solid-js/store"
-import type { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
-import type { State } from "./types"
+import type { ProviderStore, State } from "./types"
 import type { QueryOptionsApi } from "../server-sync"
 import { ServerScope } from "@/utils/server-scope"
 
@@ -16,7 +15,7 @@ const persist: typeof import("@/utils/persist").persisted = (_target, store) => 
 ]
 
 const child = () => createStore({} as State)
-const provider = { all: new Map(), connected: [], default: {} } satisfies NormalizedProviderListResponse
+const provider = { all: new Map(), connected: [], default: {} } satisfies ProviderStore
 
 const queryOptionsApi = {
   globalConfig: () => ({ queryKey: ["globalConfig"], queryFn: async () => ({}) }),

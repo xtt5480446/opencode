@@ -3,20 +3,25 @@ import { createEffect, createMemo, createRoot } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createServerProjects, RECENTLY_CLOSED_DISPLAY_LIMIT, ServerConnection, useServer } from "./server"
 import { pathKey } from "@/utils/path-key"
-import { useServerHealth } from "@/utils/server-health"
+import { useCheckServerHealth, useServerHealth } from "@/utils/server-health"
 import { createServerSdkContext } from "./server-sdk"
 import { createServerSyncContext } from "./server-sync"
 import { getOwner } from "solid-js/web"
 import { QueryClient } from "@tanstack/solid-query"
 import type { ServerScope } from "@/utils/server-scope"
+import { usePlatform } from "./platform"
+import { backendIdentity, createBackendForServer } from "./backend-client"
 
 export const { use: useGlobal, provider: GlobalProvider } = createSimpleContext({
   name: "Global",
   init: () => {
     const server = useServer()
+    const platform = usePlatform()
+    const checkServerHealth = useCheckServerHealth()
     const serverHealth = useServerHealth(
       () => server.list,
       () => true,
+      checkServerHealth,
     )
     const [store, setStore] = createStore({
       settings: {
@@ -37,7 +42,7 @@ export const { use: useGlobal, provider: GlobalProvider } = createSimpleContext(
 
     const serverCtxs = new Map<
       ServerConnection.Key,
-      { dispose: () => void; serverCtx: ReturnType<typeof createServerCtx> }
+      { dispose: () => void; identity: string; serverCtx: ReturnType<typeof createServerCtx> }
     >()
 
     const owner = getOwner()
@@ -45,10 +50,26 @@ export const { use: useGlobal, provider: GlobalProvider } = createSimpleContext(
     const ensureServerCtx = (conn: ServerConnection.Any) => {
       const key = ServerConnection.key(conn)
       const existing = serverCtxs.get(key)
-      if (existing) return existing.serverCtx
+      const identity = backendIdentity(conn)
+      if (existing?.identity === identity) return existing.serverCtx
+      if (existing) {
+        existing.dispose()
+        serverCtxs.delete(key)
+      }
       const root = createRoot((dispose) => {
-        const serverCtx = createServerCtx(conn, server.scope(key), server.projects.forServer(key))
-        return { dispose, serverCtx }
+        const serverCtx = createServerCtx(
+          conn,
+          server.scope(key),
+          server.projects.forServer(key),
+          createBackendForServer({
+            server: conn,
+            browserUrl: location.href,
+            fetch: platform.fetch ?? globalThis.fetch,
+            eventFetch: eventStreamFetch(conn.http.url, platform.fetch),
+            health: checkServerHealth(conn.http),
+          }),
+        )
+        return { dispose, identity, serverCtx }
       }, owner as any)
       serverCtxs.set(key, root)
       return root.serverCtx
@@ -97,6 +118,7 @@ function createServerCtx(
   conn: ServerConnection.Any,
   scope: ServerScope,
   projects: ReturnType<typeof createServerProjects>,
+  backend: ReturnType<typeof createBackendForServer>,
 ) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -107,7 +129,7 @@ function createServerCtx(
       },
     },
   })
-  const sdk = createServerSdkContext(conn, scope)
+  const sdk = createServerSdkContext(conn, scope, backend)
   const sync = createServerSyncContext(sdk)
 
   function enrich(project: { worktree: string; expanded: boolean }) {
@@ -141,6 +163,7 @@ function createServerCtx(
     (conn?.type === "sidecar" && conn.variant === "base") || (conn?.type === "http" && isLocalHost(conn.http.url))
 
   return {
+    backend,
     queryClient,
     sdk,
     sync,
@@ -151,6 +174,18 @@ function createServerCtx(
       recentlyClosed: recentlyClosedList,
     },
   }
+}
+
+function eventStreamFetch(url: string, fetch?: typeof globalThis.fetch) {
+  if (!fetch) return globalThis.fetch
+  try {
+    const parsed = new URL(url)
+    const loopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1"
+    if (parsed.protocol === "http:" && !loopback) return fetch
+  } catch {
+    return globalThis.fetch
+  }
+  return globalThis.fetch
 }
 
 export type ServerCtx = ReturnType<typeof createServerCtx>

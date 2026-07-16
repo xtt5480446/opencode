@@ -1,4 +1,3 @@
-import type { Message, Session } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@/utils/toast"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { Binary } from "@opencode-ai/core/util/binary"
@@ -11,7 +10,7 @@ import { useLayout } from "@/context/layout"
 import { useLocal, type ModelSelection } from "@/context/local"
 import { usePermission } from "@/context/permission"
 import { type ContextItem, type ImageAttachmentPart, type Prompt, type usePrompt } from "@/context/prompt"
-import { useSDK, type DirectorySDK } from "@/context/sdk"
+import { useSDK } from "@/context/sdk"
 import { useSync, type DirectorySync } from "@/context/sync"
 import { Identifier } from "@/utils/id"
 import { Worktree as WorktreeState } from "@/utils/worktree"
@@ -20,6 +19,7 @@ import { setCursorPosition } from "./editor-dom"
 import { formatServerError } from "@/utils/server-errors"
 import { ScopedKey } from "@/utils/server-scope"
 import { createPromptSubmissionState } from "./submission-state"
+import type { AppClient, AppMessage, AppSession } from "@/context/backend"
 
 type PendingPrompt = {
   abort: AbortController
@@ -39,13 +39,14 @@ export type FollowupDraft = {
 }
 
 type FollowupSendInput = {
-  client: DirectorySDK["client"]
+  backend: Promise<AppClient>
   serverSync: ServerSync
   sync: DirectorySync
   draft: FollowupDraft
   messageID?: string
   optimisticBusy?: boolean
   before?: () => Promise<boolean> | boolean
+  commitRevert?: boolean
 }
 
 const draftText = (prompt: Prompt) => prompt.map((part) => ("content" in part ? part.content : "")).join("")
@@ -53,6 +54,8 @@ const draftText = (prompt: Prompt) => prompt.map((part) => ("content" in part ? 
 const draftImages = (prompt: Prompt) => prompt.filter((part): part is ImageAttachmentPart => part.type === "image")
 
 export async function sendFollowupDraft(input: FollowupSendInput) {
+  const backend = await input.backend
+  const location = { directory: input.draft.sessionDirectory }
   const text = draftText(input.draft.prompt)
   const images = draftImages(input.draft.prompt)
   const setBusy = () => {
@@ -81,19 +84,26 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
         return false
       }
 
-      await input.client.session.command({
+      if (input.commitRevert)
+        await backend.capabilities.sessionExtrasV2?.commitRevert({ location, sessionID: input.draft.sessionID })
+      const capability = backend.capabilities.sessionActionsV1
+      if (!capability) throw new Error("Commands are not supported by this server")
+      await capability.command({
+        location,
         sessionID: input.draft.sessionID,
+        id: input.messageID,
         command: cmd,
         arguments: tail.join(" "),
         agent: input.draft.agent,
-        model: `${input.draft.model.providerID}/${input.draft.model.modelID}`,
-        variant: input.draft.variant,
-        parts: images.map((attachment) => ({
-          id: Identifier.ascending("part"),
-          type: "file" as const,
+        model: {
+          providerID: input.draft.model.providerID,
+          id: input.draft.model.modelID,
+          variant: input.draft.variant,
+        },
+        files: images.map((attachment) => ({
+          uri: attachment.dataUrl,
           mime: attachment.mime,
-          url: attachment.dataUrl,
-          filename: attachment.filename,
+          name: attachment.filename,
         })),
       })
       return true
@@ -114,7 +124,7 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
     sessionDirectory: input.draft.sessionDirectory,
   })
 
-  const message: Message = {
+  const message: AppMessage = {
     id: messageID,
     sessionID: input.draft.sessionID,
     role: "user",
@@ -152,13 +162,22 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
       return false
     }
 
-    await input.client.session.promptAsync({
+    if (input.commitRevert)
+      await backend.capabilities.sessionExtrasV2?.commitRevert({ location, sessionID: input.draft.sessionID })
+    await backend.common.sessions.prompt({
+      location,
       sessionID: input.draft.sessionID,
-      agent: input.draft.agent,
-      model: input.draft.model,
-      messageID,
+      id: messageID,
+      text,
       parts: requestParts,
-      variant: input.draft.variant,
+      selection: {
+        agent: input.draft.agent,
+        model: {
+          providerID: input.draft.model.providerID,
+          id: input.draft.model.modelID,
+          variant: input.draft.variant,
+        },
+      },
     })
     return true
   } catch (err) {
@@ -172,7 +191,7 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
 
 type PromptSubmitInput = {
   prompt: ReturnType<typeof usePrompt>
-  info: Accessor<{ id: string } | undefined>
+  info: Accessor<{ id: string; revert?: { messageID: string } } | undefined>
   imageAttachments: Accessor<ImageAttachmentPart[]>
   commentCount: Accessor<number>
   autoAccept: Accessor<boolean>
@@ -233,9 +252,9 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       return Promise.resolve()
     }
     return sdk()
-      .client.session.abort({
-        sessionID,
-      })
+      .backend.then((client) =>
+        client.common.sessions.interrupt({ location: { directory: sdk().directory }, sessionID }),
+      )
       .catch(() => {})
   }
 
@@ -262,10 +281,10 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
   }
 
-  const seed = (dir: string, info: Session) => {
+  const seed = (dir: string, info: AppSession) => {
     serverSync().session.remember(info)
     const [, setStore] = serverSync().child(dir)
-    setStore("session", (list: Session[]) => {
+    setStore("session", (list: AppSession[]) => {
       const result = Binary.search(list, info.id, (item) => item.id)
       const next = [...list]
       if (result.found) {
@@ -313,19 +332,18 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     input.resetHistoryNavigation()
 
     const projectDirectory = sdk().directory
+    const backend = await sdk().backend
     const isNewSession = !params.id
     const shouldAutoAccept = isNewSession && input.autoAccept()
     const worktreeSelection = input.newSessionWorktree?.() || "main"
 
     let sessionDirectory = projectDirectory
-    let client = sdk().client
 
     if (isNewSession) {
       if (worktreeSelection === "create") {
-        const createdWorktree = await client.worktree
-          .create({ directory: projectDirectory })
-          .then((x) => x.data)
-          .catch((err) => {
+        const createdWorktree = await backend.capabilities.worktreesV1
+          ?.create({ location: { directory: projectDirectory } })
+          .catch((err: unknown) => {
             showToast({
               title: language.t("prompt.toast.worktreeCreateFailed.title"),
               description: errorMessage(err),
@@ -349,10 +367,6 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       }
 
       if (sessionDirectory !== projectDirectory) {
-        client = sdk().createClient({
-          directory: sessionDirectory,
-          throwOnError: true,
-        })
         serverSync().child(sessionDirectory)
       }
 
@@ -361,9 +375,10 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
     let session = input.info()
     if (!session && isNewSession) {
-      const created = await client.session
-        .create()
-        .then((x) => x.data ?? undefined)
+      const created = await sdk()
+        .backend.then((backend) =>
+          backend.common.sessions.create({ location: { directory: sessionDirectory } }),
+        )
         .catch((err) => {
           showToast({
             title: language.t("prompt.toast.sessionCreateFailed.title"),
@@ -447,12 +462,22 @@ export function createPromptSubmit(input: PromptSubmitInput) {
 
     if (mode === "shell") {
       clearInput()
-      client.session
-        .shell({
-          sessionID: session.id,
-          agent,
-          model,
-          command: text,
+      sdk()
+        .backend.then(async (backend) => {
+          const location = { directory: sessionDirectory }
+          if (session.revert)
+            await backend.capabilities.sessionExtrasV2?.commitRevert({ location, sessionID: session.id })
+          if (backend.capabilities.sessionExtrasV1)
+            return backend.capabilities.sessionExtrasV1.shell({
+              location,
+              sessionID: session.id,
+              agent,
+              model: { id: model.modelID, providerID: model.providerID },
+              command: text,
+            })
+          if (backend.capabilities.sessionExtrasV2?.shell)
+            return backend.capabilities.sessionExtrasV2.shell({ location, sessionID: session.id, command: text })
+          throw new Error("Shell prompts are not supported by this server")
         })
         .catch((err) => {
           showToast({
@@ -470,21 +495,27 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       const customCommand = sync().data.command.find((c) => c.name === commandName)
       if (customCommand) {
         clearInput()
-        client.session
-          .command({
-            sessionID: session.id,
-            command: commandName,
-            arguments: args.join(" "),
-            agent,
-            model: `${model.providerID}/${model.modelID}`,
-            variant,
-            parts: images.map((attachment) => ({
-              id: Identifier.ascending("part"),
-              type: "file" as const,
-              mime: attachment.mime,
-              url: attachment.dataUrl,
-              filename: attachment.filename,
-            })),
+        sdk()
+          .backend.then(async (backend) => {
+            const location = { directory: sessionDirectory }
+            if (session.revert)
+              await backend.capabilities.sessionExtrasV2?.commitRevert({ location, sessionID: session.id })
+            const capability = backend.capabilities.sessionActionsV1
+            if (!capability) throw new Error("Commands are not supported by this server")
+            return capability.command({
+              location,
+              sessionID: session.id,
+              id: Identifier.ascending("message"),
+              command: commandName,
+              arguments: args.join(" "),
+              agent,
+              model: { id: model.modelID, providerID: model.providerID, variant },
+              files: images.map((attachment) => ({
+                uri: attachment.dataUrl,
+                mime: attachment.mime,
+                name: attachment.filename,
+              })),
+            })
           })
           .catch((err) => {
             showToast({
@@ -570,12 +601,13 @@ export function createPromptSubmit(input: PromptSubmitInput) {
     }
 
     void sendFollowupDraft({
-      client,
+      backend: sdk().backend,
       sync: sync(),
       serverSync: serverSync(),
       draft,
       messageID,
       optimisticBusy: sessionDirectory === projectDirectory,
+      commitRevert: !!session.revert,
       before: waitForWorktree,
     }).catch((err) => {
       pending.delete(pendingKey(session.id))

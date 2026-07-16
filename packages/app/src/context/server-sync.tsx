@@ -1,11 +1,11 @@
 import type {
-  Config,
-  McpResource,
-  OpencodeClient,
-  Path,
-  Project,
-  ProviderAuthResponse,
-} from "@opencode-ai/sdk/v2/client"
+  AppClient,
+  AppConfig,
+  AppMcpResource,
+  AppPathInfo,
+  AppProject,
+  AppProviderAuthResponse,
+} from "./backend"
 import { showToast } from "@/utils/toast"
 import { getFilename } from "@opencode-ai/core/util/path"
 import { type Accessor, batch, createMemo, getOwner, onCleanup, onMount, untrack } from "solid-js"
@@ -28,7 +28,7 @@ import { createChildStoreManager } from "./global-sync/child-store"
 import { applyDirectoryEvent, applyGlobalEvent } from "./global-sync/event-reducer"
 import { estimateRootSessionTotal, loadRootSessionsWithFallback } from "./global-sync/session-load"
 import { trimSessions } from "./global-sync/session-trim"
-import type { ProjectMeta } from "./global-sync/types"
+import type { ProjectMeta, ProviderStore, StoreConfig } from "./global-sync/types"
 import { SESSION_RECENT_LIMIT } from "./global-sync/types"
 import { formatServerError } from "@/utils/server-errors"
 import { queryOptions, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/solid-query"
@@ -37,7 +37,6 @@ import { directoryKey } from "./global-sync/utils"
 import { PathKey } from "@/utils/path-key"
 import { createDirSyncContext } from "./directory-sync"
 import { createSimpleContext } from "@opencode-ai/ui/context"
-import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
 import { createRefCountMap } from "@/utils/refcount"
 import { useGlobal } from "./global"
 import { ServerConnection, useServer } from "./server"
@@ -47,53 +46,63 @@ import { persisted } from "@/utils/persist"
 import { toggleMcp } from "./global-sync/mcp"
 import { createServerSession } from "./server-session"
 
+type GlobalConfigUpdate = Pick<AppConfig, "shell" | "provider" | "disabledProviders">
+
 type GlobalStore = {
   ready: boolean
   error?: InitError
-  path: Path
-  project: Project[]
-  provider: NormalizedProviderListResponse
-  provider_auth: ProviderAuthResponse
-  config: Config
+  path: AppPathInfo
+  project: AppProject[]
+  provider: ProviderStore
+  provider_auth: AppProviderAuthResponse
+  config: StoreConfig
   reload: undefined | "pending" | "complete"
 }
 
-export const loadMcpQuery = (scope: ServerScope, directory: string, sdk: OpencodeClient) =>
+export const loadMcpQuery = (scope: ServerScope, directory: string, backend: Promise<AppClient>) =>
   queryOptions({
     queryKey: [scope, directory, "mcp"] as const,
-    queryFn: () => sdk.mcp.status().then((r) => r.data ?? {}),
+    queryFn: () =>
+      backend
+        .then((client) => client.capabilities.mcp?.list({ location: { directory } }) ?? [])
+        .then((servers) => Object.fromEntries(servers.map((server) => [server.name, server.status]))),
   })
 
-export const loadMcpResourcesQuery = (scope: ServerScope, directory: string, sdk: OpencodeClient) =>
-  queryOptions<Record<string, McpResource>>({
+export const loadMcpResourcesQuery = (scope: ServerScope, directory: string, backend: Promise<AppClient>) =>
+  queryOptions<Record<string, AppMcpResource>>({
     queryKey: [scope, directory, "mcpResources"] as const,
-    queryFn: () => sdk.experimental.resource.list().then((r) => r.data ?? {}),
+    queryFn: () =>
+      backend
+        .then(
+          (client) =>
+            client.capabilities.mcp?.resources({ location: { directory } }) ?? { resources: [], templates: [] },
+        )
+        .then((result) =>
+          Object.fromEntries(result.resources.map((resource) => [`${resource.server}:${resource.uri}`, resource])),
+        ),
     placeholderData: {},
   })
 
-export const loadLspQuery = (scope: ServerScope, directory: string, sdk: OpencodeClient) =>
+export const loadLspQuery = (scope: ServerScope, directory: string, backend: Promise<AppClient>) =>
   queryOptions({
     queryKey: [scope, directory, "lsp"] as const,
-    queryFn: () => sdk.lsp.status().then((r) => r.data ?? []),
+    queryFn: async () => {
+      const client = await backend
+      return client.capabilities.lsp?.status({ location: { directory } }) ?? []
+    },
   })
 
-function makeQueryOptionsApi(
-  scope: ServerScope,
-  serverSDK: () => OpencodeClient,
-  sdkFor: (dir: PathKey) => OpencodeClient,
-) {
+function makeQueryOptionsApi(scope: ServerScope, backend: Promise<AppClient>) {
   return {
-    globalConfig: () => loadGlobalConfigQuery(scope, serverSDK()),
-    projects: () => loadProjectsQuery(scope, serverSDK()),
-    providers: (directory: PathKey | null) =>
-      loadProvidersQuery(scope, directory, directory === null ? serverSDK() : sdkFor(directory)),
-    path: (directory: PathKey | null) =>
-      loadPathQuery(scope, directory, directory === null ? serverSDK() : sdkFor(directory)),
-    agents: (directory: PathKey) => loadAgentsQuery(scope, directory, sdkFor(directory)),
-    references: (directory: PathKey) => loadReferencesQuery(scope, directory, sdkFor(directory)),
-    mcp: (directory: PathKey) => loadMcpQuery(scope, directory, sdkFor(directory)),
-    mcpResources: (directory: PathKey) => loadMcpResourcesQuery(scope, directory, sdkFor(directory)),
-    lsp: (directory: PathKey) => loadLspQuery(scope, directory, sdkFor(directory)),
+    globalConfig: () => loadGlobalConfigQuery(scope, backend),
+    projects: () => loadProjectsQuery(scope, backend),
+    providers: (directory: PathKey | null) => loadProvidersQuery(scope, directory, backend),
+    path: (directory: PathKey | null) => loadPathQuery(scope, directory, backend),
+    agents: (directory: PathKey) => loadAgentsQuery(scope, directory, backend),
+    references: (directory: PathKey) => loadReferencesQuery(scope, directory, backend),
+    mcp: (directory: PathKey) => loadMcpQuery(scope, directory, backend),
+    mcpResources: (directory: PathKey) => loadMcpResourcesQuery(scope, directory, backend),
+    lsp: (directory: PathKey) => loadLspQuery(scope, directory, backend),
     sessions: (directory: PathKey) => ({ queryKey: [scope, directory, "loadSessions"] as const }),
   }
 }
@@ -104,24 +113,11 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   const owner = getOwner()
   if (!owner) throw new Error("ServerSync must be created within owner")
 
-  const sdkCache = new Map<string, OpencodeClient>()
   const booting = new Map<string, Promise<void>>()
   const sessionLoads = new Map<string, Promise<void>>()
   const sessionMeta = new Map<string, { limit: number }>()
 
-  const sdkFor = (directory: string) => {
-    const key = directoryKey(directory)
-    const cached = sdkCache.get(key)
-    if (cached) return cached
-    const sdk = serverSDK.createClient({
-      directory,
-      throwOnError: true,
-    })
-    sdkCache.set(key, sdk)
-    return sdk
-  }
-
-  const queryOptionsApi = makeQueryOptionsApi(serverSDK.scope, () => serverSDK.client, sdkFor)
+  const queryOptionsApi = makeQueryOptionsApi(serverSDK.scope, serverSDK.backend)
 
   const [configQuery, providerQuery, pathQuery] = useQueries(() => ({
     queries: [queryOptionsApi.globalConfig(), queryOptionsApi.providers(null), queryOptionsApi.path(null)],
@@ -164,13 +160,13 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     if (eventTimer !== undefined) clearTimeout(eventTimer)
   })
 
-  const setProjects = (next: Project[] | ((draft: Project[]) => Project[])) => {
+  const setProjects = (next: AppProject[] | ((draft: AppProject[]) => AppProject[])) => {
     setGlobalStore("project", next)
   }
 
   const setBootStore = ((...input: unknown[]) => {
     if (input[0] === "project" && Array.isArray(input[1])) {
-      setProjects(input[1] as Project[])
+      setProjects(input[1] as AppProject[])
       return input[1]
     }
     return (setGlobalStore as (...args: unknown[]) => unknown)(...input)
@@ -180,7 +176,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     queryKey: [serverSDK.scope, "bootstrap"],
     queryFn: async () => {
       await bootstrapGlobal({
-        serverSDK: serverSDK.client,
+        backend: serverSDK.backend,
         scope: serverSDK.scope,
         requestFailedTitle: language.t("common.requestFailed"),
         translate: language.t,
@@ -195,7 +191,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
 
   const set = ((...input: unknown[]) => {
     if (input[0] === "project" && (Array.isArray(input[1]) || typeof input[1] === "function")) {
-      setProjects(input[1] as Project[] | ((draft: Project[]) => Project[]))
+      setProjects(input[1] as AppProject[] | ((draft: AppProject[]) => AppProject[]))
       return input[1]
     }
     return (setGlobalStore as (...args: unknown[]) => unknown)(...input)
@@ -210,7 +206,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     bootstrapInstance,
   })
 
-  const session = createServerSession(serverSDK.client)
+  const session = createServerSession(serverSDK.backend)
 
   const children = createChildStoreManager({
     owner,
@@ -223,9 +219,9 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     },
     onMcp: (directory, setStore) => {
       void retry(() =>
-        sdkFor(directory)
-          .command.list()
-          .then((x) => setStore("command", x.data ?? [])),
+        serverSDK.backend
+          .then((client) => client.common.commands.list({ location: { directory } }))
+          .then((commands) => setStore("command", reconcile(commands))),
       ).catch((err) => {
         showToast({
           variant: "error",
@@ -238,7 +234,6 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
       const key = directoryKey(directory)
       queue.clear(key)
       sessionMeta.delete(key)
-      sdkCache.delete(key)
       clearProviderRev(serverSDK.scope, key)
     },
     translate: language.t,
@@ -280,7 +275,12 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
           loadRootSessionsWithFallback({
             directory,
             limit,
-            list: (query) => serverSDK.client.session.list(query),
+            list: (query) =>
+              serverSDK.backend.then((client) =>
+                client.common.sessions
+                  .list({ location: { directory: query.directory }, roots: query.roots, limit: query.limit })
+                  .then((page) => ({ data: [...page.items] })),
+              ),
           })
             .then((x) => {
               const nonArchived = (x.data ?? [])
@@ -339,7 +339,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
       const child = children.ensureChild(directory)
       const cache = children.vcsCache.get(key)
       if (!cache) return
-      const sdk = sdkFor(directory)
+      const backend = await serverSDK.backend
       await bootstrapDirectory({
         directory,
         scope: serverSDK.scope,
@@ -350,7 +350,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
           project: globalStore.project,
           provider: globalStore.provider,
         },
-        sdk,
+        backend,
         store: child[0],
         setStore: child[1],
         vcsCache: cache,
@@ -375,7 +375,14 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     const event = e.details
     const recent = bootingRoot || Date.now() - bootedAt < 1500
 
-    session.apply(event)
+    session.apply(event, directory === "global" ? undefined : { directory })
+
+    if (event.type === "server.connected") void session.resync()
+    if (event.type === "provider.updated") {
+      if (!recent) bootstrap.refetch()
+      if (directory !== "global") queue.push(directory)
+      return
+    }
 
     if (directory === "global") {
       applyGlobalEvent({
@@ -387,7 +394,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
         },
         setGlobalProject: setProjects,
       })
-      if (event.type === "server.connected" || event.type === "global.disposed") {
+      if (event.type === "server.connected" || event.type === "server.disposed") {
         if (recent) return
         for (const directory of Object.keys(children.children)) {
           queue.push(directory)
@@ -457,7 +464,16 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   }
 
   const updateConfigMutation = useMutation(() => ({
-    mutationFn: (config: Config) => serverSDK.client.global.config.update({ config }),
+    mutationFn: async (config: GlobalConfigUpdate) => {
+      const backend = await serverSDK.backend
+      const capability = backend.capabilities.configuration
+      if (!capability) throw new Error("Server does not support configuration updates")
+      await capability.updateGlobal({
+        shell: config.shell,
+        provider: config.provider,
+        disabledProviders: config.disabledProviders,
+      })
+    },
     onSuccess: () => {
       bootstrap.refetch()
       // Invalidate all provider queries so newly configured custom providers
@@ -484,23 +500,32 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     queryOptions: queryOptionsApi,
     // bootstrap,
     updateConfig: updateConfigMutation.mutateAsync,
+    refreshProviders: async () => {
+      await queryClient.invalidateQueries({
+        predicate: (query) => query.queryKey[0] === serverSDK.scope && query.queryKey[2] === "providers",
+      })
+      await bootstrap.refetch()
+    },
     project: projectApi,
     session,
     mcp: {
       toggle: async (directory: string, name: string) => {
         const key = directoryKey(directory)
-        const sdk = sdkFor(key)
+        const backend = await serverSDK.backend
+        const capability = backend.capabilities.mcpControl
+        if (!capability) throw new Error("Server does not support MCP controls")
+        const location = { location: { directory: key } }
         const status = children.child(key, { bootstrap: false })[0].mcp[name].status
         await toggleMcp({
           status,
           connect: async () => {
-            await sdk.mcp.connect({ name })
+            await capability.connect({ ...location, name })
           },
           disconnect: async () => {
-            await sdk.mcp.disconnect({ name })
+            await capability.disconnect({ ...location, name })
           },
           authenticate: async () => {
-            await sdk.mcp.auth.authenticate({ name })
+            await capability.authenticate({ ...location, name })
           },
           refresh: async () => {
             await queryClient.refetchQueries(queryOptionsApi.mcp(key))

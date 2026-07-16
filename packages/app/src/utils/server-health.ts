@@ -1,10 +1,14 @@
 import { usePlatform } from "@/context/platform"
 import { ServerConnection } from "@/context/server"
-import { createSdkForServer } from "./server"
+import { createV1RawClient, createV2RawClient } from "@/context/backend-client"
 import { Accessor, createEffect, onCleanup } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 
-export type ServerHealth = { healthy: boolean; version?: string }
+export type ServerHealth = {
+  healthy: boolean
+  version: "v1" | "v2"
+  installationVersion?: string
+}
 
 interface CheckServerHealthOptions {
   timeoutMs?: number
@@ -64,7 +68,38 @@ function retryable(error: unknown, signal?: AbortSignal) {
   if (!(error instanceof Error)) return false
   if (error.name === "AbortError" || error.name === "TimeoutError") return false
   if (error instanceof TypeError) return true
+  if (error !== null && typeof error === "object" && "reason" in error && error.reason === "Transport") return true
+  if (error.cause !== null && typeof error.cause === "object" && "status" in error.cause) {
+    const status = error.cause.status
+    if (status === 408 || status === 429 || (typeof status === "number" && status >= 500)) return true
+  }
   return /network|fetch|econnreset|econnrefused|enotfound|timedout/i.test(error.message)
+}
+
+function unsupported(error: unknown) {
+  if (error === null || typeof error !== "object" || !("cause" in error)) return false
+  const cause = error.cause
+  if (cause === null || typeof cause !== "object" || !("status" in cause)) return false
+  return cause.status === 404 || cause.status === 405
+}
+
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal) {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"))
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new DOMException("Aborted", "AbortError"))
+    signal.addEventListener("abort", abort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", abort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener("abort", abort)
+        reject(error)
+      },
+    )
+  })
 }
 
 export async function checkServerHealth(
@@ -77,20 +112,33 @@ export async function checkServerHealth(
   const retryCount = opts?.retryCount ?? defaultRetryCount
   const retryDelayMs = opts?.retryDelayMs ?? defaultRetryDelayMs
   const next = (count: number, error: unknown) => {
-    if (count >= retryCount || !retryable(error, signal)) return Promise.resolve({ healthy: false } as const)
+    if (count >= retryCount || !retryable(error, signal))
+      return Promise.resolve({ healthy: false, version: "v2" } as const)
     return wait(retryDelayMs * (count + 1), signal)
       .then(() => attempt(count + 1))
-      .catch(() => ({ healthy: false }))
+      .catch(() => ({ healthy: false, version: "v2" as const }))
   }
-  const attempt = (count: number): Promise<ServerHealth> =>
-    createSdkForServer({
-      server,
-      fetch,
-      signal,
-    })
-      .global.health()
-      .then((x) => (x.error ? next(count, x.error) : { healthy: x.data?.healthy === true, version: x.data?.version }))
-      .catch((error) => next(count, error))
+  const attempt = async (count: number): Promise<ServerHealth> => {
+    try {
+      const result = await abortable(createV2RawClient(server, fetch).health.get({ signal }), signal)
+      return { healthy: result.healthy === true, version: "v2" }
+    } catch (error) {
+      if (!unsupported(error)) return next(count, error)
+    }
+
+    try {
+      const result = await abortable(createV1RawClient(server, fetch).global.health({ signal }), signal)
+      if (result.error) return { healthy: false, version: "v1" }
+      return {
+        healthy: result.data?.healthy === true,
+        version: "v1",
+        installationVersion: result.data?.version,
+      }
+    } catch (error) {
+      if (signal?.aborted) return { healthy: false, version: "v1" }
+      return { healthy: false, version: "v1" }
+    }
+  }
   return attempt(0).finally(() => timeout?.clear?.())
 }
 
@@ -116,8 +164,11 @@ export function useCheckServerHealth() {
   }
 }
 
-export const useServerHealth = (servers: Accessor<ServerConnection.Any[]>, enabled: Accessor<boolean>) => {
-  const checkServerHealth = useCheckServerHealth()
+export const useServerHealth = (
+  servers: Accessor<ServerConnection.Any[]>,
+  enabled: Accessor<boolean>,
+  checkServerHealth = useCheckServerHealth(),
+) => {
   const [status, setStatus] = createStore({} as Record<ServerConnection.Key, ServerHealth | undefined>)
 
   createEffect(() => {

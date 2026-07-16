@@ -1,4 +1,10 @@
-import type { Project, UserMessage, VcsFileDiff } from "@opencode-ai/sdk/v2"
+import type {
+  AppFilePart as FilePart,
+  AppProject as Project,
+  AppUserMessage as UserMessage,
+  AppVcsFileDiff as VcsFileDiff,
+} from "@/context/backend"
+import { getFilename } from "@opencode-ai/core/util/path"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { createQuery, skipToken, useMutation, useQueryClient } from "@tanstack/solid-query"
 import {
@@ -640,7 +646,7 @@ export default function Page() {
     const project = sync().project
     const vcs = sync().data.vcs
     if (project?.vcs === "git") list.push("git")
-    if (project?.vcs === "git" && vcs?.branch && vcs?.default_branch && vcs.branch !== vcs.default_branch) {
+    if (project?.vcs === "git" && vcs?.branch && vcs?.defaultBranch && vcs.branch !== vcs.defaultBranch) {
       list.push("branch")
     }
     list.push("turn")
@@ -658,7 +664,7 @@ export default function Page() {
   })
   const vcsKey = createMemo(
     () =>
-      ["session-vcs", sdk().directory, sync().data.vcs?.branch ?? "", sync().data.vcs?.default_branch ?? ""] as const,
+      ["session-vcs", sdk().directory, sync().data.vcs?.branch ?? "", sync().data.vcs?.defaultBranch ?? ""] as const,
   )
   const vcsQuery = createQuery(() => {
     const mode = vcsMode()
@@ -670,8 +676,13 @@ export default function Page() {
       queryFn: mode
         ? () =>
             sdk()
-              .client.vcs.diff({ mode })
-              .then((result) => list(result.data))
+              .backend.then((client) =>
+                client.capabilities.vcs?.diff({
+                  location: { directory: sdk().directory },
+                  mode: mode === "git" ? "working" : mode,
+                }) ?? [],
+              )
+              .then(list)
               .catch((error) => {
                 console.debug("[session-review] failed to load vcs diff", { mode, error })
                 return []
@@ -717,9 +728,13 @@ export default function Page() {
           staleTime: Number.POSITIVE_INFINITY,
           retry: 2,
           queryFn: () =>
-            sdk()
-              .client.vcs.diff({ mode, directory: scope, context })
-              .then((result) => result.data ?? []),
+            sdk().backend.then((client) =>
+              client.capabilities.vcs?.diff({
+                location: { directory: scope },
+                mode: mode === "git" ? "working" : mode,
+                context,
+              }) ?? [],
+            ),
         })
         .then((diffs) => diffs.find((diff) => diff.file === file))
 
@@ -823,10 +838,13 @@ export default function Page() {
   }
 
   const gitMutation = useMutation(() => ({
-    mutationFn: () => sdk().client.project.initGit(),
+    mutationFn: async () => {
+      const editing = (await sdk().backend).capabilities.projectEditing
+      if (!editing) throw new Error("Git initialization is not supported by this server")
+      return editing.initGit({ location: { directory: sdk().directory } })
+    },
     onSuccess: (x) => {
-      if (!x.data) return
-      upsert(x.data)
+      upsert(x as Project)
     },
     onError: (err) => {
       showToast({
@@ -891,13 +909,7 @@ export default function Page() {
   )
 
   const stopVcs = sdk().event.listen((evt) => {
-    if (evt.details.type !== "filesystem.changed") return
-    const props =
-      typeof evt.details.properties === "object" && evt.details.properties
-        ? (evt.details.properties as Record<string, unknown>)
-        : undefined
-    const file = typeof props?.file === "string" ? props.file : undefined
-    if (!file || file.startsWith(".git/")) return
+    if (evt.details.type !== "file.changed" || evt.details.path.startsWith(".git/")) return
     refreshVcs()
   })
   onCleanup(stopVcs)
@@ -1659,8 +1671,6 @@ export default function Page() {
     })
   }
 
-  const merge = (next: NonNullable<ReturnType<typeof info>>, target = sync()) => target.session.remember(next)
-
   const roll = (sessionID: string, next: NonNullable<ReturnType<typeof info>>["revert"], target = sync()) => {
     const session = target.session.get(sessionID)
     if (!session) return
@@ -1691,11 +1701,12 @@ export default function Page() {
       setFollowup("failed", input.sessionID, undefined)
 
       const ok = await sendFollowupDraft({
-        client: sdk().client,
+        backend: sdk().backend,
         sync: sync(),
         serverSync: serverSync(),
         draft: item,
         optimisticBusy: item.sessionDirectory === sdk().directory,
+        commitRevert: !!sync().session.get(input.sessionID)?.revert,
       }).catch((err) => {
         setFollowup("failed", input.sessionID, input.id)
         fail(err)
@@ -1787,13 +1798,14 @@ export default function Page() {
   const halt = (sessionID: string) =>
     busy(sessionID)
       ? sdk()
-          .client.session.abort({ sessionID })
+          .backend.then((client) =>
+            client.common.sessions.interrupt({ location: { directory: sdk().directory }, sessionID }),
+          )
           .catch(() => {})
       : Promise.resolve()
 
   const revertMutation = useMutation(() => ({
     mutationFn: async (input: { sessionID: string; messageID: string }) => {
-      const client = sdk().client
       const target = sync()
       const last = target.session.get(input.sessionID)?.revert
       const value = draft(input.messageID)
@@ -1803,10 +1815,18 @@ export default function Page() {
           roll(input.sessionID, { messageID: input.messageID }, target)
           prompt.set(value)
         },
-        request: () => halt(input.sessionID).then(() => client.session.revert(input)),
-        complete: (result) => {
-          if (result.data) merge(result.data, target)
-        },
+        request: () =>
+          halt(input.sessionID).then(() =>
+            sdk().backend.then((client) => {
+              const value = { ...input, location: { directory: sdk().directory } }
+              if (client.capabilities.sessionExtrasV1)
+                return client.capabilities.sessionExtrasV1.revert(value).then(() => undefined)
+              if (client.capabilities.sessionExtrasV2)
+                return client.capabilities.sessionExtrasV2.stageRevert(value).then(() => undefined)
+              throw new Error("Session revert is not supported by this server")
+            }),
+          ),
+        complete: () => undefined,
         rollback: () => roll(input.sessionID, last, target),
         fail,
       })
@@ -1818,7 +1838,6 @@ export default function Page() {
       const sessionID = params.id
       if (!sessionID) return
 
-      const client = sdk().client
       const target = sync()
       const next = userMessages().find((item) => item.id > id)
       const last = target.session.get(sessionID)?.revert
@@ -1835,11 +1854,26 @@ export default function Page() {
         },
         request: () =>
           !next
-            ? halt(sessionID).then(() => client.session.unrevert({ sessionID }))
-            : halt(sessionID).then(() => client.session.revert({ sessionID, messageID: next.id })),
-        complete: (result) => {
-          if (result.data) merge(result.data, target)
-        },
+            ? halt(sessionID).then(() =>
+                sdk().backend.then((client) => {
+                  const value = { location: { directory: sdk().directory }, sessionID }
+                  if (client.capabilities.sessionExtrasV1)
+                    return client.capabilities.sessionExtrasV1.clearRevert(value).then(() => undefined)
+                  if (client.capabilities.sessionExtrasV2) return client.capabilities.sessionExtrasV2.clearRevert(value)
+                  throw new Error("Session revert is not supported by this server")
+                }),
+              )
+            : halt(sessionID).then(() =>
+                sdk().backend.then((client) => {
+                  const value = { location: { directory: sdk().directory }, sessionID, messageID: next.id }
+                  if (client.capabilities.sessionExtrasV1)
+                    return client.capabilities.sessionExtrasV1.revert(value).then(() => undefined)
+                  if (client.capabilities.sessionExtrasV2)
+                    return client.capabilities.sessionExtrasV2.stageRevert(value).then(() => undefined)
+                  throw new Error("Session revert is not supported by this server")
+                }),
+              ),
+        complete: () => undefined,
         rollback: () => roll(sessionID, last, target),
         fail,
       })

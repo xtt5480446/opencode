@@ -1,6 +1,9 @@
 import { createMemo } from "solid-js"
 import { createStore } from "solid-js/store"
-import type { PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2"
+import type {
+  AppPermissionRequest as PermissionRequest,
+  AppQuestionRequest as QuestionRequest,
+} from "@/context/backend"
 import { useParams } from "@solidjs/router"
 import { showToast } from "@/utils/toast"
 import { useLanguage } from "@/context/language"
@@ -51,7 +54,14 @@ export function createSessionComposerController() {
 
     setStore("responding", perm.id)
     sdk()
-      .client.permission.respond({ sessionID: perm.sessionID, permissionID: perm.id, response })
+      .backend.then((client) =>
+        client.common.permissions.reply({
+          sessionID: perm.sessionID,
+          requestID: perm.id,
+          reply: response,
+          location: { directory: sdk().directory },
+        }),
+      )
       .catch((err: unknown) => {
         const description = err instanceof Error ? err.message : String(err)
         showToast({ title: language.t("common.requestFailed"), description })

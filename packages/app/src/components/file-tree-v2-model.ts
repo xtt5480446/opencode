@@ -1,4 +1,4 @@
-import type { FileNode } from "@opencode-ai/sdk/v2"
+import type { AppFileNode as FileNode } from "@/context/backend"
 
 export type FileTreeV2Model = {
   children: ReadonlyMap<string, readonly FileTreeV2Node[]>

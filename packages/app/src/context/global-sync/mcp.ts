@@ -1,7 +1,7 @@
-import type { McpStatus } from "@opencode-ai/sdk/v2/client"
+import type { AppMcpStatus } from "../backend"
 
 export async function toggleMcp(input: {
-  status: McpStatus["status"]
+  status: AppMcpStatus["status"]
   connect: () => Promise<void>
   disconnect: () => Promise<void>
   authenticate: () => Promise<void>
@@ -9,6 +9,7 @@ export async function toggleMcp(input: {
 }) {
   await {
     connected: input.disconnect,
+    pending: async () => {},
     needs_auth: input.authenticate,
     disabled: input.connect,
     failed: input.connect,

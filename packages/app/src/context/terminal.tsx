@@ -149,6 +149,7 @@ function createWorkspaceTerminalSession(
   scope: ServerScopeValue,
   legacySessionID?: string,
 ) {
+  const location = { directory: sdk.directory }
   const legacy = scope === ServerScope.local ? getLegacyTerminalStorageKeys(dir, legacySessionID) : []
 
   const [store, setStore, _, ready] = persisted(
@@ -198,23 +199,27 @@ function createWorkspaceTerminalSession(
     })
   }
 
-  const unsub = sdk.event.on("pty.exited", (event: { properties: { id: string } }) => {
-    removeExited(event.properties.id)
+  const unsub = sdk.event.on("pty.exited", (event) => {
+    if (event.type !== "pty.exited") return
+    removeExited(event.ptyID)
   })
   onCleanup(unsub)
 
-  const update = (client: DirectorySDK["client"], pty: Partial<LocalPTY> & { id: string }) => {
+  const update = (pty: Partial<LocalPTY> & { id: string }) => {
     const index = store.all.findIndex((x) => x.id === pty.id)
     const previous = index >= 0 ? store.all[index] : undefined
     if (index >= 0) {
       setStore("all", index, (item) => ({ ...item, ...pty }))
     }
-    client.pty
-      .update({
-        ptyID: pty.id,
-        title: pty.title,
-        size: pty.cols && pty.rows ? { rows: pty.rows, cols: pty.cols } : undefined,
-      })
+    sdk.backend
+      .then((client) =>
+        client.common.pty.update({
+          ptyID: pty.id,
+          title: pty.title,
+          size: pty.cols && pty.rows ? { rows: pty.rows, cols: pty.cols } : undefined,
+          location,
+        }),
+      )
       .catch((error: unknown) => {
         if (previous) {
           const currentIndex = store.all.findIndex((item) => item.id === pty.id)
@@ -224,26 +229,24 @@ function createWorkspaceTerminalSession(
       })
   }
 
-  const clone = async (client: DirectorySDK["client"], id: string) => {
+  const clone = async (id: string) => {
     const index = store.all.findIndex((x) => x.id === id)
     const pty = store.all[index]
     if (!pty) return
-    const next = await client.pty
-      .create({
-        title: pty.title,
-      })
+    const next = await sdk.backend
+      .then((client) => client.common.pty.create({ title: pty.title, location }))
       .catch((error: unknown) => {
         console.error("Failed to clone terminal", error)
         return undefined
       })
-    if (!next?.data) return
+    if (!next) return
 
     const active = store.active === pty.id
 
     batch(() => {
       setStore("all", index, {
-        id: next.data.id,
-        title: next.data.title ?? pty.title,
+        id: next.id,
+        title: next.title ?? pty.title,
         titleNumber: pty.titleNumber,
         buffer: undefined,
         cursor: undefined,
@@ -252,7 +255,7 @@ function createWorkspaceTerminalSession(
         cols: undefined,
       })
       if (active) {
-        setStore("active", next.data.id)
+        setStore("active", next.id)
       }
     })
   }
@@ -270,14 +273,14 @@ function createWorkspaceTerminalSession(
     new() {
       const nextNumber = pickNextTerminalNumber()
 
-      sdk.client.pty
-        .create({ title: defaultTitle(nextNumber) })
-        .then((pty: { data?: { id?: string; title?: string } }) => {
-          const id = pty.data?.id
+      sdk.backend
+        .then((client) => client.common.pty.create({ title: defaultTitle(nextNumber), location }))
+        .then((pty) => {
+          const id = pty.id
           if (!id) return
           const newTerminal = {
             id,
-            title: pty.data?.title ?? defaultTitle(nextNumber),
+            title: pty.title ?? defaultTitle(nextNumber),
             titleNumber: nextNumber,
           }
           setStore("all", store.all.length, newTerminal)
@@ -288,7 +291,7 @@ function createWorkspaceTerminalSession(
         })
     },
     update(pty: Partial<LocalPTY> & { id: string }) {
-      update(sdk.client, pty)
+      update(pty)
     },
     trim(id: string) {
       const index = store.all.findIndex((x) => x.id === id)
@@ -303,10 +306,9 @@ function createWorkspaceTerminalSession(
       })
     },
     async clone(id: string) {
-      await clone(sdk.client, id)
+      await clone(id)
     },
     bind() {
-      const client = sdk.client
       return {
         trim(id: string) {
           const index = store.all.findIndex((x) => x.id === id)
@@ -314,10 +316,10 @@ function createWorkspaceTerminalSession(
           setStore("all", index, (pty) => trimTerminal(pty))
         },
         update(pty: Partial<LocalPTY> & { id: string }) {
-          update(client, pty)
+          update(pty)
         },
         async clone(id: string) {
-          await clone(client, id)
+          await clone(id)
         },
       }
     },
@@ -353,9 +355,11 @@ function createWorkspaceTerminalSession(
         })
       }
 
-      await sdk.client.pty.remove({ ptyID: id }).catch((error: unknown) => {
-        console.error("Failed to close terminal", error)
-      })
+      await sdk.backend
+        .then((client) => client.common.pty.remove({ ptyID: id, location }))
+        .catch((error: unknown) => {
+          console.error("Failed to close terminal", error)
+        })
     },
     move(id: string, to: number) {
       const index = store.all.findIndex((f) => f.id === id)

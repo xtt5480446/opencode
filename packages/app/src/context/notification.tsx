@@ -9,7 +9,6 @@ import { useLanguage } from "@/context/language"
 import { useSettings } from "@/context/settings"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { decode64 } from "@/utils/base64"
-import { EventSessionError } from "@opencode-ai/sdk/v2"
 import { Persist, persisted } from "@/utils/persist"
 import { playSoundById } from "@/utils/sound"
 import { useGlobal } from "./global"
@@ -32,7 +31,7 @@ type TurnCompleteNotification = NotificationBase & {
 
 type ErrorNotification = NotificationBase & {
   type: "error"
-  error: EventSessionError["properties"]["error"]
+  error: unknown
 }
 
 export type Notification = TurnCompleteNotification | ErrorNotification
@@ -325,8 +324,7 @@ function createServerNotificationState(input: {
     return sessionID === activeSession
   }
 
-  const handleSessionIdle = (directory: string, event: { properties: { sessionID?: string } }, time: number) => {
-    const sessionID = event.properties.sessionID
+  const handleSessionIdle = (directory: string, sessionID: string, time: number) => {
     void lookup(directory, sessionID).then((session) => {
       if (meta.disposed) return
       if (!session) return
@@ -353,10 +351,10 @@ function createServerNotificationState(input: {
 
   const handleSessionError = (
     directory: string,
-    event: { properties: { sessionID?: string; error?: EventSessionError["properties"]["error"] } },
+    event: { sessionID?: string; error?: unknown },
     time: number,
   ) => {
-    const sessionID = event.properties.sessionID
+    const sessionID = event.sessionID
     void lookup(directory, sessionID).then((session) => {
       if (meta.disposed) return
       if (session?.parentID) return
@@ -365,7 +363,7 @@ function createServerNotificationState(input: {
         void playSoundById(settings.sounds.errors())
       }
 
-      const error = "error" in event.properties ? event.properties.error : undefined
+      const error = event.error
       append({
         directory,
         time,
@@ -386,12 +384,13 @@ function createServerNotificationState(input: {
 
   const unsub = serverSDK().event.listen((e) => {
     const event = e.details
-    if (event.type !== "session.idle" && event.type !== "session.error") return
+    if (event.type !== "session.activity" && event.type !== "session.error") return
 
     const directory = e.name
     const time = Date.now()
-    if (event.type === "session.idle") {
-      handleSessionIdle(directory, event, time)
+    if (event.type === "session.activity") {
+      if (event.activity.type !== "idle") return
+      handleSessionIdle(directory, event.sessionID, time)
       return
     }
     handleSessionError(directory, event, time)

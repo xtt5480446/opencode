@@ -1,15 +1,19 @@
 import { Binary } from "@opencode-ai/core/util/binary"
 import { retry } from "@opencode-ai/core/util/retry"
 import type {
-  Message,
-  OpencodeClient,
-  Part,
-  PermissionRequest,
-  QuestionRequest,
-  Session,
-  SessionStatus,
-  FileDiffInfo,
-} from "@opencode-ai/sdk/v2/client"
+  AppClient,
+  AppEvent,
+  AppFileDiff,
+  AppMessage,
+  AppPart,
+  AppPermissionRequest,
+  AppQuestionRequest,
+  AppSession,
+  AppTodo,
+  LocationRef,
+  SessionActivity,
+} from "./backend"
+import { timelineMessage, timelineParts } from "./backend"
 import { batch } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { diffs as cleanDiffs, message as cleanMessage } from "@/utils/diffs"
@@ -18,7 +22,7 @@ import { rootSession } from "@/utils/session-route"
 import { dropSessionCaches, pickSessionCacheEvictions, SESSION_CACHE_LIMIT } from "./global-sync/session-cache"
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
-const cmpMessage = (a: Message, b: Message) => a.time.created - b.time.created || cmp(a.id, b.id)
+const cmpMessage = (a: AppMessage, b: AppMessage) => a.time.created - b.time.created || cmp(a.id, b.id)
 const SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
 const initialMessagePageSize = 2
 const historyMessagePageSize = 200
@@ -26,15 +30,15 @@ const sessionInfoLimit = 2_048
 const emptyIDs: ReadonlySet<string> = new Set()
 
 type OptimisticItem = {
-  message: Message
-  parts: Part[]
-  confirmedParts?: Part[]
+  message: AppMessage
+  parts: AppPart[]
+  confirmedParts?: AppPart[]
   confirmedMessage?: boolean
 }
 
 type MessagePage = {
-  session: Message[]
-  part: { id: string; part: Part[] }[]
+  session: AppMessage[]
+  part: { id: string; part: AppPart[] }[]
   cursor?: string
   complete: boolean
 }
@@ -59,22 +63,31 @@ type MessageLoadBaseline = Pick<
 >
 
 function mergeOptimisticPage(page: MessagePage, items: OptimisticItem[]) {
-  if (items.length === 0) return { ...page, observed: [] as { messageID: string; parts: Part[] }[] }
+  if (items.length === 0) return { ...page, observed: [] as { messageID: string; parts: AppPart[] }[] }
   const session = [...page.session]
   const part = new Map(page.part.map((item) => [item.id, item.part]))
-  const observed: { messageID: string; parts: Part[] }[] = []
+  const observed: { messageID: string; parts: AppPart[] }[] = []
   for (const item of items) {
     const result = Binary.search(session, item.message.id, (message) => message.id)
     if (!result.found) session.splice(result.index, 0, item.message)
-    const current = part.get(item.message.id)
-    const confirmed = result.found
-      ? item.parts.filter((part) => Binary.search(current ?? [], part.id, (value) => value.id).found)
+    const current = part.get(item.message.id) ?? []
+    const matched = result.found
+      ? item.parts.flatMap((optimistic) => {
+          const fetched = current.find((value) => value.id === optimistic.id || samePromptPart(value, optimistic))
+          return fetched ? [{ optimistic, fetched }] : []
+        })
       : []
+    const confirmed = matched.map((value) => value.optimistic)
     if (result.found) observed.push({ messageID: item.message.id, parts: confirmed })
     part.set(
       item.message.id,
       merge(
-        result.found ? (current ?? []) : merge(item.confirmedParts ?? [], current ?? []),
+        result.found
+          ? current.map((value) => {
+              const match = matched.find((item) => item.fetched.id === value.id)
+              return match ? { ...value, id: match.optimistic.id } : value
+            })
+          : merge(item.confirmedParts ?? [], current),
         item.parts.filter((part) => !confirmed.includes(part)),
       ),
     )
@@ -85,6 +98,14 @@ function mergeOptimisticPage(page: MessagePage, items: OptimisticItem[]) {
     part: [...part.entries()].sort((a, b) => cmp(a[0], b[0])).map(([id, parts]) => ({ id, part: parts })),
     observed,
   }
+}
+
+function samePromptPart(a: AppPart, b: AppPart) {
+  if (a.type !== b.type) return false
+  if (a.type === "text" && b.type === "text") return a.text === b.text
+  if (a.type === "file" && b.type === "file") return a.url === b.url && a.filename === b.filename && a.mime === b.mime
+  if (a.type === "agent" && b.type === "agent") return a.name === b.name
+  return false
 }
 
 function runInflight(map: Map<string, Promise<void>>, key: string, task: () => Promise<void>) {
@@ -134,21 +155,22 @@ function reconcileFetched<T extends { id: string }>(
   return [...result.values()].sort((a, b) => cmp(a.id, b.id))
 }
 
-export function createServerSession(client: OpencodeClient, options?: { retry?: typeof retry }) {
+export function createServerSession(backend: Promise<AppClient> | AppClient, options?: { retry?: typeof retry }) {
   const [data, setData] = createStore({
-    info: {} as Record<string, Session | undefined>,
-    session_status: {} as Record<string, SessionStatus>,
-    session_diff: {} as Record<string, FileDiffInfo[]>,
-    permission: {} as Record<string, PermissionRequest[]>,
-    question: {} as Record<string, QuestionRequest[]>,
-    message: {} as Record<string, Message[]>,
-    part: {} as Record<string, Part[]>,
+    info: {} as Record<string, AppSession | undefined>,
+    session_status: {} as Record<string, SessionActivity>,
+    session_diff: {} as Record<string, AppFileDiff[]>,
+    todo: {} as Record<string, AppTodo[]>,
+    permission: {} as Record<string, AppPermissionRequest[]>,
+    question: {} as Record<string, AppQuestionRequest[]>,
+    message: {} as Record<string, AppMessage[]>,
+    part: {} as Record<string, AppPart[]>,
     part_text_accum_delta: {} as Record<string, string>,
     session_working(id: string) {
       return (this.session_status[id]?.type ?? "idle") !== "idle"
     },
   })
-  const requests = new Map<string, Promise<Session>>()
+  const requests = new Map<string, Promise<AppSession>>()
   const inflight = new Map<string, Promise<void>>()
   const inflightDiff = new Map<string, Promise<void>>()
   const optimistic = new Map<string, Map<string, OptimisticItem>>()
@@ -158,7 +180,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
   const removedMessages = new Map<string, Set<string>>()
   const deltaBases = new Map<string, { base: string; sessionID: string }>()
   const deleteMessageParts = (
-    cache: { part: Record<string, Part[] | undefined>; part_text_accum_delta: Record<string, string | undefined> },
+    cache: { part: Record<string, AppPart[] | undefined>; part_text_accum_delta: Record<string, string | undefined> },
     messageID: string,
   ) => {
     for (const part of cache.part[messageID] ?? []) {
@@ -186,7 +208,15 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
     at: {} as Record<string, number | undefined>,
   })
 
-  const remember = (session: Session) => {
+  const locations = new Map<string, LocationRef>()
+  const location = (sessionID: string) => {
+    const session = data.info[sessionID]
+    return session?.location ?? locations.get(sessionID) ?? (session?.directory ? { directory: session.directory } : undefined)
+  }
+
+  const remember = (session: AppSession) => {
+    if (session.location) locations.set(session.id, session.location)
+    if (session.parentID && session.location) locations.set(session.parentID, session.location)
     setData("info", session.id, reconcile(session))
     infoSeen.delete(session.id)
     infoSeen.add(session.id)
@@ -236,11 +266,13 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
     const pending = requests.get(sessionID)
     if (pending) return pending
     const active = generation(sessionID)
-    const request = client.session.get({ sessionID }).then((result) => {
-      if (!result.data) throw sessionNotFoundError(sessionID)
-      if (generations.get(sessionID) !== active) return result.data
-      return remember(result.data)
-    })
+    const request = Promise.resolve(backend)
+      .then((client) => client.common.sessions.get({ sessionID, location: location(sessionID) }))
+      .then((result) => {
+        if (!result) throw sessionNotFoundError(sessionID)
+        if (generations.get(sessionID) !== active) return result
+        return remember(result)
+      })
     requests.set(sessionID, request)
     const cleanup = () => {
       if (requests.get(sessionID) === request) requests.delete(sessionID)
@@ -297,7 +329,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
     items.set(messageID, { ...item, parts, confirmedParts, confirmedMessage: true })
   }
 
-  const confirmOptimisticPart = (sessionID: string, messageID: string, part: Part) => {
+  const confirmOptimisticPart = (sessionID: string, messageID: string, part: AppPart) => {
     const items = optimistic.get(sessionID)
     const item = items?.get(messageID)
     if (!items || !item) return
@@ -314,7 +346,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
     })
   }
 
-  const confirmOptimistic = (sessionID: string, messageID: string, confirmedParts: Part[]) => {
+  const confirmOptimistic = (sessionID: string, messageID: string, confirmedParts: AppPart[]) => {
     const items = optimistic.get(sessionID)
     const item = items?.get(messageID)
     if (!items || !item) return
@@ -461,35 +493,38 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
     )
 
   const fetchMessages = async (sessionID: string, limit: number, before?: string, onAttempt?: () => void) => {
-    const response = await (options?.retry ?? retry)(() => {
+    const response = await (options?.retry ?? retry)(async () => {
       onAttempt?.()
-      return client.session.messages({ sessionID, limit, before })
+      return (await backend).common.sessions.history({ sessionID, limit, cursor: before, location: location(sessionID) })
     })
-    const items = (response.data ?? []).filter((item) => !!item?.info?.id)
+    const items = response.items
+      .map((item) => ({ message: timelineMessage(item), parts: timelineParts(item) }))
+      .filter((item): item is { message: AppMessage; parts: AppPart[] } => !!item.message)
     return {
-      session: items.map((item) => cleanMessage(item.info)).sort((a, b) => cmp(a.id, b.id)),
+      session: items.map((item) => cleanMessage(item.message)).sort((a, b) => cmp(a.id, b.id)),
       part: items.map((item) => ({
-        id: item.info.id,
-        part: item.parts.filter((part) => !!part?.id).sort((a, b) => cmp(a.id, b.id)),
+        id: item.message.id,
+        part: item.parts.sort((a, b) => cmp(a.id, b.id)),
       })),
-      cursor: response.response.headers.get("x-next-cursor") ?? undefined,
-      complete: !response.response.headers.get("x-next-cursor"),
+      cursor: response.older,
+      complete: !response.older,
     }
   }
 
   const fetchMessage = async (sessionID: string, messageID: string, onAttempt?: () => void) => {
-    const response = await (options?.retry ?? retry)(() => {
+    const response = await (options?.retry ?? retry)(async () => {
       onAttempt?.()
-      return client.session.message({ sessionID, messageID })
+      return (await backend).common.sessions.message({ sessionID, messageID, location: location(sessionID) })
     })
-    if (!response.data?.info?.id) throw new Error(`Message not found: ${messageID}`)
+    const message = timelineMessage(response)
+    if (!message) throw new Error(`Message not found: ${messageID}`)
     return {
-      message: cleanMessage(response.data.info),
-      parts: response.data.parts.filter((part) => !!part?.id).sort((a, b) => cmp(a.id, b.id)),
+      message: cleanMessage(message),
+      parts: timelineParts(response).sort((a, b) => cmp(a.id, b.id)),
     }
   }
 
-  const replaceMessages = (sessionID: string, messages: Message[]) => {
+  const replaceMessages = (sessionID: string, messages: AppMessage[]) => {
     const messageIDs = new Set(messages.map((message) => message.id))
     const dropped = (data.message[sessionID] ?? []).filter((message) => !messageIDs.has(message.id))
     setData("message", sessionID, reconcile(messages, { key: "id" }))
@@ -559,7 +594,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
     sessionID: string,
     page: MessagePage,
     load: MessageLoadState | undefined,
-    preserveUnfetched: boolean | ((message: Message) => boolean),
+    preserveUnfetched: boolean | ((message: AppMessage) => boolean),
     cleanupOrphans: boolean,
   ) => {
     const merged = mergeOptimisticPage(page, [...(optimistic.get(sessionID)?.values() ?? [])])
@@ -609,7 +644,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
     let applied = false
     try {
       const page = await fetchMessages(sessionID, limit, before, () => resetMessageLoad(sessionID, load))
-      const first = page.session.reduce<Message | undefined>(
+      const first = page.session.reduce<AppMessage | undefined>(
         (oldest, message) => (!oldest || cmpMessage(message, oldest) < 0 ? message : oldest),
         undefined,
       )
@@ -630,7 +665,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
         const parentIDs = [
           ...new Set(
             page.session.flatMap((message) =>
-              message.role === "assistant" && !users.has(message.parentID) ? [message.parentID] : [],
+              message.role === "assistant" && message.parentID && !users.has(message.parentID) ? [message.parentID] : [],
             ),
           ),
         ]
@@ -659,7 +694,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
               ),
             }
       const preserveUnfetched =
-        mode === "prepend" || (!result.complete && (!first || ((message: Message) => cmpMessage(message, first) < 0)))
+        mode === "prepend" || (!result.complete && (!first || ((message: AppMessage) => cmpMessage(message, first) < 0)))
       applyMessagePage(
         sessionID,
         result,
@@ -682,7 +717,11 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
     }
   }
 
-  const sync = (sessionID: string, options?: { force?: boolean; messageLimit?: number }) => {
+  const sync = (
+    sessionID: string,
+    options?: { force?: boolean; messageLimit?: number; location?: LocationRef },
+  ) => {
+    if (options?.location) locations.set(sessionID, options.location)
     touch(sessionID)
     return runInflight(inflight, sessionID, async () => {
       const cached = data.message[sessionID] !== undefined && meta.limit[sessionID] !== undefined
@@ -729,7 +768,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
       return properties.part.sessionID
   }
 
-  const apply = (event: { type: string; properties?: unknown }) => {
+  const applyLegacy = (event: { type: string; properties?: unknown }) => {
     const eventID = eventSessionID(event)
     if (eventID) {
       touch(eventID)
@@ -743,16 +782,16 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
     }
     switch (event.type) {
       case "session.created":
-        remember((event.properties as { info: Session }).info)
+        remember((event.properties as { info: AppSession }).info)
         return
       case "session.updated": {
-        const info = (event.properties as { info: Session }).info
+        const info = (event.properties as { info: AppSession }).info
         remember(info)
         if (info.time.archived) evict([info.id])
         return
       }
       case "session.deleted": {
-        const sessionID = (event.properties as { info: Session }).info.id
+        const sessionID = (event.properties as { sessionID: string }).sessionID
         infoSeen.delete(sessionID)
         setData(
           "info",
@@ -762,17 +801,22 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
         return
       }
       case "session.diff": {
-        const props = event.properties as { sessionID: string; diff: FileDiffInfo[] }
+        const props = event.properties as { sessionID: string; diff: AppFileDiff[] }
         setData("session_diff", props.sessionID, reconcile(cleanDiffs(props.diff), { key: "file" }))
         return
       }
+      case "todo.updated": {
+        const props = event.properties as { sessionID: string; todos: AppTodo[] }
+        setData("todo", props.sessionID, reconcile(props.todos, { key: "id" }))
+        return
+      }
       case "session.status": {
-        const props = event.properties as { sessionID: string; status: SessionStatus }
+        const props = event.properties as { sessionID: string; status: SessionActivity }
         setData("session_status", props.sessionID, reconcile(props.status))
         return
       }
       case "message.updated": {
-        const info = cleanMessage((event.properties as { info: Message }).info)
+        const info = cleanMessage((event.properties as { info: AppMessage }).info)
         const load = messageLoads.get(info.sessionID)
         load?.touchedMessages.add(info.id)
         load?.removedMessages.delete(info.id)
@@ -832,7 +876,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
         return
       }
       case "message.part.updated": {
-        const part = (event.properties as { part: Part }).part
+        const part = (event.properties as { part: AppPart }).part
         if (SKIP_PARTS.has(part.type)) return
         const messages = data.message[part.sessionID]
         const load = messageLoads.get(part.sessionID)
@@ -971,7 +1015,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
         return
       }
       case "permission.asked": {
-        const permission = event.properties as PermissionRequest
+        const permission = event.properties as AppPermissionRequest
         const permissions = data.permission[permission.sessionID]
         if (!permissions) {
           setData("permission", permission.sessionID, [permission])
@@ -1001,7 +1045,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
         return
       }
       case "question.asked": {
-        const question = event.properties as QuestionRequest
+        const question = event.properties as AppQuestionRequest
         const questions = data.question[question.sessionID]
         if (!questions) {
           setData("question", question.sessionID, [question])
@@ -1033,6 +1077,118 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
     }
   }
 
+  const apply = (event: AppEvent | { type: string; properties: unknown }, eventLocation?: LocationRef) => {
+    if ("properties" in event) {
+      applyLegacy(event)
+      return
+    }
+    const sessionID =
+      event.type === "session.created" || event.type === "session.updated"
+        ? event.session.id
+        : "sessionID" in event && typeof event.sessionID === "string"
+          ? event.sessionID
+          : event.type === "timeline.updated"
+            ? event.item.sessionID
+            : undefined
+    if (sessionID && eventLocation) locations.set(sessionID, eventLocation)
+    if (event.type === "session.created" || event.type === "session.updated") {
+      applyLegacy({ type: event.type, properties: { info: event.session } })
+      return
+    }
+    if (event.type === "session.deleted") {
+      applyLegacy({ type: event.type, properties: { sessionID: event.sessionID } })
+      return
+    }
+    if (event.type === "session.moved") {
+      const current = data.info[event.sessionID]
+      if (!current) return
+      remember({
+        ...current,
+        location: event.location,
+        directory: event.location.directory,
+        workspaceID: event.location.workspaceID,
+      })
+      return
+    }
+    if (event.type === "session.revert") {
+      const current = data.info[event.sessionID]
+      if (current) remember({ ...current, revert: event.revert })
+      return
+    }
+    if (event.type === "session.activity") {
+      applyLegacy({ type: "session.status", properties: { sessionID: event.sessionID, status: event.activity } })
+      if (event.item) apply({ type: "timeline.updated", item: event.item }, eventLocation)
+      return
+    }
+    if (event.type === "session.diff" || event.type === "todo.updated") {
+      applyLegacy({ type: event.type, properties: event })
+      return
+    }
+    if (event.type === "timeline.updated") {
+      const message = timelineMessage(event.item)
+      if (!message) return
+      applyLegacy({ type: "message.updated", properties: { info: message } })
+      timelineParts(event.item).forEach((part) =>
+        applyLegacy({ type: "message.part.updated", properties: { part } }),
+      )
+      return
+    }
+    if (event.type === "timeline.content.updated") {
+      const message = data.message[event.sessionID]?.find((item) => item.id === event.itemID)
+      if (!message) return
+      const part = timelineParts({
+        type: message.role,
+        id: message.id,
+        sessionID: message.sessionID,
+        created: message.time.created,
+        completed: message.role === "assistant" ? message.time.completed : undefined,
+        content: [event.content],
+      })[0]
+      if (part) applyLegacy({ type: "message.part.updated", properties: { part } })
+      return
+    }
+    if (event.type === "timeline.removed") {
+      applyLegacy({
+        type: "message.removed",
+        properties: { sessionID: event.sessionID, messageID: event.itemID },
+      })
+      return
+    }
+    if (event.type === "timeline.part.removed") {
+      applyLegacy({
+        type: "message.part.removed",
+        properties: {
+          sessionID: event.sessionID,
+          messageID: event.itemID,
+          partID: event.contentID,
+        },
+      })
+      return
+    }
+    if (event.type === "timeline.delta") {
+      applyLegacy({
+        type: "message.part.delta",
+        properties: {
+          sessionID: event.sessionID,
+          messageID: event.itemID,
+          partID: event.contentID,
+          field: event.field,
+          delta: event.delta,
+        },
+      })
+      return
+    }
+    if (event.type === "permission.requested") {
+      applyLegacy({ type: "permission.asked", properties: event.request })
+      return
+    }
+    if (event.type === "permission.replied" || event.type === "question.replied" || event.type === "question.rejected") {
+      applyLegacy({ type: event.type, properties: event })
+      return
+    }
+    if (event.type === "question.requested") applyLegacy({ type: "question.asked", properties: event.request })
+  }
+
   return {
     data,
     set: setData,
@@ -1059,7 +1215,7 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
       return Date.now() - (meta.at[sessionID] ?? 0) <= ttl
     },
     optimistic: {
-      add(input: { sessionID: string; message: Message; parts: Part[] }) {
+      add(input: { sessionID: string; message: AppMessage; parts: AppPart[] }) {
         const parts = input.parts
           .filter((part) => !!part?.id && !SKIP_PARTS.has(part.type))
           .sort((a, b) => cmp(a.id, b.id))
@@ -1122,9 +1278,14 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
       if (data.session_diff[sessionID] !== undefined && !options?.force) return Promise.resolve()
       return runInflight(inflightDiff, sessionID, () => {
         const active = generation(sessionID)
-        return retry(() => client.session.diff({ sessionID })).then((result) => {
+        return retry(async () => {
+          const client = await backend
+          const capability = client.capabilities.sessionExtrasV1 ?? client.capabilities.sessionExtrasV2
+          if (!capability?.diff) return []
+          return capability.diff({ sessionID, location: location(sessionID) })
+        }).then((result) => {
           if (generations.get(sessionID) !== active) return
-          setData("session_diff", sessionID, reconcile(cleanDiffs(result.data), { key: "file" }))
+          setData("session_diff", sessionID, reconcile(cleanDiffs(result), { key: "file" }))
         })
       })
     },
@@ -1154,6 +1315,14 @@ export function createServerSession(client: OpencodeClient, options?: { retry?: 
       const count = pinned.get(sessionID)
       if (!count || count === 1) pinned.delete(sessionID)
       if (count && count > 1) pinned.set(sessionID, count - 1)
+    },
+    async resync() {
+      const sessionIDs = new Set([
+        ...pinned.keys(),
+        ...optimistic.keys(),
+        ...Object.entries(data.session_status).flatMap(([sessionID, status]) => status.type === "idle" ? [] : [sessionID]),
+      ])
+      await Promise.all([...sessionIDs].map((sessionID) => sync(sessionID, { force: true })))
     },
     apply,
   }

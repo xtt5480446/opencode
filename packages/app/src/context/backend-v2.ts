@@ -36,6 +36,8 @@ import type {
   LocationRef,
   PendingSessionInput,
   PromptFile,
+  PromptInput,
+  PtyTransportConfig,
   RequestOptions,
   SessionActivity,
   SessionLogItem,
@@ -44,30 +46,43 @@ import type {
   TimelineItem,
 } from "./backend"
 
-export function createV2Backend(client: OpenCodeClient, defaultLocation?: LocationRef): AppClient {
+export function createV2Backend(
+  client: OpenCodeClient,
+  transportConfig: PtyTransportConfig,
+  defaultLocation?: LocationRef,
+  eventClient: OpenCodeClient = client,
+): AppClient {
   const request = (input?: RequestOptions) => ({ signal: input?.signal })
   const location = (input?: LocationInput) => toLocation(input?.location ?? defaultLocation)
-
-  const loadSession = async (sessionID: string, options?: RequestOptions) =>
-    toSession(await client.session.get({ sessionID }, request(options)))
-  const loadMessage = async (sessionID: string, messageID: string, options?: RequestOptions) =>
-    toTimelineItem(await client.session.message({ sessionID, messageID }, request(options)), sessionID)
+  const projectedContent = new Map<string, TimelineContent>()
+  const projectedItems = new Map<string, TimelineItem>()
+  const projectedSessions = new Map<string, AppSession>()
+  const projectedPrompts = new Map<string, { sessionID: string; content: TimelineContent[] }>()
+  const selections = new Map<string, { agent?: string; model?: { id: string; providerID: string; variant?: string } }>()
+  const sessionAdmissions = new Map<string, Promise<void>>()
+  const projectSession = (input: SessionInfo) => {
+    const result = toSession(input)
+    projectedSessions.set(result.id, result)
+    selections.set(result.id, { agent: input.agent, model: input.model })
+    return result
+  }
+  const loadSession = async (input: LocationInput & { sessionID: string }, options?: RequestOptions) =>
+    projectSession(await client.session.get({ sessionID: input.sessionID }, request(options)))
 
   return {
     version: "v2",
     common: {
       health: { get: (options) => client.health.get(request(options)) },
       projects: {
-        list: async (options) => (await client.project.list(request(options))).map(toProject),
-        current: (input, options) => client.project.current({ location: location(input) }, request(options)),
+        current: async (input, options) =>
+          (await client.location.get({ location: location(input) }, request(options))).project,
       },
       catalog: {
         providers: async (input, options) => {
           const params = { location: location(input) }
-          const [providers, models, selected] = await Promise.all([
+          const [providers, models] = await Promise.all([
             client.provider.list(params, request(options)),
             client.model.list(params, request(options)),
-            client.model.default(params, request(options)),
           ])
           return {
             providers: new Map(
@@ -76,6 +91,7 @@ export function createV2Backend(client: OpenCodeClient, defaultLocation?: Locati
                 {
                   id: provider.id,
                   name: provider.name,
+                  integrationID: provider.integrationID,
                   models: Object.fromEntries(
                     models.data
                       .filter((model) => model.providerID === provider.id && model.status !== "deprecated")
@@ -85,7 +101,7 @@ export function createV2Backend(client: OpenCodeClient, defaultLocation?: Locati
               ]),
             ),
             connected: providers.data.filter((provider) => !provider.disabled).map((provider) => provider.id),
-            defaults: selected.data ? { [selected.data.providerID]: selected.data.id } : {},
+            defaults: {},
           }
         },
         agents: async (input, options) =>
@@ -110,106 +126,157 @@ export function createV2Backend(client: OpenCodeClient, defaultLocation?: Locati
       },
       sessions: {
         list: async (input, options) => {
-          const result = await client.session.list(
-            {
-              workspace: input?.location?.workspaceID ?? defaultLocation?.workspaceID,
-              directory: input?.location?.directory ?? defaultLocation?.directory,
-              parentID: input?.roots ? null : undefined,
-              limit: input?.limit,
-              search: input?.search,
-              cursor: input?.cursor,
-            },
-            request(options),
-          )
+          const params = {
+            workspace: input?.location?.workspaceID ?? defaultLocation?.workspaceID,
+            directory: input?.location?.directory ?? defaultLocation?.directory,
+            search: input?.search,
+          }
+          const results = new Map<string, SessionInfo>()
+          const target = input?.limit ?? Number.POSITIVE_INFINITY
+          let cursor = input?.cursor
+          let newer: string | undefined
+          const cursors = new Set<string>()
+          do {
+            if (cursor) {
+              if (cursors.has(cursor)) break
+              cursors.add(cursor)
+            }
+            const result = await client.session.list(
+              { ...params, limit: input?.roots ? 1 : input?.limit, cursor },
+              request(options),
+            )
+            if (newer === undefined) newer = result.cursor.previous ?? undefined
+            result.data.filter((item) => !input?.roots || !item.parentID).forEach((item) => results.set(item.id, item))
+            cursor = result.cursor.next ?? undefined
+            if (!input?.roots || results.size >= target) break
+          } while (cursor)
           return {
-            items: result.data.map(toSession),
-            previous: result.cursor.previous ?? undefined,
-            next: result.cursor.next ?? undefined,
+            items: [...results.values()].slice(0, target).map(projectSession),
+            newer,
+            older: cursor,
           }
         },
         create: async (input, options) =>
-          toSession(
+          projectSession(
             await client.session.create(
               { location: input?.location ?? defaultLocation, agent: input?.agent, model: input?.model },
               request(options),
             ),
           ),
-        get: (input, options) => loadSession(input.sessionID, options),
-        remove: async (input, options) => {
-          await client.session.remove({ sessionID: input.sessionID }, request(options))
-        },
-        fork: async (input, options) =>
-          toSession(await client.session.fork({ sessionID: input.sessionID, messageID: input.messageID }, request(options))),
-        rename: async (input, options) => {
-          await client.session.rename({ sessionID: input.sessionID, title: input.title }, request(options))
-        },
+        get: loadSession,
         interrupt: async (input, options) => {
           await client.session.interrupt({ sessionID: input.sessionID }, request(options))
         },
-        activity: async (_input, options) => {
-          const result = await client.session.active(request(options))
-          return Object.fromEntries(Object.keys(result).map((sessionID) => [sessionID, { type: "running" } as const]))
-        },
+        activity: (_input, options) => client.session.active(request(options)),
         history: async (input, options) => {
           const result = await client.message.list(
             { sessionID: input.sessionID, limit: input.limit, cursor: input.cursor },
             request(options),
           )
           return {
-            items: result.data.map((item) => toTimelineItem(item, input.sessionID)),
-            previous: result.cursor.previous ?? undefined,
-            next: result.cursor.next ?? undefined,
+            items: result.data.map((item) =>
+              toTimelineItem(item, input.sessionID, undefined, projectedPrompts.get(item.id)?.content),
+            ),
+            newer: result.cursor.previous ?? undefined,
+            older: result.cursor.next ?? undefined,
           }
         },
-        message: (input, options) => loadMessage(input.sessionID, input.messageID, options),
-        prompt: async (input, options) => {
-          if (input.selection?.agent)
-            await client.session.switchAgent(
-              { sessionID: input.sessionID, agent: input.selection.agent },
-              request(options),
+        message: async (input, options) =>
+          toTimelineItem(
+            await client.session.message({ sessionID: input.sessionID, messageID: input.messageID }, request(options)),
+            input.sessionID,
+            undefined,
+            projectedPrompts.get(input.messageID)?.content,
+          ),
+        prompt: (input, options) => {
+          const previous = sessionAdmissions.get(input.sessionID) ?? Promise.resolve()
+          const admission = previous.catch(() => undefined).then(async () => {
+            const selected = selections.get(input.sessionID)
+            if (input.selection?.agent && input.selection.agent !== selected?.agent) {
+              await client.session.switchAgent(
+                { sessionID: input.sessionID, agent: input.selection.agent },
+                request(options),
+              )
+              selections.set(input.sessionID, { ...selected, agent: input.selection.agent })
+            }
+            const current = selections.get(input.sessionID)
+            if (input.selection?.model && !sameModel(input.selection.model, current?.model)) {
+              await client.session.switchModel(
+                { sessionID: input.sessionID, model: input.selection.model },
+                request(options),
+              )
+              selections.set(input.sessionID, { ...current, model: input.selection.model })
+            }
+            const parts = input.parts
+            if (parts) projectedPrompts.set(input.id, { sessionID: input.sessionID, content: toPromptContent(parts) })
+            const response = await transportConfig.fetch(
+              nativeSessionURL(transportConfig, input.sessionID, "/prompt"),
+              {
+                method: "POST",
+                signal: options?.signal,
+                headers: transportHeaders(transportConfig, false, true),
+                body: JSON.stringify({
+                  id: input.id,
+                  prompt: {
+                    text:
+                      parts
+                        ?.filter((part) => part.type === "text")
+                        .map((part) => part.text)
+                        .join("") ?? input.text,
+                    files:
+                      parts
+                        ?.filter((part) => part.type === "file")
+                        .map((file) => ({
+                          uri: file.url,
+                          mime: file.mime,
+                          name: file.filename,
+                          source: file.source && {
+                            start: file.source.text.start,
+                            end: file.source.text.end,
+                            text: file.source.text.value,
+                          },
+                        })) ?? input.files?.map(toPromptFile),
+                    agents:
+                      parts
+                        ?.filter((part) => part.type === "agent")
+                        .map((agent) => ({
+                          name: agent.name,
+                          source: agent.source && {
+                            start: agent.source.start,
+                            end: agent.source.end,
+                            text: agent.source.value,
+                          },
+                        })) ??
+                      input.agents?.map((agent) => ({
+                        name: agent.name,
+                        source:
+                          agent.start === undefined || agent.end === undefined || agent.text === undefined
+                            ? undefined
+                            : { start: agent.start, end: agent.end, text: agent.text },
+                      })),
+                  },
+                  delivery: input.delivery,
+                }),
+              },
             )
-          if (input.selection?.model)
-            await client.session.switchModel(
-              { sessionID: input.sessionID, model: input.selection.model },
-              request(options),
-            )
-          await client.session.prompt(
-            {
-              sessionID: input.sessionID,
-              id: input.id,
-              text: input.text,
-              files: input.files?.map(toPromptFile),
-              agents: input.agents?.map((agent) => ({
-                name: agent.name,
-                mention:
-                  agent.start === undefined || agent.end === undefined || agent.text === undefined
-                    ? undefined
-                    : { start: agent.start, end: agent.end, text: agent.text },
-              })),
-              delivery: input.delivery,
-            },
-            request(options),
-          )
-        },
-        command: async (input, options) => {
-          await client.session.command(
-            {
-              sessionID: input.sessionID,
-              id: input.id,
-              command: input.command,
-              arguments: input.arguments,
-              agent: input.agent,
-              model: input.model,
-              files: input.files?.map(toPromptFile),
-              delivery: input.delivery,
-            },
-            request(options),
-          )
+            if (response.ok) return
+            projectedPrompts.delete(input.id)
+            throw new Error(`Failed to submit prompt: ${response.status} ${response.statusText}`)
+          })
+          sessionAdmissions.set(input.sessionID, admission)
+          return admission.finally(() => {
+            if (sessionAdmissions.get(input.sessionID) === admission) sessionAdmissions.delete(input.sessionID)
+          })
         },
       },
       files: {
         list: async (input, options) =>
-          (await client.file.list({ location: location(input), path: input.path }, request(options))).data,
+          (await client.file.list({ location: location(input), path: input.path }, request(options))).data.map((item) => ({
+            ...item,
+            name: item.path.split(/[\\/]/).at(-1) ?? item.path,
+            absolute: item.path,
+            ignored: false,
+          })),
         find: async (input, options) =>
           (
             await client.file.find(
@@ -217,9 +284,19 @@ export function createV2Backend(client: OpenCodeClient, defaultLocation?: Locati
               request(options),
             )
           ).data,
-        read: async (input, options) => ({
-          bytes: await client.file.read({ location: location(input), path: input.path }, request(options)),
-        }),
+        read: async (input, options) => {
+          const response = await transportConfig.fetch(
+            nativeFileURL(transportConfig, input.path, input.location ?? defaultLocation),
+            { signal: options?.signal, headers: transportHeaders(transportConfig) },
+          )
+          if (!response.ok) throw new Error(`Failed to read file: ${response.status} ${response.statusText}`)
+          const mimeType = response.headers.get("content-type") ?? undefined
+          return {
+            bytes: new Uint8Array(await response.arrayBuffer()),
+            kind: mimeType?.startsWith("text/") ? "text" : "binary",
+            mimeType,
+          }
+        },
       },
       permissions: {
         pending: async (input, options) =>
@@ -237,18 +314,6 @@ export function createV2Backend(client: OpenCodeClient, defaultLocation?: Locati
         reject: async (input, options) => {
           await client.question.reject(input, request(options))
         },
-      },
-      vcs: {
-        status: async (input, options) =>
-          (await client.vcs.status({ location: location(input) }, request(options))).data,
-        diff: async (input, options) =>
-          (await client.vcs.diff({ ...input, location: location(input) }, request(options))).data.map(toFileDiff),
-      },
-      mcp: {
-        list: async (input, options) =>
-          (await client.mcp.list({ location: location(input) }, request(options))).data.map(toMcpServer),
-        resources: async (input, options) =>
-          (await client.mcp.resource.catalog({ location: location(input) }, request(options))).data,
       },
       pty: {
         list: async (input, options) =>
@@ -287,20 +352,50 @@ export function createV2Backend(client: OpenCodeClient, defaultLocation?: Locati
       events: {
         subscribe: (options) => ({
           async *[Symbol.asyncIterator]() {
-            for await (const input of client.event.subscribe(request(options))) {
+            for await (const input of eventClient.event.subscribe(request(options))) {
               yield {
                 location: input.location,
-                event: await toEvent(input, loadSession, loadMessage, options),
+                event: toEvent(input, projectedContent, projectedItems, projectedSessions, projectedPrompts),
               }
             }
           },
         }),
       },
-      disposeLocation: async (input, options) => {
-        await client.debug.location.evict({ location: location(input) }, request(options))
-      },
     },
     capabilities: {
+      ptyTransport: {
+        connectToken: async (input, options) => {
+          const response = await transportConfig.fetch(
+            nativePtyURL(transportConfig, input.ptyID, "/connect-token", input.location ?? defaultLocation),
+            {
+              method: "POST",
+              signal: options?.signal,
+              headers: transportHeaders(transportConfig, true),
+            },
+          )
+          const body = response.ok ? ((await response.json()) as { data?: { ticket?: string } }) : undefined
+          return { status: response.status, ticket: body?.data?.ticket }
+        },
+        exists: async (input, options) => {
+          const response = await transportConfig.fetch(
+            nativePtyURL(transportConfig, input.ptyID, "", input.location ?? defaultLocation),
+            { signal: options?.signal, headers: transportHeaders(transportConfig) },
+          )
+          return response.status !== 404
+        },
+        connectURL: (input) => {
+          const url = nativePtyURL(transportConfig, input.ptyID, "/connect", input.location)
+          url.searchParams.set("cursor", String(input.cursor))
+          url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
+          if (input.ticket) {
+            url.searchParams.set("ticket", input.ticket)
+            return url
+          }
+          if (!transportConfig.sameOrigin || transportConfig.password || transportConfig.authToken)
+            throw new Error("Native PTY connections require a ticket for cross-origin or authenticated access")
+          return url
+        },
+      },
       integrationsV2: {
         list: async (input, options) =>
           (await client.integration.list({ location: location(input) }, request(options))).data.map(toIntegration),
@@ -354,57 +449,27 @@ export function createV2Backend(client: OpenCodeClient, defaultLocation?: Locati
       sessionExtrasV2: {
         switchAgent: async (input, options) => {
           await client.session.switchAgent(input, request(options))
+          selections.set(input.sessionID, { ...selections.get(input.sessionID), agent: input.agent })
         },
         switchModel: async (input, options) => {
           await client.session.switchModel(input, request(options))
+          selections.set(input.sessionID, { ...selections.get(input.sessionID), model: input.model })
         },
-        move: async (input, options) => {
-          await client.session.move(
-            { sessionID: input.sessionID, destination: { directory: input.directory }, moveChanges: input.moveChanges },
-            request(options),
-          )
-        },
-        skill: async (input, options) => {
-          await client.session.skill(input, request(options))
-        },
-        synthetic: async (input, options) =>
-          toPending(
-            await client.session.synthetic(
-              { ...input, metadata: input.metadata && toClientRecord(input.metadata) },
-              request(options),
-            ),
-          ),
-        shell: async (input, options) => {
-          await client.session.shell(input, request(options))
-        },
-        compact: async (input, options) => toPending(await client.session.compact(input, request(options))),
         wait: async (input, options) => {
           await client.session.wait(input, request(options))
         },
         context: async (input, options) =>
           (await client.session.context(input, request(options))).map((item) => toTimelineItem(item, input.sessionID)),
-        pending: async (input, options) =>
-          (await client.session.pending.list(input, request(options))).map(toPending),
-        instructionEntries: (input, options) => client.session.instructions.entry.list(input, request(options)),
-        putInstructionEntry: async (input, options) => {
-          await client.session.instructions.entry.put({ ...input, value: toClientJson(input.value) }, request(options))
-        },
-        removeInstructionEntry: async (input, options) => {
-          await client.session.instructions.entry.remove(input, request(options))
-        },
         log: (input, options) => ({
           async *[Symbol.asyncIterator]() {
-            for await (const item of client.session.log(input, request(options))) {
+            for await (const item of nativeSessionEvents(transportConfig, input.sessionID, input.after, options)) {
               yield {
-                sequence: "durable" in item ? item.durable.seq : (item.seq ?? 0),
-                event: await toLogEvent(item, loadSession, loadMessage, options),
+                sequence: eventSequence(item),
+                event: toEvent(item, projectedContent, projectedItems, projectedSessions, projectedPrompts),
               } satisfies SessionLogItem
             }
           },
         }),
-        background: async (input, options) => {
-          await client.session.background(input, request(options))
-        },
         stageRevert: async (input, options) => {
           const result = await client.session.revert.stage(
             { sessionID: input.sessionID, messageID: input.messageID, files: input.files?.length ? true : undefined },
@@ -420,8 +485,6 @@ export function createV2Backend(client: OpenCodeClient, defaultLocation?: Locati
         },
       },
       projectCopiesV2: {
-        directories: (input, options) =>
-          client.project.directories({ projectID: input.projectID, location: location(input) }, request(options)),
         create: (input, options) => client.projectCopy.create({ ...input, location: location(input) }, request(options)),
         remove: async (input, options) => {
           await client.projectCopy.remove({ ...input, location: location(input) }, request(options))
@@ -430,97 +493,11 @@ export function createV2Backend(client: OpenCodeClient, defaultLocation?: Locati
           await client.projectCopy.refresh({ ...input, location: location(input) }, request(options))
         },
       },
-      formsV2: {
-        pending: async (input, options) =>
-          (await client.form.request.list({ location: location(input) }, request(options))).data.map(toForm),
-        list: async (input, options) => (await client.form.list(input, request(options))).map(toForm),
-        create: async (input, options) => {
-          if (input.fields.length === 0) throw new Error("A form requires at least one field")
-          const fields: FormCreateInput["fields"] = [
-            fromFormField(input.fields[0]),
-            ...input.fields.slice(1).map(fromFormField),
-          ]
-          return toForm(
-            await client.form.create(
-              { ...input, metadata: input.metadata && toClientRecord(input.metadata), fields },
-              request(options),
-            ),
-          )
-        },
-        get: async (input, options) => toForm(await client.form.get(input, request(options))),
-        state: (input, options) => client.form.state(input, request(options)),
-        reply: async (input, options) => {
-          await client.form.reply({ ...input, answer: { ...input.answer } }, request(options))
-        },
-        cancel: async (input, options) => {
-          await client.form.cancel(input, request(options))
-        },
-      },
       savedPermissionsV2: {
         list: (input, options) => client.permission.saved.list(input, request(options)),
         remove: async (input, options) => {
           await client.permission.saved.remove(input, request(options))
         },
-      },
-      shellsV2: {
-        list: async (input, options) =>
-          (await client.shell.list({ location: location(input) }, request(options))).data.map(toShell),
-        create: async (input, options) =>
-          toShell(
-            (
-              await client.shell.create(
-                {
-                  ...input,
-                  metadata: input.metadata && toClientRecord(input.metadata),
-                  location: location(input),
-                },
-                request(options),
-              )
-            ).data,
-          ),
-        get: async (input, options) =>
-          toShell((await client.shell.get({ id: input.id, location: location(input) }, request(options))).data),
-        setTimeout: async (input, options) =>
-          toShell(
-            (
-              await client.shell.timeout(
-                { id: input.id, timeout: input.timeout, location: location(input) },
-                request(options),
-              )
-            ).data,
-          ),
-        output: async (input, options) =>
-          (
-            await client.shell.output(
-              { id: input.id, cursor: input.cursor, limit: input.limit, location: location(input) },
-              request(options),
-            )
-          ).data,
-        remove: async (input, options) => {
-          await client.shell.remove({ id: input.id, location: location(input) }, request(options))
-        },
-      },
-      discoveryV2: {
-        server: (options) => client.server.get(request(options)),
-        location: (input, options) => client.location.get({ location: location(input) }, request(options)),
-        plugins: async (input, options) =>
-          (await client.plugin.list({ location: location(input) }, request(options))).data,
-        skills: async (input, options) => {
-          const result = await client.skill.list({ location: location(input) }, request(options))
-          return result.data.map((item) => ({
-            ...item,
-            location: { directory: item.location },
-          }))
-        },
-        models: async (input, options) =>
-          (await client.model.list({ location: location(input) }, request(options))).data.map(toModel),
-        defaultModel: async (input, options) => {
-          const result = await client.model.default({ location: location(input) }, request(options))
-          return result.data ? toModel(result.data) : null
-        },
-        generateText: async (input, options) =>
-          (await client.generate.text({ ...input, location: location(input) }, request(options))).text,
-        loadedLocations: (options) => client.debug.location.list(request(options)),
       },
     },
   }
@@ -531,10 +508,46 @@ function toLocation(input?: LocationRef) {
   return { directory: input.directory, workspace: input.workspaceID }
 }
 
+function sameModel(
+  left: { id: string; providerID: string; variant?: string },
+  right?: { id: string; providerID: string; variant?: string },
+) {
+  return left.id === right?.id && left.providerID === right.providerID && left.variant === right.variant
+}
+
+function nativeSessionURL(config: PtyTransportConfig, sessionID: string, suffix: string) {
+  return new URL(`${config.baseUrl.replace(/\/+$/, "")}/api/session/${encodeURIComponent(sessionID)}${suffix}`)
+}
+
+function nativePtyURL(config: PtyTransportConfig, ptyID: string, suffix: string, location?: LocationRef) {
+  const url = new URL(`${config.baseUrl.replace(/\/+$/, "")}/api/pty/${encodeURIComponent(ptyID)}${suffix}`)
+  if (location?.directory) url.searchParams.set("location[directory]", location.directory)
+  if (location?.workspaceID) url.searchParams.set("location[workspace]", location.workspaceID)
+  return url
+}
+
+function nativeFileURL(config: PtyTransportConfig, path: string, location?: LocationRef) {
+  const url = new URL(`${config.baseUrl.replace(/\/+$/, "")}/api/fs/read/${encodeURIComponent(path)}`)
+  if (location?.directory) url.searchParams.set("location[directory]", location.directory)
+  if (location?.workspaceID) url.searchParams.set("location[workspace]", location.workspaceID)
+  return url
+}
+
+function transportHeaders(config: PtyTransportConfig, ticket = false, json = false) {
+  const headers = new Headers()
+  if (config.password)
+    headers.set("authorization", `Basic ${btoa(`${config.username ?? "opencode"}:${config.password}`)}`)
+  if (ticket) headers.set("x-opencode-ticket", "1")
+  if (json) headers.set("content-type", "application/json")
+  return headers
+}
+
 function toProject(input: Project): AppProject {
   return {
     id: input.id,
     worktree: input.worktree,
+    vcs: input.vcs === "git" ? "git" : undefined,
+    time: input.time,
     name: input.name,
     icon: input.icon,
     commands: input.commands,
@@ -545,9 +558,13 @@ function toProject(input: Project): AppProject {
 function toSession(input: SessionInfo): AppSession {
   return {
     id: input.id,
+    slug: input.id,
+    version: "",
     parentID: input.parentID,
     projectID: input.projectID,
     location: input.location,
+    directory: input.location.directory,
+    workspaceID: input.location.workspaceID,
     title: input.title,
     cost: input.cost,
     tokens: input.tokens,
@@ -592,20 +609,26 @@ function toAgent(input: AgentInfo): AppAgent {
   }
 }
 
-function toTimelineItem(input: SessionMessageInfo, sessionID: string): TimelineItem {
+function toTimelineItem(
+  input: SessionMessageInfo,
+  sessionID: string,
+  parentID?: string,
+  projectedPrompt?: TimelineContent[],
+): TimelineItem {
   if (input.type === "user") {
     return {
       type: "user",
       id: input.id,
       sessionID,
       created: input.time.created,
-      content: [
+      content: projectedPrompt ?? [
         { type: "text", id: `${input.id}:text`, text: input.text },
         ...(input.files?.map((file, index) => ({
           type: "file" as const,
           id: `${input.id}:file:${index}`,
           uri: file.source.type === "uri" ? file.source.uri : `data:${file.mime};base64,${file.data}`,
           name: file.name,
+          mime: file.mime,
         })) ?? []),
         ...(input.agents?.map((agent, index) => ({
           type: "agent" as const,
@@ -614,24 +637,24 @@ function toTimelineItem(input: SessionMessageInfo, sessionID: string): TimelineI
           source: agent.mention,
         })) ?? []),
       ],
-      raw: input,
     }
   }
-  if (input.type === "assistant") return toAssistant(input, sessionID)
+  if (input.type === "assistant") return toAssistant(input, sessionID, parentID)
   const type =
     input.type === "agent-switched"
       ? "agent-switch"
       : input.type === "model-switched"
         ? "model-switch"
         : input.type
-  return { type, id: input.id, sessionID, created: input.time.created, raw: input }
+  return { type, id: input.id, sessionID, created: input.time.created }
 }
 
-function toAssistant(input: SessionMessageAssistant, sessionID: string): TimelineItem {
+function toAssistant(input: SessionMessageAssistant, sessionID: string, parentID?: string): TimelineItem {
   return {
     type: "assistant",
     id: input.id,
     sessionID,
+    parentID,
     created: input.time.created,
     completed: input.time.completed,
     content: input.content.flatMap((item, index): TimelineContent[] => {
@@ -653,7 +676,12 @@ function toAssistant(input: SessionMessageAssistant, sessionID: string): Timelin
             type: "tool",
             id: item.id,
             tool: item.name,
-            state: { status: "running", input: item.state.input, metadata: item.state.structured },
+            state: {
+              status: "running",
+              input: item.state.input,
+              metadata: item.state.structured,
+              time: { start: input.time.created },
+            },
           },
         ]
       if (item.state.status === "error")
@@ -667,6 +695,7 @@ function toAssistant(input: SessionMessageAssistant, sessionID: string): Timelin
               input: item.state.input,
               error: item.state.error.message,
               metadata: item.state.structured,
+              time: { start: input.time.created, end: input.time.completed ?? input.time.created },
             },
           },
         ]
@@ -681,7 +710,9 @@ function toAssistant(input: SessionMessageAssistant, sessionID: string): Timelin
             output: item.state.content
               .map((content) => (content.type === "text" ? content.text : content.uri))
               .join("\n"),
+            title: "",
             metadata: item.state.structured,
+            time: { start: input.time.created, end: input.time.completed ?? input.time.created },
           },
         },
       ]
@@ -689,17 +720,52 @@ function toAssistant(input: SessionMessageAssistant, sessionID: string): Timelin
     agent: input.agent,
     model: input.model,
     tokens: input.tokens,
-    error: input.error,
-    raw: input,
+    error: input.error && { name: "UnknownError", data: { message: input.error.message } },
   }
 }
 
 function toPromptFile(input: PromptFile) {
   return {
     uri: input.uri,
+    mime: input.mime ?? "application/octet-stream",
     name: input.name,
-    mention: input.source && { start: input.source.start, end: input.source.end, text: input.source.text },
+    source: input.source && { start: input.source.start, end: input.source.end, text: input.source.text },
   }
+}
+
+function toPromptContent(parts: NonNullable<PromptInput["parts"]>): TimelineContent[] {
+  return parts.map((part) => {
+    if (part.type === "text") return { ...part }
+    if (part.type === "agent")
+      return {
+        type: part.type,
+        id: part.id,
+        name: part.name,
+        source: part.source && { text: part.source.value, start: part.source.start, end: part.source.end },
+      }
+    return {
+      type: part.type,
+      id: part.id,
+      uri: part.url,
+      name: part.filename,
+      mime: part.mime,
+      source:
+        part.source?.type === "resource"
+          ? {
+              type: part.source.type,
+              clientName: part.source.clientName,
+              uri: part.source.uri,
+              text: { text: part.source.text.value, start: part.source.text.start, end: part.source.text.end },
+            }
+          : part.source && {
+              type: part.source.type,
+              path: part.source.path,
+              name: part.source.type === "symbol" ? part.source.name : undefined,
+              kind: part.source.type === "symbol" ? part.source.kind : undefined,
+              text: { text: part.source.text.value, start: part.source.text.start, end: part.source.text.end },
+            },
+    }
+  })
 }
 
 function toPermission(input: PermissionV2Request): AppPermissionRequest {
@@ -708,12 +774,23 @@ function toPermission(input: PermissionV2Request): AppPermissionRequest {
     sessionID: input.sessionID,
     action: input.action,
     resources: input.resources,
-    metadata: input.metadata,
+    permission: input.action,
+    patterns: [...input.resources],
+    always: [],
+    metadata: input.metadata ? { ...input.metadata } : {},
   }
 }
 
 function toQuestion(input: QuestionV2Request): AppQuestionRequest {
-  return { id: input.id, sessionID: input.sessionID, questions: input.questions }
+  return {
+    id: input.id,
+    sessionID: input.sessionID,
+    questions: input.questions.map((question) => ({
+      ...question,
+      header: question.header ?? "",
+      options: question.options.map((option) => ({ ...option, description: option.description ?? "" })),
+    })),
+  }
 }
 
 function toFileDiff(input: { file: string; patch: string; additions: number; deletions: number; status: "added" | "deleted" | "modified" }): AppFileDiff {
@@ -739,8 +816,8 @@ function toIntegration(input: IntegrationInfo) {
     }),
     connections: input.connections.map((connection): IntegrationConnection =>
       connection.type === "credential"
-        ? { id: connection.id, label: connection.label }
-        : { id: connection.name, label: connection.name },
+        ? { id: connection.id, label: connection.label, kind: "credential" }
+        : { id: connection.name, label: connection.name, kind: "environment" },
     ),
   }
 }
@@ -856,115 +933,458 @@ function toShell(input: ShellInfo1): ShellProcess {
   }
 }
 
-async function toEvent(
+type NativeEventData = {
+  sessionID: string
+  assistantMessageID: string
+  messageID: string
+  partID: string
+  requestID: string
+  textID: string
+  reasoningID: string
+  callID: string
+  timestamp: number
+  agent: string
+  model: { id: string; providerID: string; variant?: string }
+  finish: string
+  cost: number
+  tokens: import("./backend").TokenUsage
+  error: { message: string }
+  location: LocationRef
+  revert: { messageID: string }
+  prompt: { text: string; files?: { uri: string; name?: string; mime?: string }[]; agents?: { name: string; source?: import("./backend").SourceText }[] }
+  text: string
+  delta: string
+  field: string
+  name: string
+  tool: string
+  input: Record<string, unknown>
+  structured: Record<string, unknown>
+  content: import("./backend").ToolOutputContent[]
+  outputPaths: string[]
+  result: unknown
+  provider: import("./backend").ToolProviderInfo
+  providerMetadata: Record<string, unknown>
+  info: unknown
+  todos: { content: string; status: string; priority: string }[]
+  diff: { file?: string; patch?: string; additions: number; deletions: number; status?: "added" | "deleted" | "modified" }[]
+}
+
+function toEvent(
   input: OpenCodeEvent,
-  loadSession: (sessionID: string, options?: RequestOptions) => Promise<AppSession>,
-  loadMessage: (sessionID: string, messageID: string, options?: RequestOptions) => Promise<TimelineItem>,
-  options?: RequestOptions,
-): Promise<AppEvent> {
-  if (input.type === "server.connected") return { type: input.type }
-  if (input.type === "session.deleted") return { type: input.type, sessionID: input.data.sessionID }
-  if (input.type === "session.error") return { type: input.type, sessionID: input.data.sessionID, error: input.data.error }
-  if (input.type === "session.status") {
-    const activity = toActivity(input.data.status)
-    return activity
-      ? { type: "session.activity", sessionID: input.data.sessionID, activity }
-      : { type: "unknown", raw: input }
+  projectedContent: Map<string, TimelineContent>,
+  projectedItems: Map<string, TimelineItem>,
+  projectedSessions: Map<string, AppSession>,
+  projectedPrompts: Map<string, { sessionID: string; content: TimelineContent[] }>,
+): AppEvent {
+  const type = input.type as string
+  const data = input.data as unknown as NativeEventData
+  if (type === "server.connected") {
+    projectedContent.clear()
+    projectedItems.clear()
+    projectedSessions.clear()
+    projectedPrompts.clear()
+    return { type: "server.connected" }
   }
-  if (input.type === "session.execution.started")
-    return { type: "session.activity", sessionID: input.data.sessionID, activity: { type: "running" } }
-  if (input.type === "session.retry.scheduled")
+  if (type === "session.created" || type === "session.updated") {
+    const session = eventSession(data.info)
+    if (!session) return { type: "unknown", raw: input }
+    projectedSessions.set(session.id, session)
+    return { type: type === "session.created" ? "session.created" : "session.updated", session }
+  }
+  if (type === "session.deleted") {
+    projectedSessions.delete(data.sessionID)
+    clearSessionProjection(data.sessionID, projectedContent, projectedItems)
+    clearSessionPrompts(data.sessionID, projectedPrompts)
+    return { type: "session.deleted", sessionID: data.sessionID }
+  }
+  if (type === "session.next.moved") {
+    const current = projectedSessions.get(data.sessionID)
+    if (current)
+      projectedSessions.set(current.id, {
+        ...current,
+        location: data.location,
+        directory: data.location.directory,
+        workspaceID: data.location.workspaceID,
+      })
+    return { type: "session.moved", sessionID: data.sessionID, location: data.location }
+  }
+  if (type === "session.next.revert.staged") {
+    const revert = { messageID: data.revert.messageID }
+    const current = projectedSessions.get(data.sessionID)
+    if (current) projectedSessions.set(current.id, { ...current, revert })
+    return { type: "session.revert", sessionID: data.sessionID, revert }
+  }
+  if (type === "session.next.revert.cleared" || type === "session.next.revert.committed") {
+    const current = projectedSessions.get(data.sessionID)
+    if (current) projectedSessions.set(current.id, { ...current, revert: undefined })
+    return { type: "session.revert", sessionID: data.sessionID }
+  }
+  if (
+    type === "integration.updated" ||
+    type === "integration.connection.updated" ||
+    type === "catalog.updated" ||
+    type === "models-dev.refreshed"
+  )
+    return { type: "provider.updated" }
+  if (type === "permission.v2.asked")
+    return { type: "permission.requested", request: toPermission(input.data as PermissionV2Request) }
+  if (type === "permission.v2.replied")
+    return { type: "permission.replied", sessionID: data.sessionID, requestID: data.requestID }
+  if (type === "question.v2.asked")
+    return { type: "question.requested", request: toQuestion(input.data as QuestionV2Request) }
+  if (type === "question.v2.replied" || type === "question.v2.rejected")
     return {
-      type: "session.activity",
-      sessionID: input.data.sessionID,
-      activity: {
-        type: "retry",
-        attempt: input.data.attempt,
-        message: input.data.error.message,
-        next: input.data.at,
+      type: type === "question.v2.replied" ? "question.replied" : "question.rejected",
+      sessionID: data.sessionID,
+      requestID: data.requestID,
+    }
+  if (type === "file.watcher.updated" || type === "filesystem.changed") {
+    const changed = input.data as unknown as { file: string; event: "add" | "change" | "unlink" }
+    return { type: "file.changed", path: changed.file, change: changed.event }
+  }
+  if (type === "pty.exited") return { type: "pty.exited", ptyID: (input.data as unknown as { id: string }).id }
+  if (type === "message.removed")
+    return { type: "timeline.removed", sessionID: data.sessionID, itemID: data.messageID }
+  if (type === "session.next.prompted" || type === "session.next.prompt.admitted")
+    return {
+      type: "timeline.updated",
+      item: {
+        type: "user",
+        id: data.messageID,
+        sessionID: data.sessionID,
+        created: data.timestamp,
+        content: projectedPrompts.get(data.messageID)?.content ?? [
+          { type: "text", id: `${data.messageID}:text`, text: data.prompt.text },
+          ...(data.prompt.files?.map((file, index) => ({
+            type: "file" as const,
+            id: `${data.messageID}:file:${index}`,
+            uri: file.uri,
+            name: file.name,
+            mime: file.mime,
+          })) ?? []),
+          ...(data.prompt.agents?.map((agent, index) => ({
+            type: "agent" as const,
+            id: `${data.messageID}:agent:${index}`,
+            name: agent.name,
+            source: agent.source,
+          })) ?? []),
+        ],
       },
     }
-  if (input.type === "session.execution.failed")
-    return { type: "session.error", sessionID: input.data.sessionID, error: input.data.error }
-  if (input.type === "session.idle") return { type: "unknown", raw: input }
-  if (input.type === "permission.v2.asked") return { type: "permission.requested", request: toPermission(input.data) }
-  if (input.type === "permission.v2.replied")
-    return { type: "permission.replied", sessionID: input.data.sessionID, requestID: input.data.requestID }
-  if (input.type === "question.v2.asked") return { type: "question.requested", request: toQuestion(input.data) }
-  if (input.type === "question.v2.replied" || input.type === "question.v2.rejected")
-    return {
-      type: input.type === "question.v2.replied" ? "question.replied" : "question.rejected",
-      sessionID: input.data.sessionID,
-      requestID: input.data.requestID,
+  if (type === "session.next.step.started") {
+    const item = {
+      type: "assistant" as const,
+      id: data.assistantMessageID,
+      sessionID: data.sessionID,
+      created: data.timestamp,
+      content: [] as TimelineContent[],
+      agent: data.agent,
+      model: data.model,
     }
-  if (input.type === "filesystem.changed")
-    return { type: "file.changed", path: input.data.file, change: input.data.event }
-  if (input.type === "vcs.branch.updated") return { type: input.type, branch: input.data.branch }
-  if (input.type === "pty.exited") return { type: input.type, ptyID: input.data.id }
-  if (input.type === "message.removed")
-    return { type: "timeline.removed", sessionID: input.data.sessionID, itemID: input.data.messageID }
-  if (input.type === "message.updated")
-    return {
-      type: "timeline.updated",
-      item: await loadMessage(input.data.sessionID, input.data.info.id, options),
-    }
-  if (input.type === "message.part.updated")
-    return {
-      type: "timeline.updated",
-      item: await loadMessage(input.data.sessionID, input.data.part.messageID, options),
-    }
-
-  const sessionID = eventSessionID(input)
-  const messageID = eventMessageID(input)
-  if (sessionID && messageID)
-    return { type: "timeline.updated", item: await loadMessage(sessionID, messageID, options) }
-  if (sessionID && isSessionProjectionEvent(input.type)) {
-    const session = await loadSession(sessionID, options)
-    return { type: input.type === "session.created" ? "session.created" : "session.updated", session }
+    projectedItems.set(item.id, item)
+    return { type: "session.activity", sessionID: data.sessionID, activity: { type: "running" }, item }
   }
+  if (type === "session.next.step.ended") {
+    const current = projectedItems.get(data.assistantMessageID)
+    const item =
+      current?.type === "assistant"
+        ? {
+            ...current,
+            completed: data.timestamp,
+            finish: data.finish,
+            cost: data.cost,
+            tokens: data.tokens,
+            content: projectedMessageContent(data.assistantMessageID, projectedContent),
+          }
+        : undefined
+    projectedItems.delete(data.assistantMessageID)
+    clearMessageContent(data.assistantMessageID, projectedContent)
+    clearSessionPrompts(data.sessionID, projectedPrompts)
+    return { type: "session.activity", sessionID: data.sessionID, activity: { type: "idle" }, item }
+  }
+  if (type === "session.next.step.failed") {
+    const current = projectedItems.get(data.assistantMessageID)
+    const item =
+      current?.type === "assistant"
+        ? {
+            ...current,
+            completed: data.timestamp,
+            error: { name: "UnknownError" as const, data: { message: data.error.message } },
+            content: projectedMessageContent(data.assistantMessageID, projectedContent),
+          }
+        : undefined
+    projectedItems.delete(data.assistantMessageID)
+    clearMessageContent(data.assistantMessageID, projectedContent)
+    clearSessionPrompts(data.sessionID, projectedPrompts)
+    return { type: "session.activity", sessionID: data.sessionID, activity: { type: "idle" }, item }
+  }
+  if (type === "session.next.text.started" || type === "session.next.text.ended") {
+    const content = {
+      type: "text" as const,
+      id: data.textID,
+      text: type === "session.next.text.ended" ? data.text : "",
+    }
+    projectedContent.set(`${data.assistantMessageID}:${content.id}`, content)
+    return {
+      type: "timeline.content.updated",
+      sessionID: data.sessionID,
+      itemID: data.assistantMessageID,
+      content,
+    }
+  }
+  if (type === "session.next.reasoning.started" || type === "session.next.reasoning.ended") {
+    const content = {
+      type: "reasoning" as const,
+      id: data.reasoningID,
+      text: type === "session.next.reasoning.ended" ? data.text : "",
+      metadata: data.providerMetadata,
+      time: { start: data.timestamp, end: type === "session.next.reasoning.ended" ? data.timestamp : undefined },
+    }
+    projectedContent.set(`${data.assistantMessageID}:${content.id}`, content)
+    return {
+      type: "timeline.content.updated",
+      sessionID: data.sessionID,
+      itemID: data.assistantMessageID,
+      content,
+    }
+  }
+  if (
+    type === "session.next.tool.input.started" ||
+    type === "session.next.tool.input.ended" ||
+    type === "session.next.tool.called" ||
+    type === "session.next.tool.progress" ||
+    type === "session.next.tool.success" ||
+    type === "session.next.tool.failed"
+  ) {
+    const key = `${data.assistantMessageID}:${data.callID}`
+    const previous = projectedContent.get(key)
+    const tool = previous?.type === "tool" ? previous.tool : data.name ?? data.tool
+    const priorInput = previous?.type === "tool" ? previous.state.input : {}
+    const state = (() => {
+      if (type === "session.next.tool.input.started")
+        return { status: "pending" as const, input: {}, raw: "" }
+      if (type === "session.next.tool.input.ended")
+        return { status: "pending" as const, input: {}, raw: data.text }
+      if (type === "session.next.tool.called")
+        return {
+          status: "running" as const,
+          input: data.input,
+          time: { start: data.timestamp },
+          provider: data.provider,
+        }
+      if (type === "session.next.tool.progress")
+        return {
+          status: "running" as const,
+          input: priorInput,
+          metadata: data.structured,
+          time: { start: data.timestamp },
+          content: data.content,
+        }
+      if (type === "session.next.tool.failed")
+        return {
+          status: "error" as const,
+          input: priorInput,
+          error: data.error.message,
+          time: { start: data.timestamp, end: data.timestamp },
+          result: data.result,
+          provider: data.provider,
+        }
+      return {
+        status: "completed" as const,
+        input: priorInput,
+        output: data.content.map((content) => (content.type === "text" ? content.text : content.uri)).join("\n"),
+        title: "",
+        metadata: data.structured,
+        time: { start: data.timestamp, end: data.timestamp },
+        content: data.content,
+        outputPaths: data.outputPaths,
+        result: data.result,
+        provider: data.provider,
+        attachments: data.content.flatMap((content, index) =>
+          content.type === "file"
+            ? [
+                {
+                  id: `${data.callID}:attachment:${index}`,
+                  sessionID: data.sessionID,
+                  messageID: data.assistantMessageID,
+                  type: "file" as const,
+                  mime: content.mime,
+                  filename: content.name,
+                  url: content.uri,
+                },
+              ]
+            : [],
+        ),
+      }
+    })()
+    const content = { type: "tool" as const, id: data.callID, callID: data.callID, tool, state }
+    projectedContent.set(key, content)
+    return {
+      type: "timeline.content.updated",
+      sessionID: data.sessionID,
+      itemID: data.assistantMessageID,
+      content,
+    }
+  }
+  if (type === "todo.updated")
+    return {
+      type: "todo.updated",
+      sessionID: data.sessionID,
+      todos: data.todos.map((todo) => ({
+        content: todo.content,
+        status: todo.status,
+        priority: todo.priority,
+      })),
+    }
+  if (type === "reference.updated") return { type: "reference.updated" }
+  if (type === "session.diff")
+    return {
+      type: "session.diff",
+      sessionID: data.sessionID,
+      diff: data.diff.flatMap((item) => (item.file ? [{ ...item, file: item.file }] : [])),
+    }
+  if (type === "message.part.removed") {
+    projectedContent.delete(`${data.messageID}:${data.partID}`)
+    return {
+      type: "timeline.part.removed",
+      sessionID: data.sessionID,
+      itemID: data.messageID,
+      contentID: data.partID,
+    }
+  }
+  if (type === "message.part.delta")
+    return projectDelta(
+      {
+        type: "timeline.delta",
+        sessionID: data.sessionID,
+        itemID: data.messageID,
+        contentID: data.partID,
+        field: data.field,
+        delta: data.delta,
+      },
+      projectedContent,
+    )
+  if (type === "session.next.text.delta" || type === "session.next.reasoning.delta")
+    return projectDelta(
+      {
+        type: "timeline.delta",
+        sessionID: data.sessionID,
+        itemID: data.assistantMessageID,
+        contentID: type === "session.next.text.delta" ? data.textID : data.reasoningID,
+        field: "text",
+        delta: data.delta,
+      },
+      projectedContent,
+    )
   return { type: "unknown", raw: input }
 }
 
-function toActivity(input: import("@opencode-ai/client").SessionStatus): SessionActivity | undefined {
-  if (input.type === "idle") return
-  if (input.type === "busy") return { type: "running" }
-  return input
+function clearSessionPrompts(
+  sessionID: string,
+  projected: Map<string, { sessionID: string; content: TimelineContent[] }>,
+) {
+  for (const [messageID, prompt] of projected) if (prompt.sessionID === sessionID) projected.delete(messageID)
 }
 
-function eventSessionID(input: OpenCodeEvent) {
-  if (!("data" in input) || typeof input.data !== "object" || input.data === null || !("sessionID" in input.data)) return
-  return typeof input.data.sessionID === "string" ? input.data.sessionID : undefined
+function projectDelta(event: Extract<AppEvent, { type: "timeline.delta" }>, projected: Map<string, TimelineContent>) {
+  const key = `${event.itemID}:${event.contentID}`
+  const content = projected.get(key)
+  if (content && event.field === "text" && "text" in content)
+    projected.set(key, { ...content, text: content.text + event.delta })
+  return event
 }
 
-function eventMessageID(input: OpenCodeEvent) {
-  if (!("data" in input) || typeof input.data !== "object" || input.data === null) return
-  if ("assistantMessageID" in input.data && typeof input.data.assistantMessageID === "string")
-    return input.data.assistantMessageID
-  if ("messageID" in input.data && typeof input.data.messageID === "string") return input.data.messageID
-  if (input.type === "session.input.promoted") return input.data.inputID
+function projectedMessageContent(messageID: string, projected: Map<string, TimelineContent>) {
+  return [...projected.entries()].filter(([key]) => key.startsWith(`${messageID}:`)).map(([, content]) => content)
 }
 
-function isSessionProjectionEvent(type: string) {
-  return [
-    "session.created",
-    "session.updated",
-    "session.agent.selected",
-    "session.model.selected",
-    "session.moved",
-    "session.renamed",
-    "session.usage.updated",
-    "session.revert.staged",
-    "session.revert.cleared",
-    "session.revert.committed",
-  ].includes(type)
+function clearMessageContent(messageID: string, projected: Map<string, TimelineContent>) {
+  for (const key of projected.keys()) if (key.startsWith(`${messageID}:`)) projected.delete(key)
 }
 
-async function toLogEvent(
-  input: import("@opencode-ai/client").SessionLogOutput,
-  loadSession: (sessionID: string, options?: RequestOptions) => Promise<AppSession>,
-  loadMessage: (sessionID: string, messageID: string, options?: RequestOptions) => Promise<TimelineItem>,
+function clearSessionProjection(
+  sessionID: string,
+  projectedContent: Map<string, TimelineContent>,
+  projectedItems: Map<string, TimelineItem>,
+) {
+  const messages = [...projectedItems.values()].filter((item) => item.sessionID === sessionID).map((item) => item.id)
+  messages.forEach((messageID) => clearMessageContent(messageID, projectedContent))
+  for (const [id, item] of projectedItems) if (item.sessionID === sessionID) projectedItems.delete(id)
+}
+
+function eventSession(input: unknown): AppSession | undefined {
+  const info = record(input)
+  if (!info || typeof info.id !== "string" || typeof info.projectID !== "string" || typeof info.title !== "string") return
+  const location = record(info.location)
+  const directory =
+    typeof location?.directory === "string"
+      ? location.directory
+      : typeof info.directory === "string"
+        ? info.directory
+        : undefined
+  if (!directory) return
+  const time = record(info.time)
+  if (typeof time?.created !== "number" || typeof time.updated !== "number") return
+  const workspaceID =
+    typeof location?.workspaceID === "string"
+      ? location.workspaceID
+      : typeof info.workspaceID === "string"
+        ? info.workspaceID
+        : undefined
+  return {
+    id: info.id,
+    slug: typeof info.slug === "string" ? info.slug : info.id,
+    version: typeof info.version === "string" ? info.version : "",
+    parentID: typeof info.parentID === "string" ? info.parentID : undefined,
+    projectID: info.projectID,
+    location: { directory, workspaceID },
+    directory,
+    workspaceID,
+    title: info.title,
+    time: {
+      created: time.created,
+      updated: time.updated,
+      archived: typeof time.archived === "number" ? time.archived : undefined,
+    },
+  }
+}
+
+function record(input: unknown): Record<string, unknown> | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return
+  return input as Record<string, unknown>
+}
+
+function eventSequence(input: OpenCodeEvent) {
+  const durable = record(record(input)?.durable)
+  return typeof durable?.seq === "number" ? durable.seq : 0
+}
+
+async function* nativeSessionEvents(
+  config: PtyTransportConfig,
+  sessionID: string,
+  after: number | undefined,
   options?: RequestOptions,
-): Promise<AppEvent> {
-  if (input.type === "log.synced") return { type: "unknown", raw: input }
-  return toEvent(input, loadSession, loadMessage, options)
+): AsyncIterable<OpenCodeEvent> {
+  const url = nativeSessionURL(config, sessionID, "/event")
+  if (after !== undefined) url.searchParams.set("after", String(after))
+  const response = await config.fetch(url, { signal: options?.signal, headers: transportHeaders(config) })
+  if (!response.ok) throw new Error(`Failed to read session events: ${response.status} ${response.statusText}`)
+  if (!response.body) return
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
+  let buffer = ""
+  while (true) {
+    const result = await reader.read()
+    buffer += result.value ?? ""
+    const records = buffer.split("\n\n")
+    buffer = records.pop() ?? ""
+    for (const entry of records) {
+      const payload = entry
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n")
+      if (payload) yield JSON.parse(payload) as OpenCodeEvent
+    }
+    if (result.done) break
+  }
 }
