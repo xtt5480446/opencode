@@ -802,6 +802,7 @@ export function Session() {
 
   useBindings(() => ({
     mode: OPENCODE_BASE_MODE,
+    enabled: () => !disabled(),
     bindings: [...baseAndUnfocusedCommands, ...baseCommands()].flatMap((command) => config.keybinds.get(command.name)),
   }))
 
