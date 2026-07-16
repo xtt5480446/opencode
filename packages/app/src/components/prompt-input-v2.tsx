@@ -5,15 +5,13 @@ import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { Icon } from "@opencode-ai/ui/v2/icon"
 import { KeybindV2 } from "@opencode-ai/ui/v2/keybind-v2"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
-import type { ReferenceInfo } from "@opencode-ai/sdk/v2/client"
-import { createEffect, createMemo, createResource, on, onCleanup, Show } from "solid-js"
-import { createStore } from "solid-js/store"
+import type { Prompt, ReferenceInfo } from "@opencode-ai/sdk/v2/client"
+import { createEffect, createMemo, on, Show } from "solid-js"
 import { ModelSelectorPopoverV2 } from "@/components/dialog-select-model"
 import { DialogSelectModelUnpaidV2 } from "@/components/dialog-select-model-unpaid-v2"
 import type { PromptInputProps } from "@/components/prompt-input/contracts"
 import { normalizePromptHistoryEntry, promptLength, type PromptHistoryComment } from "@/components/prompt-input/history"
 import { createPersistedPromptInputHistory } from "@/components/prompt-input/history-store"
-import { promptPlaceholder } from "@/components/prompt-input/placeholder"
 import { createPromptSubmit } from "@/components/prompt-input/submit"
 import { selectionFromLines, type SelectedLineRange, useFile } from "@/context/file"
 import { useComments } from "@/context/comments"
@@ -31,39 +29,122 @@ import { PromptInputV2, type PromptInputV2Suggestion } from "@opencode-ai/sessio
 import {
   createPromptInputV2Controller,
   createPromptInputV2State,
+  type PromptInputV2Interaction,
 } from "@opencode-ai/session-ui/v2/prompt-input/interaction"
 
-export type PromptInputV2ComposerProps = Omit<PromptInputProps, "variant">
+export type PromptInputV2ComposerProps = {
+  class?: string
+  controller: PromptInputV2ComposerController
+  edit?: PromptInputProps["edit"]
+  onEditLoaded?: PromptInputProps["onEditLoaded"]
+}
 
-const EXAMPLES = [
-  "prompt.example.1",
-  "prompt.example.2",
-  "prompt.example.3",
-  "prompt.example.4",
-  "prompt.example.5",
-  "prompt.example.6",
-  "prompt.example.7",
-  "prompt.example.8",
-  "prompt.example.9",
-  "prompt.example.10",
-  "prompt.example.11",
-  "prompt.example.12",
-  "prompt.example.13",
-  "prompt.example.14",
-  "prompt.example.15",
-  "prompt.example.16",
-  "prompt.example.17",
-  "prompt.example.18",
-  "prompt.example.19",
-  "prompt.example.20",
-  "prompt.example.21",
-  "prompt.example.22",
-  "prompt.example.23",
-  "prompt.example.24",
-  "prompt.example.25",
-] as const
+export type PromptInputV2ControllerProps = Omit<
+  PromptInputProps,
+  "variant" | "class" | "edit" | "onEditLoaded" | "submission"
+>
+export type PromptInputV2ComposerController = PromptInputV2Interaction & {
+  readonly model: PromptInputProps["controls"]["model"]
+}
 
 export function PromptInputV2Composer(props: PromptInputV2ComposerProps) {
+  const dialog = useDialog()
+  const command = useCommand()
+  const language = useLanguage()
+
+  useCommands(props)
+  useEditHandler(props)
+
+  return (
+    <div class="flex flex-col gap-3">
+      <PromptInputV2
+        controller={props.controller}
+        class={props.class}
+        modelControl={
+          <PromptInputV2ModelControl
+            loading={props.controller.model.loading}
+            paid={props.controller.model.paid}
+            title={language.t("command.model.choose")}
+            keybind={command.keybindParts("model.choose")}
+            model={props.controller.model.selection}
+            providerID={props.controller.model.selection.current()?.provider?.id}
+            modelName={props.controller.model.selection.current()?.name ?? language.t("dialog.model.select.title")}
+            onClose={props.controller.restoreFocus}
+            onUnpaidClick={() =>
+              dialog.show(() => <DialogSelectModelUnpaidV2 model={props.controller.model.selection} />)
+            }
+          />
+        }
+      />
+    </div>
+  )
+}
+
+const useEditHandler = (props: PromptInputV2ComposerProps) => {
+  const prompt = usePrompt()
+
+  createEffect(
+    on(
+      () => props.edit?.id,
+      (id) => {
+        const edit = props.edit
+        if (!id || !edit) return
+        prompt.context.items().forEach((item) => prompt.context.remove(item.key))
+        edit.context.forEach((item) =>
+          prompt.context.add({
+            type: item.type,
+            path: item.path,
+            selection: item.selection,
+            comment: item.comment,
+            commentID: item.commentID,
+            commentOrigin: item.commentOrigin,
+            preview: item.preview,
+          }),
+        )
+        props.controller.dispatch({ type: "mode.normal" })
+        props.controller.resetHistory()
+        prompt.set(edit.prompt, promptLength(edit.prompt))
+        props.controller.restoreFocus()
+        props.onEditLoaded?.()
+      },
+      { defer: true },
+    ),
+  )
+}
+
+const useCommands = (props: PromptInputV2ComposerProps) => {
+  const command = useCommand()
+  const language = useLanguage()
+
+  command.register("prompt-input", () => [
+    {
+      id: "file.attach",
+      title: language.t("prompt.action.attachFile"),
+      category: language.t("command.category.file"),
+      keybind: "mod+u",
+      disabled: props.controller.state.mode !== "normal",
+      onSelect: () => props.controller.attach(),
+    },
+    {
+      id: "prompt.mode.shell",
+      title: language.t("command.prompt.mode.shell"),
+      category: language.t("command.category.session"),
+      keybind: "mod+shift+x",
+      disabled: props.controller.state.mode === "shell",
+      onSelect: () => props.controller.dispatch({ type: "mode.shell" }),
+    },
+    {
+      id: "prompt.mode.normal",
+      title: language.t("command.prompt.mode.normal"),
+      category: language.t("command.category.session"),
+      keybind: "mod+shift+e",
+      disabled: props.controller.state.mode === "normal",
+      onSelect: () => props.controller.dispatch({ type: "mode.normal" }),
+    },
+  ])
+}
+
+export function usePromptInputV2Controller(props: PromptInputV2ControllerProps): PromptInputV2ComposerController {
   const sdk = useSDK()
   const sync = useSync()
   const files = useFile()
@@ -79,7 +160,6 @@ export function PromptInputV2Composer(props: PromptInputV2ComposerProps) {
 
   const interaction = createPromptInputV2State()
   const mode = () => interaction[0].mode
-  const [composer, setComposer] = createStore({ placeholder: Math.floor(Math.random() * EXAMPLES.length) })
   const history = props.history ?? createPersistedPromptInputHistory()
   const tabs = () => props.controls.session.tabs
   const activeFileTab = createSessionTabs({
@@ -114,30 +194,7 @@ export function PromptInputV2Composer(props: PromptInputV2ComposerProps) {
     return text.trim().length === 0 && attachments().length === 0 && commentCount() === 0
   })
   const stopping = createMemo(() => working() && blank())
-  const hasUserPrompt = createMemo(() => {
-    const id = props.controls.session.id
-    if (!id) return false
-    return sync().data.message[id]?.some((message) => message.role === "user") ?? false
-  })
-  const suggest = createMemo(() => !hasUserPrompt())
-  const placeholder = createMemo(() =>
-    promptPlaceholder({
-      mode: mode(),
-      commentCount: commentCount(),
-      example: suggest() ? (mode() === "shell" ? "git status" : language.t(EXAMPLES[composer.placeholder])) : "",
-      suggest: suggest(),
-      t: (key, params) => language.t(key as Parameters<typeof language.t>[0], params as never),
-    }),
-  )
-  const designPlaceholder = () =>
-    mode() === "shell" ? placeholder() : "Ask anything, / for commands, @ for context..."
-
-  createEffect(() => {
-    props.controls.session.id
-    if (props.controls.session.id || !suggest()) return
-    const interval = setInterval(() => setComposer("placeholder", (value) => (value + 1) % EXAMPLES.length), 6500)
-    onCleanup(() => clearInterval(interval))
-  })
+  const designPlaceholder = () => (mode() === "shell" ? "git status" : "Ask anything, / for commands, @ for context...")
 
   const historyComments = () => {
     const byID = new Map(comments.all().map((item) => [`${item.file}\n${item.id}`, item] as const))
@@ -187,65 +244,36 @@ export function PromptInputV2Composer(props: PromptInputV2ComposerProps) {
     )
   }
 
-  command.register("prompt-input", () => [
-    {
-      id: "file.attach",
-      title: language.t("prompt.action.attachFile"),
-      category: language.t("command.category.file"),
-      keybind: "mod+u",
-      disabled: mode() !== "normal",
-      onSelect: () => controller.attach(),
-    },
-    {
-      id: "prompt.mode.shell",
-      title: language.t("command.prompt.mode.shell"),
-      category: language.t("command.category.session"),
-      keybind: "mod+shift+x",
-      disabled: mode() === "shell",
-      onSelect: () => controller.dispatch({ type: "mode.shell" }),
-    },
-    {
-      id: "prompt.mode.normal",
-      title: language.t("command.prompt.mode.normal"),
-      category: language.t("command.category.session"),
-      keybind: "mod+shift+e",
-      disabled: mode() === "normal",
-      onSelect: () => controller.dispatch({ type: "mode.normal" }),
-    },
-  ])
-
   const accepting = createMemo(() => {
     const id = props.controls.session.id
     if (!id) return permission.isAutoAcceptingDirectory(sdk().directory)
     return permission.isAutoAccepting(id, sdk().directory)
   })
-  const submission =
-    props.submission ??
-    createPromptSubmit({
-      prompt,
-      info,
-      imageAttachments: attachments,
-      commentCount,
-      autoAccept: accepting,
-      mode,
-      working,
-      editor: () => editor,
-      queueScroll: () => requestAnimationFrame(() => editor?.scrollIntoView({ block: "nearest" })),
-      promptLength,
-      addToHistory: (value, mode) => controller.addHistory(value, mode),
-      resetHistoryNavigation: () => controller.resetHistory(),
-      setMode: (next) => controller.dispatch({ type: next === "shell" ? "mode.shell" : "mode.normal" }),
-      setPopover: (popover) => {
-        if (!popover) controller.dispatch({ type: "popover.close" })
-      },
-      newSessionWorktree: () => props.newSessionWorktree,
-      onNewSessionWorktreeReset: props.onNewSessionWorktreeReset,
-      shouldQueue: props.shouldQueue,
-      onQueue: props.onQueue,
-      onAbort: props.onAbort,
-      onSubmit: props.onSubmit,
-      model: props.controls.model.selection,
-    })
+  const submission = createPromptSubmit({
+    prompt,
+    info,
+    imageAttachments: attachments,
+    commentCount,
+    autoAccept: accepting,
+    mode,
+    working,
+    editor: () => editor,
+    queueScroll: () => requestAnimationFrame(() => editor?.scrollIntoView({ block: "nearest" })),
+    promptLength,
+    addToHistory: (value, mode) => controller.addHistory(value, mode),
+    resetHistoryNavigation: () => controller.resetHistory(),
+    setMode: (next) => controller.dispatch({ type: next === "shell" ? "mode.shell" : "mode.normal" }),
+    setPopover: (popover) => {
+      if (!popover) controller.dispatch({ type: "popover.close" })
+    },
+    newSessionWorktree: () => props.newSessionWorktree,
+    onNewSessionWorktreeReset: props.onNewSessionWorktreeReset,
+    shouldQueue: props.shouldQueue,
+    onQueue: props.onQueue,
+    onAbort: props.onAbort,
+    onSubmit: props.onSubmit,
+    model: props.controls.model.selection,
+  })
 
   const referenceDescription = (reference: ReferenceInfo) =>
     reference.source.type === "git" ? reference.source.repository : reference.source.path
@@ -429,78 +457,22 @@ export function PromptInputV2Composer(props: PromptInputV2ComposerProps) {
       },
     },
   })
-  createEffect(
-    on(
-      () => props.edit?.id,
-      (id) => {
-        const edit = props.edit
-        if (!id || !edit) return
-        prompt.context.items().forEach((item) => prompt.context.remove(item.key))
-        edit.context.forEach((item) =>
-          prompt.context.add({
-            type: item.type,
-            path: item.path,
-            selection: item.selection,
-            comment: item.comment,
-            commentID: item.commentID,
-            commentOrigin: item.commentOrigin,
-            preview: item.preview,
-          }),
-        )
-        controller.dispatch({ type: "mode.normal" })
-        controller.resetHistory()
-        prompt.set(edit.prompt, promptLength(edit.prompt))
-        requestAnimationFrame(() => editor?.focus())
-        props.onEditLoaded?.()
-      },
-      { defer: true },
-    ),
-  )
-  const providersShouldFadeIn = createMemo<boolean>((previous) => previous ?? props.controls.model.loading)
-
-  return (
-    <div class="flex flex-col gap-3">
-      <PromptInputV2
-        controller={controller}
-        class={props.class}
-        modelControl={
-          <PromptInputV2ModelControl
-            loading={props.controls.model.loading}
-            shouldAnimate={providersShouldFadeIn()}
-            paid={props.controls.model.paid}
-            title={language.t("command.model.choose")}
-            keybind={command.keybindParts("model.choose")}
-            model={props.controls.model.selection}
-            providerID={props.controls.model.selection.current()?.provider?.id}
-            modelName={props.controls.model.selection.current()?.name ?? language.t("dialog.model.select.title")}
-            onClose={() =>
-              requestAnimationFrame(() => {
-                editor?.focus()
-                setEditorCursor(editor, prompt.cursor() ?? promptLength(prompt.current()))
-              })
-            }
-            onUnpaidClick={() =>
-              dialog.show(() => <DialogSelectModelUnpaidV2 model={props.controls.model.selection} />)
-            }
-          />
-        }
-      />
-    </div>
-  )
+  Object.defineProperty(controller, "model", { get: () => props.controls.model })
+  return controller as PromptInputV2ComposerController
 }
 
 function PromptInputV2ModelControl(props: {
   loading: boolean
-  shouldAnimate: boolean
   paid: boolean
   title: string
   keybind: string[]
-  model: PromptInputV2ComposerProps["controls"]["model"]["selection"]
+  model: PromptInputV2ComposerController["model"]["selection"]
   providerID?: string
   modelName: string
   onClose: () => void
   onUnpaidClick: () => void
 }) {
+  const shouldAnimate = createMemo<boolean>((previous) => previous ?? props.loading)
   const content = () => (
     <>
       <Show when={props.providerID}>
@@ -538,7 +510,7 @@ function PromptInputV2ModelControl(props: {
               variant="ghost-muted"
               size="normal"
               class="min-w-0 max-w-[220px] justify-start ![font-weight:440] group"
-              classList={{ "animate-in fade-in": props.shouldAnimate }}
+              classList={{ "animate-in fade-in": shouldAnimate() }}
               style={{ height: "28px" }}
               onClick={props.onUnpaidClick}
             >
@@ -554,7 +526,7 @@ function PromptInputV2ModelControl(props: {
               size: "normal",
               style: { height: "28px" },
               class: "min-w-0 max-w-[220px] justify-start ![font-weight:440] group",
-              classList: { "animate-in fade-in": props.shouldAnimate },
+              classList: { "animate-in fade-in": shouldAnimate() },
               "data-action": "prompt-model",
             }}
             onClose={props.onClose}
@@ -567,30 +539,9 @@ function PromptInputV2ModelControl(props: {
   )
 }
 
-function setEditorCursor(editor: HTMLDivElement | undefined, cursor: number) {
-  if (!editor) return
-  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
-  let remaining = cursor
-  let node = walker.nextNode()
-  while (node) {
-    const length = node.textContent?.length ?? 0
-    if (remaining <= length) {
-      const range = document.createRange()
-      range.setStart(node, remaining)
-      range.collapse(true)
-      const selection = window.getSelection()
-      selection?.removeAllRanges()
-      selection?.addRange(range)
-      return
-    }
-    remaining -= length
-    node = walker.nextNode()
-  }
-}
-
 function openComment(
   item: { path: string; commentID?: string; commentOrigin?: "review" | "file" },
-  props: PromptInputV2ComposerProps,
+  props: PromptInputV2ControllerProps,
   sync: ReturnType<typeof useSync>,
   layout: ReturnType<typeof useLayout>,
   files: ReturnType<typeof useFile>,

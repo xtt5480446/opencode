@@ -241,14 +241,18 @@ export function createPromptInputV2Controller(input: {
     dispatch({ type: "popover.results", ids })
   })
 
-  const applyHistory = (entry: PromptInputV2HistoryEntry, position: "start" | "end") => {
-    input.history?.restore?.(entry.metadata)
-    const cursor = position === "start" ? 0 : promptLength(entry.prompt)
-    draft.setPrompt(clonePrompt(entry.prompt), cursor)
+  const restoreFocus = (cursor = draft.state.cursor ?? promptLength(draft.state.prompt)) => {
     requestAnimationFrame(() => {
       editor?.focus()
       setEditorCursor(editor, cursor)
     })
+  }
+
+  const applyHistory = (entry: PromptInputV2HistoryEntry, position: "start" | "end") => {
+    input.history?.restore?.(entry.metadata)
+    const cursor = position === "start" ? 0 : promptLength(entry.prompt)
+    draft.setPrompt(clonePrompt(entry.prompt), cursor)
+    restoreFocus(cursor)
   }
   const navigateHistory = (direction: "up" | "down") => {
     if (!input.history || !editor) return false
@@ -331,6 +335,7 @@ export function createPromptInputV2Controller(input: {
       editor = element
       input.onEditor?.(element)
     },
+    restoreFocus,
     onInput(value: string, prompt?: PromptInputV2PersistedState["prompt"], cursor?: number) {
       if (prompt) draft.setPrompt(prompt, cursor)
       dispatch({ type: "input.changed", value, persist: !prompt })
