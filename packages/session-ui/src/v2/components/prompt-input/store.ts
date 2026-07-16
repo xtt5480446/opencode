@@ -35,6 +35,9 @@ export function createPromptInputV2Store(input: PromptInputV2StoreInput) {
         if (cursor !== undefined) setStore()("cursor", cursor)
       })
     },
+    setCursor(cursor: number) {
+      setStore()("cursor", cursor)
+    },
     setText(content: string) {
       batch(() => {
         setStore()("prompt", (prompt) => [

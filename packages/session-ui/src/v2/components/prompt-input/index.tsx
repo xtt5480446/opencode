@@ -135,6 +135,7 @@ export function PromptInputV2(props: PromptInputV2Props) {
               props.controller.setEditor(element)
               renderPromptInputV2Editor(element, props.controller.parts())
             }}
+            data-component="prompt-input"
             role="textbox"
             aria-multiline="true"
             aria-label="Prompt"
@@ -161,6 +162,8 @@ export function PromptInputV2(props: PromptInputV2Props) {
                 props.controller.submit()
               }
             }}
+            onKeyUp={(event) => props.controller.onCursor(promptInputV2Cursor(event.currentTarget))}
+            onPointerUp={(event) => props.controller.onCursor(promptInputV2Cursor(event.currentTarget))}
             onPaste={props.controller.onPaste}
             onFocus={() => props.controller.dispatch({ type: "focus.editor" })}
           />
