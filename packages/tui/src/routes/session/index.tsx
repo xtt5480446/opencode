@@ -73,6 +73,7 @@ import { usePathFormatter } from "../../context/path-format"
 import { useLocation } from "../../context/location"
 import { createSessionRows, resolvePart, type PartRef, type SessionRow } from "./rows"
 import { switchLabel } from "../../util/model"
+import { stringWidth } from "../../util/string-width"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1336,8 +1337,7 @@ function SessionNoticeMessageV2(props: { message: SessionMessageInfo }) {
     return state() ?? "finished"
   }
   const heading = () => `${state() === "completed" ? "↳" : "!"} ${actor()} ${status()}`
-  const suffix = () =>
-    Locale.truncateWidth(` · ${description()}`, Math.max(0, ctx.width - 3 - Bun.stringWidth(heading())))
+  const suffix = () => Locale.truncateWidth(` · ${description()}`, Math.max(0, ctx.width - 3 - stringWidth(heading())))
   const color = () => {
     if (state() === "error") return theme.error
     if (state() === "cancelled") return theme.warning
@@ -1493,8 +1493,8 @@ function RevertMessage(props: {
                       2,
                       ctx.width -
                         5 -
-                        (file.additions > 0 ? Bun.stringWidth(`+${file.additions}`) + 1 : 0) -
-                        (file.deletions > 0 ? Bun.stringWidth(`-${file.deletions}`) + 1 : 0),
+                        (file.additions > 0 ? stringWidth(`+${file.additions}`) + 1 : 0) -
+                        (file.deletions > 0 ? stringWidth(`-${file.deletions}`) + 1 : 0),
                     )}
                     fg={theme.text}
                   />
@@ -2301,7 +2301,7 @@ function BlockTool(props: {
             </Show>
             <FilePath
               value={path().value}
-              maxWidth={Math.max(2, ctx.width - 4 - Bun.stringWidth(path().label) - (props.spinner ? 2 : 0))}
+              maxWidth={Math.max(2, ctx.width - 4 - stringWidth(path().label) - (props.spinner ? 2 : 0))}
               fg={permission() ? theme.warning : theme.textMuted}
             />
           </box>
