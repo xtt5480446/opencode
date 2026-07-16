@@ -127,6 +127,8 @@ const URL_ELICITATION_FIELD_KEY = "elicitation"
 
 export interface Interface {
   readonly servers: () => Effect.Effect<ServerInfo[]>
+  readonly connect: (server: ServerName | string) => Effect.Effect<void, NotFoundError>
+  readonly disconnect: (server: ServerName | string) => Effect.Effect<void, NotFoundError>
   readonly tools: () => Effect.Effect<Tool[]>
   readonly callTool: (input: {
     readonly server: ServerName | string
@@ -527,7 +529,7 @@ export const layer = Layer.effect(
         const match = Array.from(runtime).find(([, entry]) => entry.integrationID === integrationID)
         if (!match) return
         const [name, entry] = match
-        if (entry.config.disabled) return
+        if (entry.status.status === "disabled") return
         if (entry.scope) {
           yield* Scope.close(entry.scope, Exit.void)
           entry.scope = undefined
@@ -561,6 +563,35 @@ export const layer = Layer.effect(
             return info(name, entry, connection)
           }),
         )
+      }),
+      connect: Effect.fn("MCP.connect")(function* (server) {
+        const target = yield* requireServer(server)
+        if (target.entry.scope) {
+          const scope = target.entry.scope
+          target.entry.scope = undefined
+          target.entry.client = undefined
+          target.entry.tools = undefined
+          target.entry.prompts = undefined
+          yield* Scope.close(scope, Exit.void)
+          yield* events.publish(McpEvent.ToolsChanged, { server: target.name }).pipe(Effect.ignore)
+          yield* events.publish(McpEvent.ResourcesChanged, { server: target.name }).pipe(Effect.ignore)
+          yield* events.publish(Command.Event.Updated, {}).pipe(Effect.ignore)
+        }
+        yield* startServer(target.name, target.entry)
+      }),
+      disconnect: Effect.fn("MCP.disconnect")(function* (server) {
+        const target = yield* requireServer(server)
+        const scope = target.entry.scope
+        target.entry.scope = undefined
+        target.entry.client = undefined
+        target.entry.tools = undefined
+        target.entry.prompts = undefined
+        if (scope) yield* Scope.close(scope, Exit.void)
+        target.entry.status = { status: "disabled" }
+        yield* events.publish(McpEvent.ToolsChanged, { server: target.name }).pipe(Effect.ignore)
+        yield* events.publish(McpEvent.ResourcesChanged, { server: target.name }).pipe(Effect.ignore)
+        yield* events.publish(Command.Event.Updated, {}).pipe(Effect.ignore)
+        yield* events.publish(McpEvent.StatusChanged, { server: target.name }).pipe(Effect.ignore)
       }),
       tools: Effect.fn("MCP.tools")(function* () {
         yield* whenAllReady

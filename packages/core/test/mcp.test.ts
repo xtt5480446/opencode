@@ -146,7 +146,10 @@ function resourceServer(
   )
 }
 
-function resourceMcpLayer(url: string, onFormCreated?: (form: Form.Info) => Effect.Effect<void>) {
+function resourceMcpLayer(
+  server: string | typeof ConfigMCP.Server.Type,
+  onFormCreated?: (form: Form.Info) => Effect.Effect<void>,
+) {
   const directory = AbsolutePath.make(import.meta.dir)
   const unusedIntegration = () => Effect.die("unused integration service")
   return MCP.layer.pipe(
@@ -162,7 +165,12 @@ function resourceMcpLayer(url: string, onFormCreated?: (form: Form.Info) => Effe
                   type: "document",
                   info: new Config.Info({
                     mcp: new ConfigMCP.Info({
-                      servers: { resources: new ConfigMCP.Remote({ type: "remote", url, oauth: false }) },
+                      servers: {
+                        resources:
+                          typeof server === "string"
+                            ? new ConfigMCP.Remote({ type: "remote", url: server, oauth: false })
+                            : server,
+                      },
                     }),
                   }),
                 }),
@@ -625,6 +633,39 @@ test("loads and reads MCP resources", async () => {
             ],
           })
         }).pipe(Effect.provide(resourceMcpLayer(server.url)))
+      }),
+    ),
+  )
+})
+
+test("disconnects and reconnects MCP servers at runtime", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Effect.gen(function* () {
+          const service = yield* MCP.Service
+
+          expect((yield* service.servers())[0]?.status).toEqual({ status: "disabled" })
+          yield* service.connect("resources")
+          expect((yield* service.servers())[0]?.status).toEqual({ status: "connected" })
+
+          yield* service.disconnect("resources")
+          expect((yield* service.servers())[0]?.status).toEqual({ status: "disabled" })
+          expect(yield* service.tools()).toEqual([])
+
+          yield* service.connect("resources")
+          expect((yield* service.servers())[0]?.status).toEqual({ status: "connected" })
+        }).pipe(
+          Effect.provide(
+            resourceMcpLayer(
+              new ConfigMCP.Local({
+                type: "local",
+                command: [process.execPath, path.join(import.meta.dir, "fixture/mcp-output-schema.ts")],
+                disabled: true,
+              }),
+            ),
+          ),
+        )
       }),
     ),
   )
