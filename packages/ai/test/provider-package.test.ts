@@ -21,6 +21,8 @@ describe("provider package entrypoints", () => {
       import("@opencode-ai/ai/providers/google-vertex/chat"),
       import("@opencode-ai/ai/providers/google-vertex/responses"),
       import("@opencode-ai/ai/providers/google-vertex/messages"),
+      import("@opencode-ai/ai/providers/google-vertex/xai"),
+      import("@opencode-ai/ai/providers/google-vertex/xai/chat"),
     ])
 
     for (const module of modules) expect(module.model).toBeFunction()
@@ -292,5 +294,28 @@ describe("provider package entrypoints", () => {
         { apiKey: "fixture", project: "vertex-project" },
       ]),
     ).toThrow("Google Vertex Responses does not support API keys")
+  })
+
+  test("defaults Vertex xAI to Responses with explicit Chat selection", async () => {
+    const GoogleVertexXAI = await import("@opencode-ai/ai/providers/google-vertex/xai")
+    const GoogleVertexXAIChat = await import("@opencode-ai/ai/providers/google-vertex/xai/chat")
+    const GoogleVertexChat = await import("@opencode-ai/ai/providers/google-vertex/chat")
+    const GoogleVertexResponses = await import("@opencode-ai/ai/providers/google-vertex/responses")
+    const settings = {
+      accessToken: "fixture",
+      location: "global",
+      project: "vertex-project",
+    }
+
+    expect(GoogleVertexXAI.model).toBe(GoogleVertexResponses.model)
+    expect(GoogleVertexXAIChat.model).toBe(GoogleVertexChat.model)
+    expect(GoogleVertexXAI.model("xai/grok-4.20-reasoning", settings).route).toMatchObject({
+      id: "google-vertex-responses",
+      protocol: "openai-responses",
+    })
+    expect(GoogleVertexXAIChat.model("xai/grok-4.20-reasoning", settings).route).toMatchObject({
+      id: "google-vertex-chat",
+      protocol: "openai-chat",
+    })
   })
 })

@@ -560,6 +560,8 @@ describe("SessionRunnerModel", () => {
         ["@opencode-ai/ai/providers/google-vertex/chat", "accessToken"],
         ["@opencode-ai/ai/providers/google-vertex/responses", "accessToken"],
         ["@opencode-ai/ai/providers/google-vertex/messages", "accessToken"],
+        ["@opencode-ai/ai/providers/google-vertex/xai", "accessToken"],
+        ["@opencode-ai/ai/providers/google-vertex/xai/chat", "accessToken"],
         ["@opencode-ai/ai/providers/anthropic", "authToken"],
         ["@opencode-ai/ai/providers/anthropic-compatible", "authToken"],
       ] as const

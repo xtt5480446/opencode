@@ -381,6 +381,9 @@ import { model } from "@opencode-ai/ai/providers/google-vertex/responses"
 model("xai/grok-4.20-reasoning", { project, location: "global" })
 ```
 
+Vertex xAI defaults to that Responses entrypoint. Callers that require Chat select
+`@opencode-ai/ai/providers/google-vertex/xai/chat` explicitly.
+
 ```ts
 import { model } from "@opencode-ai/ai/providers/google-vertex/messages"
 
