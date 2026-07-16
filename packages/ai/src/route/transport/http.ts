@@ -5,7 +5,7 @@ import { render as renderEndpoint } from "../endpoint"
 import { Framing } from "../framing"
 import type { Transport, TransportPrepareInput } from "./index"
 import * as ProviderShared from "../../protocols/shared"
-import { mergeJsonRecords, type LLMRequest } from "../../schema"
+import { InvalidRequestReason, LLMError, mergeJsonRecords, type LLMRequest } from "../../schema"
 
 export type JsonRequestInput<Body> = TransportPrepareInput<Body>
 
@@ -130,23 +130,36 @@ export const httpJson = <Body, Frame>(input: HttpJsonInput<Body, Frame>): HttpJs
     ),
   frames: (prepared, request, runtime) =>
     Stream.unwrap(
-      runtime.http
-        .execute(prepared.request)
-        .pipe(
-          Effect.map((response) =>
-            prepared.framing.frame(
-              response.stream.pipe(
-                Stream.mapError((error) =>
-                  ProviderShared.eventError(
-                    `${request.model.provider}/${request.model.route.id}`,
-                    `Failed to read ${request.model.provider}/${request.model.route.id} stream`,
-                    ProviderShared.errorText(error),
-                  ),
+      (runtime.transformRequest
+        ? HttpClientRequest.toWeb(prepared.request).pipe(
+            Effect.mapError(
+              (error) =>
+                new LLMError({
+                  module: "HttpTransport",
+                  method: "frames",
+                  reason: new InvalidRequestReason({ message: error.message }),
+                }),
+            ),
+            Effect.flatMap(runtime.transformRequest),
+            Effect.map((request) => HttpClientRequest.fromWeb(request.clone() as Request)),
+            Effect.flatMap(runtime.http.execute),
+          )
+        : runtime.http.execute(prepared.request)
+      ).pipe(
+        Effect.map((response) =>
+          prepared.framing.frame(
+            response.stream.pipe(
+              Stream.mapError((error) =>
+                ProviderShared.eventError(
+                  `${request.model.provider}/${request.model.route.id}`,
+                  `Failed to read ${request.model.provider}/${request.model.route.id} stream`,
+                  ProviderShared.errorText(error),
                 ),
               ),
             ),
           ),
         ),
+      ),
     ),
 })
 

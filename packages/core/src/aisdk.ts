@@ -1,5 +1,6 @@
 export * as AISDK from "./aisdk"
 
+import { AsyncLocalStorage } from "node:async_hooks"
 import { makeLocationNode } from "./effect/app-node"
 import type {
   JSONSchema7,
@@ -29,7 +30,7 @@ import {
   type ToolDefinition,
   type UsageInput,
 } from "@opencode-ai/ai"
-import { Auth, Endpoint, type AnyRoute } from "@opencode-ai/ai/route"
+import { Auth, Endpoint, type AnyRoute, type TransportRuntime } from "@opencode-ai/ai/route"
 import { Cause, Context, Effect, Layer, Option, Schema, Scope, Stream } from "effect"
 import { ModelV2 } from "./model"
 import { ProviderV2 } from "./provider"
@@ -39,6 +40,7 @@ type SDK = any
 type UserContent = Extract<LanguageModelV3Message, { role: "user" }>["content"]
 type AssistantContent = Extract<LanguageModelV3Message, { role: "assistant" }>["content"]
 type ToolResultContent = Extract<AssistantContent[number], { type: "tool-result" }>
+const requestTransform = new AsyncLocalStorage<TransportRuntime["transformRequest"]>()
 
 export interface SDKEvent {
   readonly model: ModelV2.Info
@@ -149,10 +151,20 @@ function prepareOptions(model: ModelV2.Info, pkg: string) {
       }
     }
 
-    const res = await (typeof customFetch === "function" ? customFetch : fetch)(input, {
-      ...opts,
-      timeout: false,
-    })
+    const request = new Request(input as Request, opts)
+    const transform = requestTransform.getStore()
+    const transformed = transform ? await Effect.runPromise(transform(request)) : request
+    const upstream = typeof customFetch === "function" ? customFetch : fetch
+    const res = transform
+      ? await upstream(transformed.url, {
+          ...opts,
+          method: transformed.method,
+          headers: transformed.headers,
+          body: transformed === request || transformed.body === null ? opts.body : await transformed.clone().text(),
+          signal: transformed.signal,
+          timeout: false,
+        })
+      : await upstream(input, { ...opts, timeout: false })
     if (!chunkAbortCtl || typeof chunkTimeout !== "number") return res
     return wrapSSE(res, chunkTimeout, chunkAbortCtl)
   }
@@ -341,7 +353,8 @@ function modelFromLanguage(info: ModelV2.Info, language: LanguageModelV3) {
     with: () => route,
     model: (input) => Model.make({ ...input, provider: "provider" in input ? input.provider : info.providerID, route }),
     prepareTransport: (body) => Effect.succeed(body),
-    streamPrepared: (prepared) => streamLanguage(language, prepared as LanguageModelV3CallOptions),
+    streamPrepared: (prepared, _request, runtime) =>
+      streamLanguage(language, prepared as LanguageModelV3CallOptions, runtime.transformRequest),
   }
   return Model.make({ id: info.modelID ?? info.id, provider: info.providerID, route })
 }
@@ -532,13 +545,17 @@ function providerOptions(input: LLMRequest["providerOptions"]): SharedV3Provider
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, jsonObject(value)]))
 }
 
-function streamLanguage(language: LanguageModelV3, options: LanguageModelV3CallOptions) {
+function streamLanguage(
+  language: LanguageModelV3,
+  options: LanguageModelV3CallOptions,
+  transform: TransportRuntime["transformRequest"],
+) {
   const state = { step: 0, toolNames: {} as Record<string, string> }
   return Stream.concat(
     Stream.make(LLMEvent.stepStart({ index: state.step })),
     Stream.unwrap(
       Effect.tryPromise({
-        try: () => language.doStream(options),
+        try: () => requestTransform.run(transform, () => language.doStream(options)),
         catch: (error) => llmError("doStream", error),
       }).pipe(
         Effect.map((result) =>

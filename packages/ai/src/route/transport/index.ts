@@ -8,7 +8,10 @@ import type { LLMError, LLMRequest } from "../../schema"
 export interface TransportRuntime {
   readonly http: RequestExecutorInterface
   readonly webSocket?: WebSocketExecutorInterface
+  readonly transformRequest?: RequestTransform
 }
+
+export type RequestTransform = (request: Request) => Effect.Effect<Request, LLMError>
 
 export interface Transport<Body, Prepared, Frame> {
   readonly id: string

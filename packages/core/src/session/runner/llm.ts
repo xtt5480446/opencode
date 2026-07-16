@@ -8,6 +8,7 @@ import { Database } from "../../database/database"
 import { EventV2 } from "../../event"
 import { ModelV2 } from "../../model"
 import { PermissionV2 } from "../../permission"
+import { PluginHooks } from "../../plugin/hooks"
 import { QuestionTool } from "../../tool/question"
 import { ToolOutputStore } from "../../tool-output-store"
 import { InstructionState } from "../instruction-state"
@@ -15,6 +16,7 @@ import { SessionCompaction } from "../compaction"
 import { SessionContext } from "../context"
 import { SessionEvent } from "../event"
 import { SessionPending } from "../pending"
+import { SessionRequestHook } from "../request-hook"
 import { SessionModelRequest } from "../model-request"
 import { SessionMessage } from "../message"
 import { SessionSchema } from "../schema"
@@ -65,6 +67,7 @@ const layer = Layer.effect(
     const db = (yield* Database.Service).db
     const compaction = yield* SessionCompaction.Service
     const title = yield* SessionTitle.Service
+    const hooks = yield* PluginHooks.Service
     // Title generation is a side effect of the first step; it must not delay step continuation.
     // Tracked per process so repeated wakes before the second user message arrives don't
     // re-fire a redundant LLM call; `SessionTitle` itself is idempotent based on durable history.
@@ -157,7 +160,7 @@ const layer = Layer.effect(
       const serialized = <A, E, R>(effect: Effect.Effect<A, E, R>) => publication.withPermit(effect)
       const publish = (event: LLMEvent, error?: SessionError.Error) => serialized(publisher.publish(event, error))
       let overflowFailure: ProviderErrorEvent | undefined
-      const providerStream = llm.stream(prepared.request).pipe(
+      const providerStream = SessionRequestHook.client(llm, hooks, session.id).stream(prepared.request).pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
             if (overflowFailure || publisher.hasProviderError()) return
@@ -506,5 +509,6 @@ export const node = makeLocationNode({
     SessionTitle.node,
     Snapshot.node,
     Database.node,
+    PluginHooks.node,
   ],
 })

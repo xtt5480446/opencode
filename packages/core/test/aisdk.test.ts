@@ -5,7 +5,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { LLM, Message } from "@opencode-ai/ai"
 import { LLMClient } from "@opencode-ai/ai/route"
 import { expect } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(AISDK.locationLayer)
@@ -18,6 +18,64 @@ const model = (packageName: string, settings: Record<string, unknown> = {}) =>
     settings,
     limit: { context: 100, output: 20 },
   })
+
+it.effect("applies request transforms to AI SDK fetch calls", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    let received: Request | undefined
+    const input = model("test-sdk")
+    Object.defineProperty(input, "settings", {
+      value: {
+        fetch: async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+          received = new Request(input as Request, init)
+          return new Response()
+        },
+      },
+    })
+    yield* aisdk.hook.sdk((event) => {
+      event.sdk = {
+        languageModel: () => ({
+          doStream: async () => {
+            await event.options.fetch("https://provider.test/generate", { method: "POST", body: "{}" })
+            return {
+              stream: new ReadableStream({
+                start(controller) {
+                  controller.enqueue({
+                    type: "finish",
+                    finishReason: { unified: "stop" },
+                    usage: {
+                      inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 0, text: 0, reasoning: 0 },
+                    },
+                  })
+                  controller.close()
+                },
+              }),
+            }
+          },
+        }),
+      }
+    })
+    const resolved = yield* aisdk.model(input)
+    const request = LLM.request({ model: resolved, prompt: "Hello" })
+    const body = yield* resolved.route.body.from(request)
+    const prepared = yield* resolved.route.prepareTransport(body, request)
+    yield* resolved.route
+      .streamPrepared(prepared, request, {
+        http: { execute: () => Effect.die("unused") },
+        transformRequest: (request) =>
+          Effect.sync(() => {
+            const headers = new Headers(request.headers)
+            headers.set("x-hook", "enabled")
+            return new Request(request, { headers })
+          }),
+      })
+      .pipe(Stream.runDrain)
+
+    expect(received?.url).toBe("https://provider.test/generate")
+    expect(received?.headers.get("x-hook")).toBe("enabled")
+  }),
+)
 
 it.effect("keys language models by package and flattened overlays", () =>
   Effect.gen(function* () {

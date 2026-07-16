@@ -690,4 +690,33 @@ describe("OpenAI Chat route", () => {
       expect(events.map((event) => event.type)).toEqual(["step-start"])
     }),
   )
+
+  it.effect("transforms the serialized HTTP request before dispatch", () =>
+    Effect.gen(function* () {
+      const llm = yield* LLMClient.Service
+      const seen: string[] = []
+      yield* llm
+        .withRequestTransform((request) =>
+          Effect.sync(() => {
+            seen.push(request.url)
+            const headers = new Headers(request.headers)
+            headers.set("x-hook", "enabled")
+            return new Request(request, { headers })
+          }),
+        )
+        .stream(request)
+        .pipe(Stream.runDrain)
+
+      expect(seen).toEqual(["https://api.openai.test/v1/chat/completions"])
+    }).pipe(
+      Effect.provide(
+        dynamicResponse((input) => {
+          expect(input.request.headers["x-hook"]).toBe("enabled")
+          return Effect.succeed(
+            input.respond(sseEvents(deltaChunk({}, "stop")), { headers: { "content-type": "text/event-stream" } }),
+          )
+        }),
+      ),
+    ),
+  )
 })

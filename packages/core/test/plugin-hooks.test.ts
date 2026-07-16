@@ -42,4 +42,24 @@ describe("PluginHooks", () => {
       expect(event.messages).toEqual([Message.user("changed")])
     }),
   )
+
+  it.effect("allows session request hooks to replace the raw request", () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      expect(hooks.has("session", "request")).toBe(false)
+      yield* hooks.register("session", "request", (event) =>
+        Effect.sync(() => {
+          event.request = new Request(event.request, { headers: { "x-hook": "enabled" } })
+        }),
+      )
+      expect(hooks.has("session", "request")).toBe(true)
+      const event = {
+        sessionID: Session.ID.make("ses_request_hook"),
+        request: new Request("https://example.com"),
+      }
+
+      expect(yield* hooks.trigger("session", "request", event)).toBe(event)
+      expect(event.request.headers.get("x-hook")).toBe("enabled")
+    }),
+  )
 })

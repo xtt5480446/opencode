@@ -89,9 +89,7 @@ let toolExecutionsStarted: Deferred.Deferred<void> | undefined
 let toolExecutionsReady = 5
 let activeToolExecutions = 0
 let maxActiveToolExecutions = 0
-const client = Layer.succeed(
-  LLMClient.Service,
-  LLMClient.Service.of({
+const clientValue: LLMClientShape = LLMClient.Service.of({
     prepare: () => Effect.die("unused"),
     stream: ((request: LLMRequest) => {
       requests.push(request)
@@ -113,8 +111,9 @@ const client = Layer.succeed(
       )
     }) as unknown as LLMClientShape["stream"],
     generate: () => Effect.die("unused"),
-  }),
-)
+    withRequestTransform: () => clientValue,
+  })
+const client = Layer.succeed(LLMClient.Service, clientValue)
 const reply = {
   stop: () => [
     LLMEvent.stepStart({ index: 0 }),

@@ -1,15 +1,18 @@
 export * as SessionCompaction from "./compaction"
 
-import { LLM, LLMClient, LLMError, LLMEvent, Message, type LLMRequest, type Model } from "@opencode-ai/ai"
+import { LLM, LLMClient, LLMEvent, Message, type Model } from "@opencode-ai/ai"
+import type { LLMClientShape } from "@opencode-ai/ai/route"
 import { SessionError } from "@opencode-ai/schema/session-error"
 import { Context, Effect, Layer, Stream } from "effect"
 import { Config } from "../config"
 import { EventV2 } from "../event"
+import { PluginHooks } from "../plugin/hooks"
 import { makeLocationNode } from "../effect/app-node"
 import { llmClient } from "../effect/app-node-platform"
 import { SessionEvent } from "./event"
 import type { SessionMessage } from "./message"
 import { SessionModelHeaders } from "./model-headers"
+import { SessionRequestHook } from "./request-hook"
 import { SessionRunnerModel } from "./runner/model"
 import { SessionSchema } from "./schema"
 import { toSessionError } from "./to-session-error"
@@ -59,11 +62,10 @@ type Settings = {
 
 type Dependencies = {
   readonly events: EventV2.Interface
-  readonly llm: {
-    readonly stream: (request: LLMRequest) => Stream.Stream<LLMEvent, LLMError>
-  }
+  readonly llm: LLMClientShape
   readonly models: SessionRunnerModel.Interface
   readonly config: Settings
+  readonly hooks: PluginHooks.Interface
 }
 
 export type AutoInput = {
@@ -240,7 +242,7 @@ const make = (dependencies: Dependencies) => {
 
     const chunks: string[] = []
     let failure: SessionError.Error | undefined
-    yield* dependencies.llm
+    yield* SessionRequestHook.client(dependencies.llm, dependencies.hooks, plan.session.id)
       .stream(
         LLM.request({
           model: plan.model,
@@ -372,12 +374,13 @@ export const layer = Layer.effect(
     const llm = yield* LLMClient.Service
     const config = yield* Config.Service
     const models = yield* SessionRunnerModel.Service
-    return make({ events, llm, models, config: settings(yield* config.entries()) })
+    const hooks = yield* PluginHooks.Service
+    return make({ events, llm, models, config: settings(yield* config.entries()), hooks })
   }),
 )
 
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [EventV2.node, llmClient, Config.node, SessionRunnerModel.node],
+  deps: [EventV2.node, llmClient, Config.node, SessionRunnerModel.node, PluginHooks.node],
 })

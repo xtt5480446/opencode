@@ -92,6 +92,19 @@ yield *
   )
 ```
 
+The serialized provider request is also mutable before it is sent:
+
+```ts
+yield *
+  ctx.session.hook("request", (event) =>
+    Effect.sync(() => {
+      event.request = new Request(event.request, {
+        headers: new Headers([...event.request.headers, ["x-plugin", "enabled"]]),
+      })
+    }),
+  )
+```
+
 ## Reloading A Domain
 
 When data captured by a transform changes, reload the affected domain:

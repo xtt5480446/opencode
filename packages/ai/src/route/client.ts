@@ -5,7 +5,7 @@ import { Endpoint, type EndpointPatch } from "./endpoint"
 import { RequestExecutor } from "./executor"
 import { Framing } from "./framing"
 import { HttpTransport } from "./transport"
-import type { Transport, TransportRuntime } from "./transport"
+import type { RequestTransform, Transport, TransportRuntime } from "./transport"
 import { WebSocketExecutor } from "./transport"
 import type { Protocol } from "./protocol"
 import { applyCachePolicy } from "../cache-policy"
@@ -155,6 +155,7 @@ export interface Interface {
   readonly prepare: <Body = unknown>(request: LLMRequest) => Effect.Effect<PreparedRequestOf<Body>, LLMError>
   readonly stream: StreamMethod
   readonly generate: GenerateMethod
+  readonly withRequestTransform: (transform: RequestTransform) => Interface
 }
 
 export interface StreamMethod {
@@ -411,6 +412,22 @@ const streamRequestWith = (runtime: TransportRuntime) => (request: LLMRequest) =
     }),
   )
 
+const makeClient = (runtime: TransportRuntime): Interface => {
+  const stream = streamRequestWith(runtime)
+  return {
+    prepare: prepareWith as Interface["prepare"],
+    stream,
+    generate: generateWith(stream),
+    withRequestTransform: (transform) =>
+      makeClient({
+        ...runtime,
+        transformRequest: runtime.transformRequest
+          ? (request) => runtime.transformRequest!(request).pipe(Effect.flatMap(transform))
+          : transform,
+      }),
+  }
+}
+
 const generateWith = (stream: Interface["stream"]) =>
   Effect.fn("LLM.generate")(function* (request: LLMRequest) {
     const state = yield* stream(request).pipe(Stream.runFold(LLMResponse.empty, LLMResponse.reduce))
@@ -449,11 +466,12 @@ export const streamRequest = (request: LLMRequest) =>
 export const layer: Layer.Layer<Service, never, RequestExecutor.Service> = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const stream = streamRequestWith({
-      http: yield* RequestExecutor.Service,
-      webSocket: Option.getOrUndefined(yield* Effect.serviceOption(WebSocketExecutor.Service)),
-    })
-    return Service.of({ prepare: prepareWith as Interface["prepare"], stream, generate: generateWith(stream) })
+    return Service.of(
+      makeClient({
+        http: yield* RequestExecutor.Service,
+        webSocket: Option.getOrUndefined(yield* Effect.serviceOption(WebSocketExecutor.Service)),
+      }),
+    )
   }),
 )
 

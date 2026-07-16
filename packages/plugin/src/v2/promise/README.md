@@ -94,6 +94,16 @@ await ctx.session.hook("context", (event) => {
 })
 ```
 
+The serialized provider request is also mutable before it is sent:
+
+```ts
+await ctx.session.hook("request", (event) => {
+  event.request = new Request(event.request, {
+    headers: new Headers([...event.request.headers, ["x-plugin", "enabled"]]),
+  })
+})
+```
+
 Promise tools use plain object declarations with async executors:
 
 ```ts
