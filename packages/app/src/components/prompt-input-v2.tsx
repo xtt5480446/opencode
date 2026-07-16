@@ -12,6 +12,7 @@ import { DialogSelectModelUnpaidV2 } from "@/components/dialog-select-model-unpa
 import type { PromptInputProps } from "@/components/prompt-input/contracts"
 import { normalizePromptHistoryEntry, promptLength, type PromptHistoryComment } from "@/components/prompt-input/history"
 import { createPersistedPromptInputHistory } from "@/components/prompt-input/history-store"
+import { promptDesignPlaceholder, promptPlaceholder } from "@/components/prompt-input/placeholder"
 import { createPromptSubmit } from "@/components/prompt-input/submit"
 import { selectionFromLines, type SelectedLineRange, useFile } from "@/context/file"
 import { useComments } from "@/context/comments"
@@ -194,7 +195,16 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
     return text.trim().length === 0 && attachments().length === 0 && commentCount() === 0
   })
   const stopping = createMemo(() => working() && blank())
-  const designPlaceholder = () => (mode() === "shell" ? "git status" : "Ask anything, / for commands, @ for context...")
+  const placeholder = createMemo(() =>
+    promptPlaceholder({
+      mode: mode(),
+      commentCount: commentCount(),
+      example: mode() === "shell" ? "git status" : "",
+      suggest: false,
+      t: (key, params) => language.t(key as Parameters<typeof language.t>[0], params as never),
+    }),
+  )
+  const designPlaceholder = () => promptDesignPlaceholder(mode(), placeholder())
 
   const historyComments = () => {
     const byID = new Map(comments.all().map((item) => [`${item.file}\n${item.id}`, item] as const))
