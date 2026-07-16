@@ -166,10 +166,10 @@ const overflowCommand = (bytes: number) =>
   isWindows
     ? `[Console]::Out.Write(('x' * ${bytes})); Start-Sleep -Milliseconds 100`
     : `head -c ${bytes} /dev/zero | tr '\\0' 'x'`
-const progressOverflowCommand = (bytes: number) =>
+const progressLinesCommand = (lines: number) =>
   isWindows
-    ? `[Console]::Out.Write(('x' * ${bytes})); Start-Sleep -Milliseconds 1500`
-    : `head -c ${bytes} /dev/zero | tr '\\0' 'x'; sleep 1.5`
+    ? `1..${lines} | ForEach-Object { [Console]::Out.WriteLine(('line {0:d2}' -f $_)) }; Start-Sleep -Milliseconds 1500`
+    : `i=1; while [ $i -le ${lines} ]; do printf 'line %02d\\n' "$i"; i=$((i+1)); done; sleep 1.5`
 
 const withSession = <A, E, R>(directory: string, body: (registry: ToolRegistry.Interface) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
@@ -417,17 +417,17 @@ describe("ShellTool", () => {
     ),
   )
 
-  it.live("reports bounded output progress for a running command", () =>
+  it.live("reports the latest output lines for a running command", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
       (tmp) => {
         reset()
-        const bytes = ShellTool.MAX_CAPTURE_BYTES + 1024
+        const lines = ShellTool.PROGRESS_LINES + 10
         return withSession(tmp.path, (registry) =>
           Effect.gen(function* () {
             const progress: ToolRegistry.Progress[] = []
             yield* settleTool(registry, {
-              ...call({ command: progressOverflowCommand(bytes) }, "call-progress"),
+              ...call({ command: progressLinesCommand(lines) }, "call-progress"),
               progress: (update) => Effect.sync(() => progress.push(update)),
             })
 
@@ -436,9 +436,12 @@ describe("ShellTool", () => {
             const content = progress[0]?.content[0]
             expect(content?.type).toBe("text")
             if (content?.type !== "text") return
-            expect(content.text.indexOf("\n\n[output truncated; full output saved to:")).toBe(
-              ShellTool.MAX_CAPTURE_BYTES,
+            expect(content.text).toStartWith(
+              `[output truncated; showing last ${ShellTool.PROGRESS_LINES} lines. Full output saved to:`,
             )
+            expect(content.text).not.toContain("line 10\n")
+            expect(content.text).toContain("line 11\n")
+            expect(content.text).toContain(`line ${lines}\n`)
           }),
         )
       },

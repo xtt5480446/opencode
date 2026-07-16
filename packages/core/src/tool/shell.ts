@@ -17,6 +17,7 @@ export const name = "shell"
 export const DEFAULT_TIMEOUT_MS = 2 * 60 * 1_000
 export const MAX_TIMEOUT_MS = 10 * 60 * 1_000
 export const MAX_CAPTURE_BYTES = 1024 * 1024
+export const PROGRESS_LINES = 25
 
 const BACKGROUND_STARTED = "The command was moved to the background."
 const BACKGROUND_INSTRUCTION =
@@ -210,6 +211,23 @@ export const Plugin = {
                   }
                 })
 
+                const captureProgress = Effect.fn("ShellTool.captureProgress")(function* () {
+                  const latest = yield* shell.output(info.id, { cursor: Number.MAX_SAFE_INTEGER })
+                  const start = Math.max(0, latest.size - MAX_CAPTURE_BYTES)
+                  const page = yield* shell.output(info.id, { cursor: start, limit: MAX_CAPTURE_BYTES })
+                  const trailingNewline = page.output.endsWith("\n")
+                  const lines = trailingNewline ? page.output.split("\n").slice(0, -1) : page.output.split("\n")
+                  const truncated = start > 0 || lines.length > PROGRESS_LINES
+                  const output = lines.slice(-PROGRESS_LINES).join("\n") + (trailingNewline ? "\n" : "")
+                  const notice = truncated
+                    ? `[output truncated; showing last ${PROGRESS_LINES} lines. Full output saved to: ${info.file}]\n\n`
+                    : ""
+                  return {
+                    output: `${notice}${output || "(no output)"}`,
+                    truncated,
+                  }
+                })
+
                 const settleShell = Effect.fn("ShellTool.settleShell")(function* () {
                   const final = yield* shell.wait(info.id)
 
@@ -258,7 +276,7 @@ export const Plugin = {
 
                 const progress = yield* Effect.sleep("1 second").pipe(
                   Effect.andThen(
-                    captureShell().pipe(
+                    captureProgress().pipe(
                       Effect.flatMap((capture) =>
                         context.progress({
                           structured: { truncated: capture.truncated },
