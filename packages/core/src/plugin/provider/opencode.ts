@@ -29,8 +29,12 @@ const Token = Schema.Struct({
   refresh_token: Schema.String,
   expires_in: Schema.Number,
 })
+const DeviceTokenSuccess = Schema.Struct({
+  ...Token.fields,
+  org_id: Schema.String,
+})
 const TokenPending = Schema.Struct({ error: Schema.String })
-const DeviceToken = Schema.Union([Token, TokenPending])
+const DeviceToken = Schema.Union([DeviceTokenSuccess, TokenPending])
 const User = Schema.Struct({ id: Schema.String, email: Schema.String })
 const Org = Schema.Struct({ id: Schema.String, name: Schema.String })
 
@@ -261,7 +265,7 @@ function poll(http: HttpClient.HttpClient, server: string, deviceCode: string, i
   return loop(interval)
 }
 
-function credential(http: HttpClient.HttpClient, server: string, token: typeof Token.Type) {
+function credential(http: HttpClient.HttpClient, server: string, token: typeof DeviceTokenSuccess.Type) {
   return Effect.gen(function* () {
     const [user, orgs] = yield* Effect.all(
       [
@@ -270,7 +274,8 @@ function credential(http: HttpClient.HttpClient, server: string, token: typeof T
       ],
       { concurrency: 2 },
     )
-    const org = orgs.toSorted((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))[0]
+    const org = orgs.find((org) => org.id === token.org_id)
+    if (!org) return yield* Effect.fail(new Error(`Selected organization ${token.org_id} is not available`))
     return Credential.OAuth.make({
       type: "oauth" as const,
       methodID,
