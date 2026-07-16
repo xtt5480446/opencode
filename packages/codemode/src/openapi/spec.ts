@@ -27,35 +27,245 @@ export const nonEmptyString = (value: unknown): string | undefined =>
 export const own = <T>(record: Readonly<Record<string, T>>, key: string): T | undefined =>
   Object.hasOwn(record, key) ? record[key] : undefined
 
+const resolvePointer = (root: unknown, ref: string): unknown =>
+  ref
+    .slice(2)
+    .split("/")
+    .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"))
+    .reduce<unknown>((item, segment) => (isRecord(item) ? own(item, segment) : undefined), root)
+
 export const resolve = (document: Document, value: unknown): unknown => {
   const next = (current: unknown, seen: ReadonlySet<string>): unknown => {
     if (!isRecord(current)) return current
-    const ref = nonEmptyString(current.$ref)
+    const ref = nonEmptyString(own(current, "$ref"))
     if (ref === undefined || !ref.startsWith("#/") || seen.has(ref)) return current
-    const target = ref
-      .slice(2)
-      .split("/")
-      .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"))
-      .reduce<unknown>((item, segment) => (isRecord(item) ? own(item, segment) : undefined), document)
+    const target = resolvePointer(document, ref)
     return target === undefined ? current : next(target, new Set([...seen, ref]))
   }
   return next(value, new Set())
 }
 
-const projectSchema = (document: Document, value: unknown): JsonSchema => {
-  if (!isRecord(value)) return {}
+type SchemaDirection = "request" | "response"
+type SchemaContext = { readonly document: Document; readonly root: unknown }
+type SchemaTarget = SchemaContext & { readonly value: unknown }
+
+const schemaAnchor = (
+  value: unknown,
+  anchor: string,
+  seen: ReadonlySet<object> = new Set(),
+  nested = false,
+): unknown => {
+  if (!isRecord(value) || seen.has(value)) return undefined
+  if (nested && own(value, "$id") !== undefined) return undefined
+  if (own(value, "$anchor") === anchor) return value
+  const nextSeen = new Set([...seen, value])
+  const maps = [
+    own(value, "properties"),
+    own(value, "patternProperties"),
+    own(value, "dependentSchemas"),
+    own(value, "$defs"),
+    own(value, "definitions"),
+  ]
+  for (const map of maps) {
+    if (!isRecord(map)) continue
+    for (const child of Object.values(map)) {
+      const found = schemaAnchor(child, anchor, nextSeen, true)
+      if (found !== undefined) return found
+    }
+  }
+  for (const child of [
+    ...asArray(own(value, "allOf")),
+    ...asArray(own(value, "anyOf")),
+    ...asArray(own(value, "oneOf")),
+    ...asArray(own(value, "prefixItems")),
+    own(value, "items"),
+    own(value, "contains"),
+    own(value, "additionalProperties"),
+    own(value, "unevaluatedProperties"),
+    own(value, "propertyNames"),
+    own(value, "not"),
+    own(value, "if"),
+    own(value, "then"),
+    own(value, "else"),
+  ]) {
+    const found = schemaAnchor(child, anchor, nextSeen, true)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+const schemaReference = (context: SchemaContext, value: Record<string, unknown>): SchemaTarget | undefined => {
+  const ref = nonEmptyString(own(value, "$ref"))
+  if (ref === undefined) return undefined
+  if (ref.startsWith("#/$defs/") || ref.startsWith("#/definitions/")) {
+    const target = resolvePointer(context.root, ref)
+    return target === undefined ? undefined : { ...context, root: context.root, value: target }
+  }
+  if (ref.startsWith("#/")) {
+    const target = resolvePointer(context.document, ref)
+    return target === undefined ? undefined : { document: context.document, root: target, value: target }
+  }
+  if (ref.startsWith("#") && ref.length > 1) {
+    const target = schemaAnchor(context.root, ref.slice(1))
+    return target === undefined ? undefined : { ...context, value: target }
+  }
+  return undefined
+}
+
+const hiddenProperty = (
+  context: SchemaContext,
+  value: unknown,
+  direction: SchemaDirection,
+  seen: ReadonlySet<object> = new Set(),
+): boolean => {
+  if (!isRecord(value)) return false
+  const current = own(value, "$id") === undefined ? context : { ...context, root: value }
+  if (own(value, direction === "request" ? "readOnly" : "writeOnly") === true) return true
+  const target = schemaReference(current, value)
+  if (isRecord(target?.value) && !seen.has(target.value)) {
+    if (hiddenProperty(target, target.value, direction, new Set([...seen, target.value]))) return true
+  }
+  const allOf = asArray(own(value, "allOf"))
+  if (allOf.some((item) => hiddenProperty(current, item, direction, seen))) return true
+  for (const keyword of ["anyOf", "oneOf"] as const) {
+    const alternatives = asArray(own(value, keyword))
+    if (alternatives.length > 0 && alternatives.every((item) => hiddenProperty(current, item, direction, seen))) {
+      return true
+    }
+  }
+  return false
+}
+
+const hiddenPropertyNames = (
+  context: SchemaContext,
+  value: unknown,
+  direction: SchemaDirection,
+  seen: ReadonlySet<object> = new Set(),
+): ReadonlySet<string> => {
+  if (!isRecord(value)) return new Set()
+  const current = own(value, "$id") === undefined ? context : { ...context, root: value }
+  const declaredProperties = own(value, "properties")
+  const hidden = new Set(
+    isRecord(declaredProperties)
+      ? Object.entries(declaredProperties)
+          .filter(([, property]) => hiddenProperty(current, property, direction))
+          .map(([name]) => name)
+      : [],
+  )
+  const target = schemaReference(current, value)
+  if (isRecord(target?.value) && !seen.has(target.value)) {
+    for (const name of hiddenPropertyNames(target, target.value, direction, new Set([...seen, target.value]))) {
+      hidden.add(name)
+    }
+  }
+  for (const item of asArray(own(value, "allOf"))) {
+    for (const name of hiddenPropertyNames(current, item, direction, seen)) hidden.add(name)
+  }
+  return hidden
+}
+
+const directionalSchema = (
+  context: SchemaContext,
+  value: unknown,
+  direction: SchemaDirection,
+  excluded: ReadonlySet<string> = new Set(),
+): unknown => {
+  if (!isRecord(value)) return value
+  const current = own(value, "$id") === undefined ? context : { ...context, root: value }
+  const declaredProperties = own(value, "properties")
+  const properties = isRecord(declaredProperties) ? declaredProperties : undefined
+  const hidden = new Set([...excluded, ...hiddenPropertyNames(current, value, direction)])
+  const schemas = (items: unknown, inherited: ReadonlySet<string> = new Set()): unknown =>
+    Array.isArray(items) ? items.map((item) => directionalSchema(current, item, direction, inherited)) : items
+  const schemaMap = (items: unknown): unknown =>
+    isRecord(items)
+      ? Object.fromEntries(
+          Object.entries(items).map(([name, item]) => [name, directionalSchema(current, item, direction)]),
+        )
+      : items
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => {
+      if (key === "properties" && properties !== undefined) {
+        return [
+          key,
+          Object.fromEntries(
+            Object.entries(properties)
+              .filter(([name]) => !hidden.has(name))
+              .map(([name, property]) => [name, directionalSchema(current, property, direction)]),
+          ),
+        ]
+      }
+      if (key === "required" && Array.isArray(item)) {
+        return [key, item.filter((name) => typeof name !== "string" || !hidden.has(name))]
+      }
+      if (key === "allOf") return [key, schemas(item, hidden)]
+      if (key === "anyOf" || key === "oneOf") return [key, schemas(item, hidden)]
+      if (key === "prefixItems") return [key, schemas(item)]
+      if (key === "dependentRequired" && isRecord(item)) {
+        return [
+          key,
+          Object.fromEntries(
+            Object.entries(item)
+              .filter(([name]) => !hidden.has(name))
+              .map(([name, names]) => [
+                name,
+                Array.isArray(names) ? names.filter((required) => !hidden.has(String(required))) : names,
+              ]),
+          ),
+        ]
+      }
+      if (key === "dependentSchemas" && isRecord(item)) {
+        return [
+          key,
+          Object.fromEntries(
+            Object.entries(item)
+              .filter(([name]) => !hidden.has(name))
+              .map(([name, schema]) => [name, directionalSchema(current, schema, direction, hidden)]),
+          ),
+        ]
+      }
+      if (key === "properties" || key === "patternProperties" || key === "$defs" || key === "definitions") {
+        return [key, schemaMap(item)]
+      }
+      if (
+        key === "items" ||
+        key === "contains" ||
+        key === "additionalProperties" ||
+        key === "unevaluatedProperties" ||
+        key === "propertyNames" ||
+        key === "not"
+      ) {
+        return [key, directionalSchema(current, item, direction)]
+      }
+      if (key === "if" || key === "then" || key === "else") {
+        return [key, directionalSchema(current, item, direction, hidden)]
+      }
+      return [key, item]
+    }),
+  )
+}
+
+const projectSchema = (document: Document, value: unknown, direction: SchemaDirection): JsonSchema => {
+  const projected = directionalSchema({ document, root: value }, value, direction)
+  if (!isRecord(projected)) return {}
   const normalized = nonEmptyString(document.openapi)?.startsWith("3.0")
-    ? fromSchemaOpenApi3_0(value)
-    : fromSchemaOpenApi3_1(value)
+    ? fromSchemaOpenApi3_0(projected)
+    : fromSchemaOpenApi3_1(projected)
   return Object.keys(normalized.definitions).length === 0
     ? normalized.schema
     : { ...normalized.schema, $defs: normalized.definitions }
 }
 
-export const componentDefinitions = (document: Document): Readonly<Record<string, JsonSchema>> => {
+export const componentDefinitions = (
+  document: Document,
+  direction: SchemaDirection,
+): Readonly<Record<string, JsonSchema>> => {
   const components = isRecord(document.components) ? document.components : {}
   const schemas = isRecord(components.schemas) ? components.schemas : {}
-  return Object.fromEntries(Object.entries(schemas).map(([name, value]) => [name, projectSchema(document, value)]))
+  return Object.fromEntries(
+    Object.entries(schemas).map(([name, value]) => [name, projectSchema(document, value, direction)]),
+  )
 }
 
 const withDefinitions = (schema: JsonSchema, definitions: Readonly<Record<string, JsonSchema>>): JsonSchema => {
@@ -157,7 +367,7 @@ const operationParameters = (
     if (style === "deepObject" && !explode) {
       return { ok: false, reason: `query parameter '${name}' uses deepObject with explode=false` }
     }
-    const base = projectSchema(document, resolved.schema)
+    const base = projectSchema(document, resolved.schema, "request")
     const description = nonEmptyString(resolved.description)
     unordered.push({
       name,
@@ -191,7 +401,8 @@ const operationBody = (
       reason: `request body has no JSON content (declared: ${Object.keys(content).join(", ") || "none"})`,
     }
   }
-  const schema = resolve(document, selected.schema)
+  const resolvedSchema = resolve(document, selected.schema)
+  const schema = directionalSchema({ document, root: resolvedSchema }, resolvedSchema, "request")
   const required = resolved.required === true
   if (!isFlattenableObjectBody(schema, required)) {
     return {
@@ -202,7 +413,7 @@ const operationBody = (
             name: "body",
             location: "body",
             required,
-            schema: projectSchema(document, selected.schema),
+            schema: projectSchema(document, selected.schema, "request"),
             style: undefined,
             explode: undefined,
           },
@@ -221,7 +432,7 @@ const operationBody = (
         name,
         location: "body" as const,
         required: required && requiredProperties.has(name),
-        schema: projectSchema(document, value),
+        schema: projectSchema(document, value, "request"),
         style: undefined,
         explode: undefined,
       })),
@@ -339,7 +550,7 @@ export const operationOutput = (
         continue
       }
       if (!isRecord(value) || value.schema === undefined) return { ok: true, value: undefined }
-      outcomes.push(projectSchema(document, value.schema))
+      outcomes.push(projectSchema(document, value.schema, "response"))
     }
   }
   if (outcomes.length === 0) return { ok: true, value: undefined }

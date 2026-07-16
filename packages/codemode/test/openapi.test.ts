@@ -59,6 +59,53 @@ const singleOperation = (operation: Record<string, unknown>, method = "get"): Do
   },
 })
 
+const directionalSpec = (openapi: string): Document => ({
+  openapi,
+  paths: {
+    "/users": {
+      post: {
+        operationId: "users.create",
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/User" } } },
+        },
+        responses: {
+          200: {
+            description: "Created",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/User" } } },
+          },
+        },
+      },
+    },
+  },
+  components: {
+    schemas: {
+      ReadOnlyID: { type: "string", readOnly: true },
+      User: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "name", "password", "profile", "generated"],
+        properties: {
+          id: { type: "string", readOnly: true },
+          name: { type: "string" },
+          password: { type: "string", writeOnly: true },
+          profile: {
+            type: "object",
+            additionalProperties: false,
+            required: ["createdAt", "secret", "label"],
+            properties: {
+              createdAt: { type: "string", readOnly: true },
+              secret: { type: "string", writeOnly: true },
+              label: { type: "string" },
+            },
+          },
+          generated: { $ref: "#/components/schemas/ReadOnlyID" },
+        },
+      },
+    },
+  },
+})
+
 describe("OpenAPI.fromSpec", () => {
   test("covers a representative API from generation through execution", async () => {
     const resolutions: Array<string> = []
@@ -354,6 +401,297 @@ describe("OpenAPI.fromSpec", () => {
     expect(tool.output.$defs).toMatchObject({ Local: { type: "string" }, Global: { type: "number" } })
   })
 
+  test("projects read-only and write-only properties by schema direction", () => {
+    for (const version of ["3.0.3", "3.1.0"]) {
+      const tool = toolAt(OpenAPI.fromSpec({ baseUrl, spec: directionalSpec(version) }).tools, "users.create")
+      if (!Tool.isDefinition(tool) || !isRecord(tool.input) || !isRecord(tool.output)) {
+        throw new Error(`users.create was not generated for OpenAPI ${version}`)
+      }
+
+      expect(inputTypeScript(tool)).toBe(
+        "{ name: string; password: string; profile: { secret: string; label: string } }",
+      )
+      expect(outputTypeScript(tool)).toBe(
+        "{ id: string; name: string; profile: { createdAt: string; label: string }; generated: string }",
+      )
+
+      const requestDefinitions = isRecord(tool.input.$defs) ? tool.input.$defs : {}
+      const responseDefinitions = isRecord(tool.output.$defs) ? tool.output.$defs : {}
+      const requestUser = isRecord(requestDefinitions.User) ? requestDefinitions.User : {}
+      const responseUser = isRecord(responseDefinitions.User) ? responseDefinitions.User : {}
+      expect(Object.keys(isRecord(requestUser.properties) ? requestUser.properties : {})).toEqual([
+        "name",
+        "password",
+        "profile",
+      ])
+      expect(requestUser.required).toEqual(["name", "password", "profile"])
+      expect(Object.keys(isRecord(responseUser.properties) ? responseUser.properties : {})).toEqual([
+        "id",
+        "name",
+        "profile",
+        "generated",
+      ])
+      expect(responseUser.required).toEqual(["id", "name", "profile", "generated"])
+    }
+  })
+
+  test("projects directional annotations through local refs, anchors, and compositions", () => {
+    const tool = toolAt(
+      OpenAPI.fromSpec({
+        baseUrl,
+        spec: singleOperation(
+          {
+            requestBody: {
+              required: true,
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["local", "anchored", "union", "choice", "conditional", "name"],
+                    properties: {
+                      local: { $ref: "#/$defs/ReadOnlyValue" },
+                      anchored: { $ref: "#managed" },
+                      union: { anyOf: [{ $ref: "#/$defs/ReadOnlyValue" }] },
+                      choice: { oneOf: [{ $ref: "#/$defs/ReadOnlyValue" }] },
+                      conditional: { anyOf: [{ $ref: "#/$defs/ReadOnlyValue" }, { type: "number" }] },
+                      name: { type: "string" },
+                    },
+                    $defs: {
+                      ReadOnlyValue: { type: "string", readOnly: true },
+                      AnchoredValue: { $anchor: "managed", type: "string", readOnly: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "post",
+        ),
+      }).tools,
+      "test",
+    )
+    if (!Tool.isDefinition(tool)) throw new Error("test was not generated")
+
+    expect(inputTypeScript(tool)).toBe("{ conditional: unknown; name: string }")
+  })
+
+  test("keeps anchors inside their schema resource", () => {
+    const tool = toolAt(
+      OpenAPI.fromSpec({
+        baseUrl,
+        spec: singleOperation(
+          {
+            requestBody: {
+              required: true,
+              content: {
+                "application/json": {
+                  schema: {
+                    $id: "https://example.test/root",
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["value"],
+                    properties: { value: { $ref: "#managed" } },
+                    $defs: {
+                      Nested: {
+                        $id: "nested",
+                        $anchor: "managed",
+                        type: "string",
+                        readOnly: true,
+                      },
+                      Root: { $anchor: "managed", type: "number" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "post",
+        ),
+      }).tools,
+      "test",
+    )
+    if (!Tool.isDefinition(tool)) throw new Error("test was not generated")
+
+    expect(inputTypeScript(tool)).toBe("{ value: unknown }")
+  })
+
+  test("resolves local directional refs inside nested schema resources", () => {
+    const tool = toolAt(
+      OpenAPI.fromSpec({
+        baseUrl,
+        spec: singleOperation(
+          {
+            requestBody: {
+              content: {
+                "application/json": {
+                  schema: {
+                    $id: "https://example.test/root",
+                    type: "object",
+                    required: ["nested"],
+                    properties: {
+                      nested: {
+                        $id: "nested",
+                        type: "object",
+                        required: ["secret", "name"],
+                        properties: {
+                          secret: { $ref: "#managed" },
+                          name: { type: "string" },
+                        },
+                        $defs: {
+                          Secret: { $anchor: "managed", type: "string", readOnly: true },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "post",
+        ),
+      }).tools,
+      "test",
+    )
+    if (!Tool.isDefinition(tool)) throw new Error("test was not generated")
+
+    expect(inputTypeScript(tool)).toBe("{ body?: { nested: { name: string } } }")
+  })
+
+  test("ignores inherited directional annotations", () => {
+    const inherited: Record<string, unknown> = { type: "string" }
+    Object.setPrototypeOf(inherited, { readOnly: true })
+    const tool = toolAt(
+      OpenAPI.fromSpec({
+        baseUrl,
+        spec: singleOperation({
+          parameters: [
+            {
+              name: "filter",
+              in: "query",
+              required: true,
+              schema: { type: "object", properties: { value: inherited }, required: ["value"] },
+            },
+          ],
+        }),
+      }).tools,
+      "test",
+    )
+    if (!Tool.isDefinition(tool)) throw new Error("test was not generated")
+
+    expect(inputTypeScript(tool)).toBe("{ filter: { value: string } }")
+  })
+
+  test("cleans required properties across allOf branches", () => {
+    const tool = toolAt(
+      OpenAPI.fromSpec({
+        baseUrl,
+        spec: singleOperation(
+          {
+            requestBody: {
+              required: true,
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    required: ["id", "name"],
+                    allOf: [
+                      {
+                        type: "object",
+                        required: ["id", "name"],
+                        properties: { id: { type: "string", readOnly: true }, name: { type: "string" } },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+          "post",
+        ),
+      }).tools,
+      "test",
+    )
+    if (!Tool.isDefinition(tool) || !isRecord(tool.input)) throw new Error("test was not generated")
+    const properties = isRecord(tool.input.properties) ? tool.input.properties : {}
+    const body = isRecord(properties.body) ? properties.body : {}
+    const allOf = Array.isArray(body.allOf) ? body.allOf : []
+    const branch = isRecord(allOf[0]) ? allOf[0] : {}
+
+    expect(body.required).toEqual(["name"])
+    expect(branch.required).toEqual(["name"])
+    expect(Object.keys(isRecord(branch.properties) ? branch.properties : {})).toEqual(["name"])
+  })
+
+  test("cleans hidden requirements from unions, dependencies, and conditionals", () => {
+    const tool = toolAt(
+      OpenAPI.fromSpec({
+        baseUrl,
+        spec: singleOperation(
+          {
+            requestBody: {
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    required: ["id", "name"],
+                    properties: { id: { type: "string", readOnly: true }, name: { type: "string" } },
+                    anyOf: [{ required: ["id"] }, { required: ["name"] }],
+                    dependentRequired: { id: ["name"], name: ["id"] },
+                    dependentSchemas: { id: { required: ["name"] }, name: { required: ["id"] } },
+                    if: { required: ["name"] },
+                    then: { required: ["id"] },
+                  },
+                },
+              },
+            },
+          },
+          "post",
+        ),
+      }).tools,
+      "test",
+    )
+    if (!Tool.isDefinition(tool) || !isRecord(tool.input)) throw new Error("test was not generated")
+    const properties = isRecord(tool.input.properties) ? tool.input.properties : {}
+    const body = isRecord(properties.body) ? properties.body : {}
+
+    expect(JSON.stringify(body)).not.toContain('"id"')
+    expect(JSON.stringify(body)).toContain('"name"')
+  })
+
+  test("keeps directional schemas model-facing while preserving runtime pass-through", async () => {
+    const client = recordingClient(() =>
+      json({
+        id: "server-id",
+        name: "Ada",
+        password: "returned-by-server",
+        profile: { createdAt: "today", secret: "returned-secret", label: "primary" },
+        generated: "generated-id",
+      }),
+    )
+    const tool = toolAt(OpenAPI.fromSpec({ baseUrl, spec: directionalSpec("3.1.0") }).tools, "users.create")
+    if (!Tool.isDefinition(tool)) throw new Error("users.create was not generated")
+
+    const result = await Effect.runPromise(
+      tool
+        .run({
+          id: "ignored-top-level",
+          generated: "ignored-generated",
+          name: "Ada",
+          password: "request-secret",
+          profile: { createdAt: "sent-nested", secret: "nested-secret", label: "primary" },
+        })
+        .pipe(Effect.provide(client.layer)),
+    )
+
+    expect(client.requests[0]?.body).toEqual({
+      name: "Ada",
+      password: "request-secret",
+      profile: { createdAt: "sent-nested", secret: "nested-secret", label: "primary" },
+    })
+    expect(result).toMatchObject({ password: "returned-by-server", profile: { secret: "returned-secret" } })
+  })
+
   test("documents that the opencode fixture is unauthenticated", async () => {
     const spec = await opencodeSpec()
     const components = isRecord(spec.components) ? spec.components : {}
@@ -525,9 +863,9 @@ describe("OpenAPI.fromSpec", () => {
     expect(client.requests[0]?.url).toBe(
       `${baseUrl}/test?tags=first+value&tags=second%26value&state=open+now&page=2&location%5Bdirectory%5D=%2Ftmp%2Fa+b&location%5Bworkspace%5D=work%261`,
     )
-    await expect(
-      Effect.runPromise(tool.run({ tags: [{}] }).pipe(Effect.provide(client.layer))),
-    ).rejects.toThrow("Parameter 'tags' contains an unsupported nested value.")
+    await expect(Effect.runPromise(tool.run({ tags: [{}] }).pipe(Effect.provide(client.layer)))).rejects.toThrow(
+      "Parameter 'tags' contains an unsupported nested value.",
+    )
     await expect(
       Effect.runPromise(tool.run({ filter: { state: {} } }).pipe(Effect.provide(client.layer))),
     ).rejects.toThrow("Query parameter 'filter' contains an unsupported nested value.")

@@ -9,7 +9,6 @@ The initial adapter intentionally skips operations it cannot execute correctly. 
 - Base URLs containing query strings or fragments.
 - Runtime response-schema validation and full content negotiation.
 - Binary response values and explicit byte-oriented return types.
-- Request/response projection for `readOnly` and `writeOnly` properties.
 - SSE, WebSocket, and other streaming transports.
 - Recovery of responses rejected by a status-filtering `HttpClient`.
 - Configurable request and response size limits.
