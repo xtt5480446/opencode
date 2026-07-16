@@ -19,3 +19,26 @@ export function collapseToolOutput(output: string, maxLines: number, maxChars: n
 
   return { output: preview, overflow: true }
 }
+
+export function collapseToolOutputParts(input: string, output: string, maxLines: number, maxChars: number) {
+  const separator = input && output ? "\n\n" : ""
+  const collapsed = collapseToolOutput(`${input}${separator}${output}`, maxLines, maxChars)
+  if (!collapsed.overflow) return { input, output, overflow: false }
+
+  const ellipsis = collapsed.output.endsWith("…") ? "…" : ""
+  const preview = ellipsis ? collapsed.output.slice(0, -1) : collapsed.output
+  const outputStart = input.length + separator.length
+  if (preview.length <= outputStart) {
+    return {
+      input: preview.slice(0, input.length) + ellipsis,
+      output: "",
+      overflow: true,
+    }
+  }
+
+  return {
+    input,
+    output: preview.slice(outputStart) + ellipsis,
+    overflow: true,
+  }
+}

@@ -66,7 +66,7 @@ import { useConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { nextThinkingMode, reasoningSummary, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
-import { collapseToolOutput } from "../../util/collapse-tool-output"
+import { collapseToolOutput, collapseToolOutputParts } from "../../util/collapse-tool-output"
 import { usePluginRuntime } from "../../plugin/runtime"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
@@ -2384,16 +2384,10 @@ function Shell(props: ToolProps) {
   const maxLines = 10
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
   const input = createMemo(() => (command() ? `${isRunning() ? "" : "$ "}${command()}` : ""))
-  const content = createMemo(() => [input(), output()].filter(Boolean).join("\n\n"))
-  const collapsed = createMemo(() => collapseToolOutput(content(), maxLines, maxChars()))
+  const collapsed = createMemo(() => collapseToolOutputParts(input(), output(), maxLines, maxChars()))
   const visible = createMemo(() => {
-    const command = input()
-    if (expanded()) return { input: command, output: output() }
-    const preview = collapsed().overflow ? collapsed().output : content()
-    return {
-      input: preview.slice(0, command.length),
-      output: preview.slice(command.length).replace(/^\n+/, ""),
-    }
+    if (expanded()) return { input: input(), output: output() }
+    return collapsed()
   })
   const expandable = createMemo(() => Boolean(shellID()) || collapsed().overflow)
   const toggle = () => {
