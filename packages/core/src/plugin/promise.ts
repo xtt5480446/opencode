@@ -59,6 +59,7 @@ export function fromPromise(plugin: Plugin) {
         const context2: Context = {
           options: host.options,
           agent: {
+            get: (id) => run(host.agent.get(id)),
             list: (input) => run(host.agent.list(input)),
             transform: transform(host.agent),
             reload: () => run(host.agent.reload()),
@@ -70,9 +71,11 @@ export function fromPromise(plugin: Plugin) {
           catalog: {
             provider: {
               list: (input) => run(host.catalog.provider.list(input)),
-              get: (input) => run(host.catalog.provider.get({ ...input, providerID: Provider.ID.make(input.providerID) })),
+              get: (input) =>
+                run(host.catalog.provider.get({ ...input, providerID: Provider.ID.make(input.providerID) })),
             },
             model: {
+              get: (providerID, modelID) => run(host.catalog.model.get(providerID, modelID)),
               list: (input) => run(host.catalog.model.list(input)),
               default: (input) =>
                 run(host.catalog.model.default(input)).then((result) => ({ ...result, data: result.data ?? null })),
@@ -96,35 +99,66 @@ export function fromPromise(plugin: Plugin) {
               ),
             connect: {
               key: (input) =>
-                run(host.integration.connect.key({ ...input, integrationID: Integration.ID.make(input.integrationID) })),
-              oauth: (input) =>
                 run(
-                  host.integration.connect.oauth({
+                  host.integration.connect.key({ ...input, integrationID: Integration.ID.make(input.integrationID) }),
+                ),
+            },
+            oauth: {
+              connect: (input) =>
+                run(
+                  host.integration.oauth.connect({
                     ...input,
                     integrationID: Integration.ID.make(input.integrationID),
                     methodID: Integration.MethodID.make(input.methodID),
                   }),
                 ),
-            },
-            attempt: {
               status: (input) =>
                 run(
-                  host.integration.attempt.status({
+                  host.integration.oauth.status({
                     ...input,
+                    integrationID: Integration.ID.make(input.integrationID),
                     attemptID: Integration.AttemptID.make(input.attemptID),
                   }),
                 ),
               complete: (input) =>
                 run(
-                  host.integration.attempt.complete({
+                  host.integration.oauth.complete({
                     ...input,
+                    integrationID: Integration.ID.make(input.integrationID),
                     attemptID: Integration.AttemptID.make(input.attemptID),
                   }),
                 ),
               cancel: (input) =>
                 run(
-                  host.integration.attempt.cancel({
+                  host.integration.oauth.cancel({
                     ...input,
+                    integrationID: Integration.ID.make(input.integrationID),
+                    attemptID: Integration.AttemptID.make(input.attemptID),
+                  }),
+                ),
+            },
+            command: {
+              connect: (input) =>
+                run(
+                  host.integration.command.connect({
+                    ...input,
+                    integrationID: Integration.ID.make(input.integrationID),
+                    methodID: Integration.MethodID.make(input.methodID),
+                  }),
+                ),
+              status: (input) =>
+                run(
+                  host.integration.command.status({
+                    ...input,
+                    integrationID: Integration.ID.make(input.integrationID),
+                    attemptID: Integration.AttemptID.make(input.attemptID),
+                  }),
+                ),
+              cancel: (input) =>
+                run(
+                  host.integration.command.cancel({
+                    ...input,
+                    integrationID: Integration.ID.make(input.integrationID),
                     attemptID: Integration.AttemptID.make(input.attemptID),
                   }),
                 ),
@@ -206,6 +240,17 @@ export function fromPromise(plugin: Plugin) {
                   agent: input.agent == null ? undefined : Agent.ID.make(input.agent),
                   model: input.model == null ? undefined : model(input.model),
                   arguments: input.arguments ?? undefined,
+                  delivery: input.delivery ?? undefined,
+                  resume: input.resume ?? undefined,
+                }),
+              ),
+            synthetic: (input) =>
+              run(
+                host.session.synthetic({
+                  ...input,
+                  sessionID: Session.ID.make(input.sessionID),
+                  id: input.id == null ? undefined : SessionMessage.ID.make(input.id),
+                  description: input.description ?? undefined,
                   delivery: input.delivery ?? undefined,
                   resume: input.resume ?? undefined,
                 }),

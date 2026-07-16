@@ -43,6 +43,7 @@ import { SubagentTool } from "../tool/subagent"
 import { Tools } from "../tool/tools"
 import { WebFetchTool } from "../tool/webfetch"
 import { WebSearchTool } from "../tool/websearch"
+import { WellKnown } from "../wellknown"
 import { WriteTool } from "../tool/write"
 import { AgentPlugin } from "./agent"
 import { CommandPlugin } from "./command"
@@ -50,7 +51,9 @@ import { ModelsDevPlugin } from "./models-dev"
 import { ProviderPlugins } from "./provider"
 import { PluginRuntime } from "./runtime"
 import { SkillPlugin } from "./skill"
+import { SystemPromptPlugin } from "./system-prompt"
 import { VariantPlugin } from "./variant"
+import { WellKnownPlugin } from "../wellknown/plugin"
 
 const services = Effect.fn("PluginInternal.services")(function* () {
   const agent = yield* AgentV2.Service
@@ -80,6 +83,7 @@ const services = Effect.fn("PluginInternal.services")(function* () {
   const skill = yield* SkillV2.Service
   const tools = yield* Tools.Service
   const websearch = yield* WebSearchTool.ConfigService
+  const wellknown = yield* WellKnown.Service
   return Context.mergeAll(
     Context.make(AgentV2.Service, agent),
     Context.make(Catalog.Service, catalog),
@@ -108,6 +112,7 @@ const services = Effect.fn("PluginInternal.services")(function* () {
     Context.make(SkillV2.Service, skill),
     Context.make(Tools.Service, tools),
     Context.make(WebSearchTool.ConfigService, websearch),
+    Context.make(WellKnown.Service, wellknown),
   )
 })
 
@@ -118,9 +123,11 @@ export type Requirements = ContextServices<Effect.Success<ReturnType<typeof serv
 export type InternalPlugin = Plugin<Requirements | Scope.Scope>
 
 const pre = [
+  WellKnownPlugin.Plugin,
   AgentPlugin.Plugin,
   CommandPlugin.Plugin,
   SkillPlugin.Plugin,
+  ...SystemPromptPlugin.Plugins,
   ModelsDevPlugin,
   ...ProviderPlugins,
   PatchTool.Plugin,
