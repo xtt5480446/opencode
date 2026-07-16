@@ -54,7 +54,7 @@ import {
   TypeValidationError,
   UnsupportedFunctionalityError,
 } from "@ai-sdk/provider"
-import { Auth, Endpoint, RequestExecutor, type AnyRoute } from "@opencode-ai/ai/route"
+import { Auth, Endpoint, RequestExecutor, ensureTerminalEvent, type AnyRoute } from "@opencode-ai/ai/route"
 import { Cause, Context, Effect, Layer, Option, Schema, Scope, Stream } from "effect"
 import { ModelV2 } from "./model"
 import { ProviderV2 } from "./provider"
@@ -368,7 +368,7 @@ function modelFromLanguage(info: ModelV2.Info, language: LanguageModelV3) {
     with: () => route,
     model: (input) => Model.make({ ...input, provider: "provider" in input ? input.provider : info.providerID, route }),
     prepareTransport: (body) => Effect.succeed(body),
-    streamPrepared: (prepared) => streamLanguage(language, prepared as LanguageModelV3CallOptions),
+    streamPrepared: (prepared) => streamLanguage(language, prepared as LanguageModelV3CallOptions, route.id),
   }
   return Model.make({ id: info.modelID ?? info.id, provider: info.providerID, route })
 }
@@ -559,7 +559,7 @@ function providerOptions(input: LLMRequest["providerOptions"]): SharedV3Provider
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, jsonObject(value)]))
 }
 
-function streamLanguage(language: LanguageModelV3, options: LanguageModelV3CallOptions) {
+function streamLanguage(language: LanguageModelV3, options: LanguageModelV3CallOptions, route: string) {
   const state = { step: 0, toolNames: {} as Record<string, string> }
   return Stream.concat(
     Stream.make(LLMEvent.stepStart({ index: state.step })),
@@ -579,7 +579,7 @@ function streamLanguage(language: LanguageModelV3, options: LanguageModelV3CallO
         ),
       ),
     ),
-  )
+  ).pipe(ensureTerminalEvent(route))
 }
 
 function streamPartEvents(
@@ -756,8 +756,8 @@ const headerRetryAfterMs = (headers: Record<string, string> | undefined) => {
 }
 
 // Classify AI SDK failures into the shared `LLMError` union so the synthetic
-// AI SDK route reports failures identically to native protocol routes. An
-// A retryable `APICallError` without a status code is the AI SDK's
+// AI SDK route reports failures identically to native protocol routes. A
+// retryable `APICallError` without a status code is the AI SDK's
 // representation of a network-level failure (connect refused, reset, DNS).
 function llmError(error: unknown): LLMError {
   if (isLLMError(error)) return error
@@ -768,10 +768,11 @@ function llmError(error: unknown): LLMError {
     (cause instanceof Error && cause.name === "TimeoutError")
   )
     return new TimeoutError({ message: error instanceof Error ? error.message : "Request timed out" })
-  const malformed = [error, cause].find(isMalformedError)
-  if (malformed) return new MalformedResponse({ message: malformed.message })
   if (APICallError.isInstance(error)) {
     const code = extractApiFailureCode(error.data) ?? extractApiFailureCode(error.responseBody)
+    const malformed = isMalformedError(error.cause) ? error.cause : undefined
+    if (error.statusCode !== undefined && error.statusCode < 400 && malformed)
+      return new MalformedResponse({ message: malformed.message })
     if (error.statusCode === undefined) {
       if (code) return classifyApiFailure({ message: error.message, code })
       return error.isRetryable
@@ -795,6 +796,8 @@ function llmError(error: unknown): LLMError {
       }),
     })
   }
+  const malformed = [error, cause].find(isMalformedError)
+  if (malformed) return new MalformedResponse({ message: malformed.message })
   if (LoadAPIKeyError.isInstance(error) || LoadSettingError.isInstance(error)) {
     return new Authentication({ message: error.message })
   }
@@ -824,7 +827,13 @@ function isMalformedError(error: unknown): error is Error {
 function apiFailureMessage(error: unknown) {
   if (typeof error !== "object" || error === null) return String(error)
   const message = Reflect.get(error, "message")
-  return typeof message === "string" ? message : String(error)
+  if (typeof message === "string") return message
+  const response = Reflect.get(error, "response")
+  if (typeof response !== "object" || response === null) return String(error)
+  const responseError = Reflect.get(response, "error")
+  if (typeof responseError !== "object" || responseError === null) return String(error)
+  const nested = Reflect.get(responseError, "message")
+  return typeof nested === "string" ? nested : String(error)
 }
 
 export const node = makeLocationNode({ service: Service, layer: locationLayer, deps: [] })

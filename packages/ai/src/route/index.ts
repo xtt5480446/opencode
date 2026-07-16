@@ -1,4 +1,4 @@
-export { Route, LLMClient } from "./client"
+export { Route, LLMClient, ensureTerminalEvent } from "./client"
 export type {
   Route as RouteShape,
   RouteModelInput,

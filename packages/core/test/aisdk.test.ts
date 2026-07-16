@@ -3,6 +3,7 @@ import {
   InvalidResponseDataError,
   type LanguageModelV3,
   type LanguageModelV3CallOptions,
+  type LanguageModelV3StreamPart,
 } from "@ai-sdk/provider"
 import { AISDK } from "@opencode-ai/core/aisdk"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -36,6 +37,36 @@ const failingLanguage = (error: unknown): LanguageModelV3 => ({
     throw error
   },
 })
+
+const streamingLanguage = (...events: LanguageModelV3StreamPart[]): LanguageModelV3 => ({
+  ...failingLanguage(new Error("unused")),
+  doStream: async () => ({
+    stream: new ReadableStream<LanguageModelV3StreamPart>({
+      start(controller) {
+        events.forEach((event) => controller.enqueue(event))
+        controller.close()
+      },
+    }),
+    request: { body: {} },
+  }),
+})
+
+const streamFailure = (language: LanguageModelV3, packageName = "@ai-sdk/openai") =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    yield* aisdk.hook.sdk((event) => {
+      event.sdk = {}
+    })
+    yield* aisdk.hook.language((event) => {
+      event.language = language
+    })
+    const resolved = yield* aisdk.model(model(packageName))
+    const request = LLM.request({ model: resolved, prompt: "Hello" })
+    const prepared = yield* LLMClient.prepare<LanguageModelV3CallOptions>(request)
+    return yield* resolved.route
+      .streamPrepared(prepared.body, request, { http: { execute: () => Effect.die("unused") } })
+      .pipe(Stream.runDrain, Effect.flip)
+  })
 
 it.effect("keys language models by package and flattened overlays", () =>
   Effect.gen(function* () {
@@ -259,7 +290,6 @@ it.effect("projects replay metadata onto AI SDK prompt parts", () =>
 
 it.effect("redacts and classifies AI SDK API failures", () =>
   Effect.gen(function* () {
-    const aisdk = yield* AISDK.Service
     const apiError = new APICallError({
       message: "Quota exceeded",
       url: "https://provider.test/v1?key=url-secret",
@@ -270,19 +300,7 @@ it.effect("redacts and classifies AI SDK API failures", () =>
         error: { code: "insufficient_quota", api_key: "body-secret", detail: "x".repeat(20_000) },
       }),
     })
-    yield* aisdk.hook.sdk((event) => {
-      event.sdk = {}
-    })
-    yield* aisdk.hook.language((event) => {
-      event.language = failingLanguage(apiError)
-    })
-
-    const resolved = yield* aisdk.model(model("@ai-sdk/openai"))
-    const request = LLM.request({ model: resolved, prompt: "Hello" })
-    const prepared = yield* LLMClient.prepare<LanguageModelV3CallOptions>(request)
-    const error = yield* resolved.route
-      .streamPrepared(prepared.body, request, { http: { execute: () => Effect.die("unused") } })
-      .pipe(Stream.runDrain, Effect.flip)
+    const error = yield* streamFailure(failingLanguage(apiError))
 
     expect(error).toMatchObject({
       _tag: "LLM.QuotaExceeded",
@@ -299,20 +317,7 @@ it.effect("redacts and classifies AI SDK API failures", () =>
 
 it.effect("classifies AI SDK request timeouts", () =>
   Effect.gen(function* () {
-    const aisdk = yield* AISDK.Service
-    yield* aisdk.hook.sdk((event) => {
-      event.sdk = {}
-    })
-    yield* aisdk.hook.language((event) => {
-      event.language = failingLanguage(new DOMException("The operation timed out", "TimeoutError"))
-    })
-
-    const resolved = yield* aisdk.model(model("@ai-sdk/openai"))
-    const request = LLM.request({ model: resolved, prompt: "Hello" })
-    const prepared = yield* LLMClient.prepare<LanguageModelV3CallOptions>(request)
-    const error = yield* resolved.route
-      .streamPrepared(prepared.body, request, { http: { execute: () => Effect.die("unused") } })
-      .pipe(Stream.runDrain, Effect.flip)
+    const error = yield* streamFailure(failingLanguage(new DOMException("The operation timed out", "TimeoutError")))
 
     expect(error).toMatchObject({ _tag: "LLM.TimeoutError", message: "The operation timed out" })
   }),
@@ -320,31 +325,10 @@ it.effect("classifies AI SDK request timeouts", () =>
 
 it.effect("classifies structured AI SDK stream errors", () =>
   Effect.gen(function* () {
-    const aisdk = yield* AISDK.Service
-    yield* aisdk.hook.sdk((event) => {
-      event.sdk = {}
-    })
-    yield* aisdk.hook.language((event) => {
-      event.language = {
-        ...failingLanguage(new Error("unused")),
-        doStream: async () => ({
-          stream: new ReadableStream({
-            start(controller) {
-              controller.enqueue({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } })
-              controller.close()
-            },
-          }),
-          request: { body: {} },
-        }),
-      }
-    })
-
-    const resolved = yield* aisdk.model(model("@ai-sdk/anthropic"))
-    const request = LLM.request({ model: resolved, prompt: "Hello" })
-    const prepared = yield* LLMClient.prepare<LanguageModelV3CallOptions>(request)
-    const error = yield* resolved.route
-      .streamPrepared(prepared.body, request, { http: { execute: () => Effect.die("unused") } })
-      .pipe(Stream.runDrain, Effect.flip)
+    const error = yield* streamFailure(
+      streamingLanguage({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }),
+      "@ai-sdk/anthropic",
+    )
 
     expect(error).toMatchObject({ _tag: "LLM.ServerError", code: "overloaded_error", message: "Overloaded" })
   }),
@@ -352,12 +336,8 @@ it.effect("classifies structured AI SDK stream errors", () =>
 
 it.effect("classifies malformed AI SDK response causes", () =>
   Effect.gen(function* () {
-    const aisdk = yield* AISDK.Service
-    yield* aisdk.hook.sdk((event) => {
-      event.sdk = {}
-    })
-    yield* aisdk.hook.language((event) => {
-      event.language = failingLanguage(
+    const error = yield* streamFailure(
+      failingLanguage(
         new APICallError({
           message: "Failed to process successful response",
           url: "https://provider.test/v1",
@@ -365,15 +345,8 @@ it.effect("classifies malformed AI SDK response causes", () =>
           statusCode: 200,
           cause: new InvalidResponseDataError({ data: { invalid: true } }),
         }),
-      )
-    })
-
-    const resolved = yield* aisdk.model(model("@ai-sdk/openai"))
-    const request = LLM.request({ model: resolved, prompt: "Hello" })
-    const prepared = yield* LLMClient.prepare<LanguageModelV3CallOptions>(request)
-    const error = yield* resolved.route
-      .streamPrepared(prepared.body, request, { http: { execute: () => Effect.die("unused") } })
-      .pipe(Stream.runDrain, Effect.flip)
+      ),
+    )
 
     expect(error).toMatchObject({ _tag: "LLM.MalformedResponse", message: 'Invalid response data: {"invalid":true}.' })
   }),
@@ -381,28 +354,66 @@ it.effect("classifies malformed AI SDK response causes", () =>
 
 it.effect("respects non-retryable unclassified AI SDK failures", () =>
   Effect.gen(function* () {
-    const aisdk = yield* AISDK.Service
-    yield* aisdk.hook.sdk((event) => {
-      event.sdk = {}
-    })
-    yield* aisdk.hook.language((event) => {
-      event.language = failingLanguage(
+    const error = yield* streamFailure(
+      failingLanguage(
         new APICallError({
           message: "Provider adapter rejected the request",
           url: "https://provider.test/v1",
           requestBodyValues: {},
           isRetryable: false,
         }),
-      )
-    })
-
-    const resolved = yield* aisdk.model(model("@ai-sdk/openai"))
-    const request = LLM.request({ model: resolved, prompt: "Hello" })
-    const prepared = yield* LLMClient.prepare<LanguageModelV3CallOptions>(request)
-    const error = yield* resolved.route
-      .streamPrepared(prepared.body, request, { http: { execute: () => Effect.die("unused") } })
-      .pipe(Stream.runDrain, Effect.flip)
+      ),
+    )
 
     expect(error).toMatchObject({ _tag: "LLM.APIError", message: "Provider adapter rejected the request" })
+  }),
+)
+
+it.effect("classifies nested OpenAI response failures", () =>
+  Effect.gen(function* () {
+    const error = yield* streamFailure(
+      streamingLanguage({
+        type: "error",
+        error: {
+          type: "response.failed",
+          response: { error: { code: "server_error", message: "Upstream unavailable" } },
+        },
+      }),
+    )
+
+    expect(error).toMatchObject({
+      _tag: "LLM.ServerError",
+      code: "server_error",
+      message: "Upstream unavailable",
+    })
+  }),
+)
+
+it.effect("keeps HTTP failures retryable when their error body is malformed", () =>
+  Effect.gen(function* () {
+    const error = yield* streamFailure(
+      failingLanguage(
+        new APICallError({
+          message: "Failed to process error response",
+          url: "https://provider.test/v1",
+          requestBodyValues: {},
+          statusCode: 503,
+          cause: new InvalidResponseDataError({ data: { invalid: true } }),
+        }),
+      ),
+    )
+
+    expect(error).toMatchObject({ _tag: "LLM.ServerError", status: 503 })
+  }),
+)
+
+it.effect("rejects AI SDK streams without a terminal event", () =>
+  Effect.gen(function* () {
+    const error = yield* streamFailure(streamingLanguage())
+
+    expect(error).toMatchObject({
+      _tag: "LLM.MalformedResponse",
+      message: "Provider stream ended without a terminal finish event",
+    })
   }),
 )

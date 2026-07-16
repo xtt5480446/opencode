@@ -107,6 +107,21 @@ describe("provider error classification", () => {
     ).toEqual(["LLM.RateLimit", "LLM.RateLimit", "LLM.RateLimit", "LLM.RateLimit"])
   })
 
+  test("prioritizes specific codes over generic provider types", () => {
+    expect(
+      [
+        '{"error":{"code":"rate_limit_exceeded","type":"invalid_request_error"}}',
+        '{"error":{"code":"server_error","type":"invalid_request_error"}}',
+      ].map((message) => classifyApiFailure({ message })._tag),
+    ).toEqual(["LLM.RateLimit", "LLM.ServerError"])
+    expect(classifyApiFailure({ message: "Missing", status: 404, code: "invalid_request_error" })._tag).toBe(
+      "LLM.NotFound",
+    )
+    expect(classifyApiFailure({ message: "Limited", status: 404, code: "rate_limit_exceeded" })._tag).toBe(
+      "LLM.RateLimit",
+    )
+  })
+
   test("classifies V1 overloaded provider codes", () => {
     expect(
       ['{"code":"resource_exhausted"}', '{"code":"service_unavailable"}'].map(

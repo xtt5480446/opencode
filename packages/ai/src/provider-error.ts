@@ -144,8 +144,7 @@ export const classifyApiFailure = (input: ApiFailure): LLMError => {
   if (normalizedCodes.some((code) => QUOTA_CODES.has(code))) return new QuotaExceeded(common)
   if (input.status === 401 || normalizedCodes.includes("authentication_error")) return new Authentication(common)
   if (input.status === 403 || normalizedCodes.includes("permission_error")) return new PermissionDenied(common)
-  if (input.status === 404 || normalizedCodes.includes("not_found_error")) return new NotFound(common)
-  if (normalizedCodes.some((code) => INVALID_REQUEST_CODES.has(code))) return new BadRequest(common)
+  if (normalizedCodes.includes("not_found_error")) return new NotFound(common)
   if (
     normalizedCodes.some(
       (code) => code.includes("rate_limit") || code === "too_many_requests" || code === "throttlingexception",
@@ -159,6 +158,8 @@ export const classifyApiFailure = (input: ApiFailure): LLMError => {
     )
   )
     return serverError(input, common)
+  if (input.status === 404) return new NotFound(common)
+  if (normalizedCodes.some((code) => INVALID_REQUEST_CODES.has(code))) return new BadRequest(common)
   if (input.status === 429) return rateLimit(input, common)
   if (input.status !== undefined && input.status >= 500) return serverError(input, common)
   if (
@@ -175,12 +176,22 @@ function providerCodes(value: unknown) {
   const decoded = typeof value === "string" ? Option.getOrUndefined(decodeJson(value)) : value
   if (!isRecord(decoded)) return []
   const error = isRecord(decoded.error) ? decoded.error : undefined
+  const response = isRecord(decoded.response) ? decoded.response : undefined
+  const responseError = isRecord(response?.error) ? response.error : undefined
   const innerError = isRecord(error?.inner_error)
     ? error.inner_error
     : isRecord(error?.innererror)
       ? error.innererror
       : undefined
-  return [error?.code, error?.type, innerError?.code, decoded.code, decoded.type]
+  return [
+    error?.code,
+    error?.type,
+    innerError?.code,
+    responseError?.code,
+    responseError?.type,
+    decoded.code,
+    decoded.type,
+  ]
     .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
     .map(String)
 }
