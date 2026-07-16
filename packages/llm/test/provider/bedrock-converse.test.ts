@@ -355,6 +355,20 @@ describe("Bedrock Converse route", () => {
     }),
   )
 
+  it.effect("lowers unsigned foreign reasoning to assistant text", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<BedrockConverse.BedrockConverseBody>(
+        LLM.request({
+          model,
+          messages: [Message.assistant({ type: "reasoning", text: "foreign thought" })],
+          cache: "none",
+        }),
+      )
+
+      expect(prepared.body.messages).toEqual([{ role: "assistant", content: [{ text: "foreign thought" }] }])
+    }),
+  )
+
   it.effect("emits provider-error for throttlingException", () =>
     Effect.gen(function* () {
       const body = eventStreamBody(

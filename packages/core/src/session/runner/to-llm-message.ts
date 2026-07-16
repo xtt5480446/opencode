@@ -74,17 +74,13 @@ const assistant = (message: SessionMessage.Assistant, model: Model) => {
   const content = message.content.flatMap((item): ContentPart[] => {
     if (item.type === "text") return [{ type: "text", text: item.text }]
     if (item.type === "reasoning")
-      return sameModel
-        ? [
-            {
-              type: "reasoning",
-              text: item.text,
-              providerMetadata: reuseProviderMetadata ? item.providerMetadata : undefined,
-            },
-          ]
-        : item.text.length > 0
-          ? [{ type: "text", text: item.text }]
-          : []
+      return [
+        {
+          type: "reasoning",
+          text: item.text,
+          providerMetadata: reuseProviderMetadata ? item.providerMetadata : undefined,
+        },
+      ]
     const call = toolCall(item, reuseProviderMetadata ? item.provider?.metadata : undefined)
     if (item.provider?.executed !== true) return [call]
     const result = toolResult(

@@ -236,7 +236,8 @@ const lowerMessages = Effect.fn("Gemini.lowerMessages")(function* (request: LLMR
           continue
         }
         if (part.type === "reasoning") {
-          parts.push({ text: part.text, thought: true, thoughtSignature: thoughtSignature(part.providerMetadata) })
+          const signature = thoughtSignature(part.providerMetadata)
+          parts.push(signature ? { text: part.text, thought: true, thoughtSignature: signature } : { text: part.text })
           continue
         }
         if (part.type === "tool-call") {

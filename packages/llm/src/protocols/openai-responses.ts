@@ -383,9 +383,12 @@ const lowerMessages = Effect.fn("OpenAIResponses.lowerMessages")(function* (requ
           continue
         }
         if (part.type === "reasoning") {
-          flushText()
           const reasoning = lowerReasoning(part)
-          if (!reasoning) continue
+          if (!reasoning) {
+            content.push({ type: "text", text: part.text })
+            continue
+          }
+          flushText()
           if (store !== false) {
             if (!reasoningReferences.has(reasoning.id)) input.push({ type: "item_reference", id: reasoning.id })
             reasoningReferences.add(reasoning.id)

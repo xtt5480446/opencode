@@ -431,6 +431,16 @@ describe("Gemini route", () => {
     }),
   )
 
+  it.effect("lowers unsigned foreign reasoning to assistant text", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<Gemini.GeminiBody>(
+        LLM.request({ model, messages: [Message.assistant({ type: "reasoning", text: "foreign thought" })] }),
+      )
+
+      expect(prepared.body.contents).toEqual([{ role: "model", parts: [{ text: "foreign thought" }] }])
+    }),
+  )
+
   it.effect("emits streamed tool calls and maps finish reason", () =>
     Effect.gen(function* () {
       const body = sseEvents({

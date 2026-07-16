@@ -348,9 +348,14 @@ const lowerMessages = Effect.fn("BedrockConverse.lowerMessages")(function* (
           continue
         }
         if (part.type === "reasoning") {
+          const signature = reasoningSignature(part)
+          if (!signature) {
+            content.push({ text: part.text })
+            continue
+          }
           content.push({
             reasoningContent: {
-              reasoningText: { text: part.text, signature: reasoningSignature(part) },
+              reasoningText: { text: part.text, signature },
             },
           })
           continue

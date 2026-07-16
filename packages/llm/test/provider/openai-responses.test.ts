@@ -818,6 +818,34 @@ describe("OpenAI Responses route", () => {
     }),
   )
 
+  it.effect("lowers foreign reasoning without continuation state to assistant text", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIResponses.OpenAIResponsesBody>(
+        LLM.request({
+          model,
+          messages: [
+            Message.assistant([
+              { type: "text", text: "before" },
+              { type: "reasoning", text: "foreign thought" },
+              { type: "text", text: "after" },
+            ]),
+          ],
+        }),
+      )
+
+      expect(prepared.body.input).toEqual([
+        {
+          role: "assistant",
+          content: [
+            { type: "output_text", text: "before" },
+            { type: "output_text", text: "foreign thought" },
+            { type: "output_text", text: "after" },
+          ],
+        },
+      ])
+    }),
+  )
+
   it.effect("streams each reasoning summary part as a separate block", () =>
     Effect.gen(function* () {
       const response = yield* LLMClient.generate(

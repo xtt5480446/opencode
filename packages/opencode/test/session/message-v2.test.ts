@@ -684,6 +684,42 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("preserves foreign reasoning for OpenAI-compatible reasoning fields", async () => {
+    const assistantID = "m-assistant"
+    const compatible = {
+      ...model,
+      api: { ...model.api, npm: "@ai-sdk/openai-compatible" },
+      capabilities: { ...model.capabilities, reasoning: true, interleaved: { field: "reasoning_content" } },
+    } satisfies Provider.Model
+    const input: SessionV1.WithParts[] = [
+      {
+        info: assistantInfo(assistantID, "m-user", undefined, { providerID: "other", modelID: "other" }),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "reasoning",
+            text: "thinking",
+            metadata: { anthropic: { signature: "foreign" } },
+            time: { start: 0 },
+          },
+          {
+            ...basePart(assistantID, "a2"),
+            type: "text",
+            text: "answer",
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    expect(ProviderTransform.message(await MessageV2.toModelMessages(input, compatible), compatible, {})).toEqual([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "answer" }],
+        providerOptions: { openaiCompatible: { reasoning_content: "thinking" } },
+      },
+    ])
+  })
+
   test("replaces compacted tool output with placeholder", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"

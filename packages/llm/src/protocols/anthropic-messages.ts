@@ -447,10 +447,15 @@ const lowerMessages = Effect.fn("AnthropicMessages.lowerMessages")(function* (
           continue
         }
         if (part.type === "reasoning") {
+          const signature = part.encrypted ?? signatureFromMetadata(part.providerMetadata)
+          if (!signature) {
+            content.push({ type: "text", text: part.text })
+            continue
+          }
           content.push({
             type: "thinking",
             thinking: part.text,
-            signature: part.encrypted ?? signatureFromMetadata(part.providerMetadata),
+            signature,
           })
           continue
         }

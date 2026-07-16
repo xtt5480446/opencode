@@ -332,6 +332,39 @@ describe("session.llm-native.request", () => {
     ])
   })
 
+  it.effect("preserves OpenAI-compatible reasoning fields through the native adapter", () =>
+    Effect.gen(function* () {
+      const compatible = {
+        ...baseModel,
+        providerID: ProviderV2.ID.make("moonshotai"),
+        api: {
+          id: "kimi-k2.5",
+          url: "https://api.moonshot.test/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+        capabilities: {
+          ...baseModel.capabilities,
+          interleaved: { field: "reasoning_content" as const },
+        },
+      }
+      const prepared = yield* prepareNativeRequest({
+        model: compatible,
+        apiKey: "test-key",
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "answer" }],
+            providerOptions: { openaiCompatible: { reasoning_content: "thinking" } },
+          },
+        ],
+      })
+
+      expect(prepared.body).toMatchObject({
+        messages: [{ role: "assistant", content: "answer", reasoning_content: "thinking" }],
+      })
+    }),
+  )
+
   test("selects native request routes for provider packages", () => {
     const openai = LLMNative.model({
       model: { ...baseModel, api: { ...baseModel.api, url: "", npm: "@ai-sdk/openai" } },

@@ -362,6 +362,18 @@ describe("Anthropic Messages route", () => {
     }),
   )
 
+  it.effect("lowers unsigned foreign reasoning to assistant text", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare(
+        LLM.request({ model, messages: [Message.assistant({ type: "reasoning", text: "foreign thought" })] }),
+      )
+
+      expect(prepared.body).toMatchObject({
+        messages: [{ role: "assistant", content: [{ type: "text", text: "foreign thought" }] }],
+      })
+    }),
+  )
+
   it.effect("parses text, reasoning, and usage stream fixtures", () =>
     Effect.gen(function* () {
       const body = sseEvents(

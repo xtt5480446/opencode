@@ -243,6 +243,10 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 
     if (msg.info.role === "assistant") {
       const differentModel = `${model.providerID}/${model.id}` !== `${msg.info.providerID}/${msg.info.modelID}`
+      const replaysForeignReasoning =
+        model.api.npm === "@ai-sdk/openai-compatible" &&
+        typeof model.capabilities.interleaved === "object" &&
+        model.capabilities.interleaved.field === "reasoning_content"
       const media: Array<{ mime: string; url: string; filename?: string }> = []
 
       if (
@@ -360,7 +364,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             })
         }
         if (part.type === "reasoning") {
-          if (differentModel) {
+          if (differentModel && !replaysForeignReasoning) {
             if (part.text.trim().length > 0)
               assistantMessage.parts.push({
                 type: "text",
@@ -371,7 +375,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           assistantMessage.parts.push({
             type: "reasoning",
             text: part.text,
-            providerMetadata: part.metadata,
+            ...(differentModel ? {} : { providerMetadata: part.metadata }),
           })
         }
       }
