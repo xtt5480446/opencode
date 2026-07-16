@@ -642,6 +642,7 @@ function App(props: { pair?: DialogPairCredentials; started: number }) {
         title: "Model cycle",
         category: "Agent",
         hidden: true,
+        namespace: undefined,
         run: () => {
           local.model.cycle(1)
         },
