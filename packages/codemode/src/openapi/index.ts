@@ -3,6 +3,7 @@ import { make, type Definition } from "../tool.js"
 import { invoke } from "./runtime.js"
 import {
   componentDefinitions,
+  hasDirectionalSchemas,
   inputSchema,
   isRecord,
   methods,
@@ -39,7 +40,9 @@ export const fromSpec = (options: Options): Result => {
   const schemes = securitySchemes(document)
   const defaultSecurity = securityRequirements(document.security)
   const requestDefinitions = componentDefinitions(document, "request")
-  const responseDefinitions = componentDefinitions(document, "response")
+  const responseDefinitions = hasDirectionalSchemas(document)
+    ? componentDefinitions(document, "response")
+    : requestDefinitions
   const paths = isRecord(document.paths) ? document.paths : {}
   const used = new Set<string>()
   const namespaces = new Set<string>()

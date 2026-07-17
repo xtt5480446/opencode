@@ -573,6 +573,88 @@ describe("OpenAPI.fromSpec", () => {
     expect(node.required).toEqual(["name", "child"])
   })
 
+  test("projects diamond-shaped reference graphs in linear time", () => {
+    // Each component references the next twice; without memoized hidden-ness this is 2^30 work.
+    const depth = 30
+    const schemas = Object.fromEntries(
+      Array.from({ length: depth }, (_, index) => [
+        `C${index}`,
+        index === depth - 1
+          ? { type: "object", properties: { id: { type: "string", readOnly: true }, name: { type: "string" } } }
+          : { allOf: [{ $ref: `#/components/schemas/C${index + 1}` }, { $ref: `#/components/schemas/C${index + 1}` }] },
+      ]),
+    )
+    const tool = toolAt(
+      OpenAPI.fromSpec({
+        baseUrl,
+        spec: {
+          openapi: "3.1.0",
+          paths: {
+            "/test": {
+              post: {
+                operationId: "test",
+                responses: { 200: { description: "Success" } },
+                requestBody: {
+                  required: true,
+                  content: { "application/json": { schema: { $ref: "#/components/schemas/C0" } } },
+                },
+              },
+            },
+          },
+          components: { schemas },
+        },
+      }).tools,
+      "test",
+    )
+    if (!Tool.isDefinition(tool) || !isRecord(tool.input)) throw new Error("test was not generated")
+    const definitions = isRecord(tool.input.$defs) ? tool.input.$defs : {}
+    const leaf = isRecord(definitions[`C${depth - 1}`]) ? definitions[`C${depth - 1}`] : {}
+
+    expect(Object.keys(isRecord(leaf.properties) ? leaf.properties : {})).toEqual(["name"])
+  })
+
+  test("does not misresolve shadowed local $defs when flattening body fields", () => {
+    const tool = toolAt(
+      OpenAPI.fromSpec({
+        baseUrl,
+        spec: singleOperation(
+          {
+            requestBody: {
+              required: true,
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["record"],
+                    $defs: { Value: { type: "string" } },
+                    properties: {
+                      record: {
+                        type: "object",
+                        required: ["x"],
+                        properties: { x: { $ref: "#/$defs/Value" } },
+                        // Shadows the body-level Value; must not affect the body-rooted projection.
+                        $defs: { Value: { type: "string", readOnly: true } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "post",
+        ),
+      }).tools,
+      "test",
+    )
+    if (!Tool.isDefinition(tool) || !isRecord(tool.input)) throw new Error("test was not generated")
+    const properties = isRecord(tool.input.properties) ? tool.input.properties : {}
+    const record = isRecord(properties.record) ? properties.record : {}
+
+    expect(Object.keys(isRecord(record.properties) ? record.properties : {})).toEqual(["x"])
+    expect(record.required).toEqual(["x"])
+  })
+
   test("projects directional annotations inside parameter schemas", () => {
     const tool = toolAt(
       OpenAPI.fromSpec({

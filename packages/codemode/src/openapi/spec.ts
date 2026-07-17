@@ -70,38 +70,71 @@ const resolveResource = (document: Document, resource: SchemaResource): SchemaRe
   return next(resource, new Set())
 }
 
+// Hidden-ness is memoized per schema object and direction so that diamond-shaped
+// reference graphs (the same component referenced from many sites) stay linear;
+// path-scoped visited sets would re-traverse shared subtrees exponentially. Entries
+// are seeded before recursion so reference cycles terminate as not hidden. A schema
+// reachable under multiple resolution roots reuses the first root's result.
+type DirectionCache = {
+  readonly hidden: Map<unknown, boolean>
+  readonly names: Map<unknown, ReadonlySet<string>>
+}
+const projectionCaches = new WeakMap<Document, Record<SchemaDirection, DirectionCache>>()
+
+const projectionCache = (document: Document, direction: SchemaDirection): DirectionCache => {
+  const existing = projectionCaches.get(document)
+  if (existing !== undefined) return existing[direction]
+  const created = {
+    request: { hidden: new Map<unknown, boolean>(), names: new Map<unknown, ReadonlySet<string>>() },
+    response: { hidden: new Map<unknown, boolean>(), names: new Map<unknown, ReadonlySet<string>>() },
+  }
+  projectionCaches.set(document, created)
+  return created[direction]
+}
+
+// Most documents never use directional keywords; one cached linear scan lets
+// projection and the doubled per-direction component normalization be skipped entirely.
+const directionalDocuments = new WeakMap<Document, boolean>()
+
+export const hasDirectionalSchemas = (document: Document): boolean => {
+  const cached = directionalDocuments.get(document)
+  if (cached !== undefined) return cached
+  const contains = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(contains)
+    if (!isRecord(value)) return false
+    if (own(value, "readOnly") === true || own(value, "writeOnly") === true) return true
+    return Object.values(value).some(contains)
+  }
+  const result = contains(document)
+  directionalDocuments.set(document, result)
+  return result
+}
+
 // OpenAPI 3.1 allows keywords as siblings of `$ref`, so a schema's own declarations
 // are inspected before following the reference.
-const isHidden = (
-  document: Document,
-  resource: SchemaResource,
-  direction: SchemaDirection,
-  seen: ReadonlySet<object> = new Set(),
-): boolean => {
-  if (!isRecord(resource.value) || seen.has(resource.value)) return false
+const isHidden = (document: Document, resource: SchemaResource, direction: SchemaDirection): boolean => {
+  if (!isRecord(resource.value)) return false
   if (own(resource.value, hiddenKeyword[direction]) === true) return true
-  const nextSeen = new Set([...seen, resource.value])
-  if (
-    asArray(own(resource.value, "allOf")).some((item) =>
-      isHidden(document, { ...resource, value: item }, direction, nextSeen),
-    )
-  ) {
-    return true
-  }
+  const cache = projectionCache(document, direction).hidden
+  const cached = cache.get(resource.value)
+  if (cached !== undefined) return cached
+  cache.set(resource.value, false)
   const target = resolveResource(document, resource)
-  return target.value !== resource.value && isHidden(document, target, direction, nextSeen)
+  const result =
+    asArray(own(resource.value, "allOf")).some((item) => isHidden(document, { ...resource, value: item }, direction)) ||
+    (target.value !== resource.value && isHidden(document, target, direction))
+  cache.set(resource.value, result)
+  return result
 }
 
 // Hidden property names declared by a schema itself or inherited through `$ref` and
 // `allOf` composition, so sibling `required` lists stay consistent after projection.
-const hiddenNames = (
-  document: Document,
-  resource: SchemaResource,
-  direction: SchemaDirection,
-  seen: ReadonlySet<object> = new Set(),
-): ReadonlySet<string> => {
-  if (!isRecord(resource.value) || seen.has(resource.value)) return new Set()
-  const nextSeen = new Set([...seen, resource.value])
+const hiddenNames = (document: Document, resource: SchemaResource, direction: SchemaDirection): ReadonlySet<string> => {
+  if (!isRecord(resource.value)) return new Set()
+  const cache = projectionCache(document, direction).names
+  const cached = cache.get(resource.value)
+  if (cached !== undefined) return cached
+  cache.set(resource.value, new Set())
   const properties = own(resource.value, "properties")
   const declared = isRecord(properties)
     ? Object.entries(properties)
@@ -109,11 +142,13 @@ const hiddenNames = (
         .map(([name]) => name)
     : []
   const composed = asArray(own(resource.value, "allOf")).flatMap((item) => [
-    ...hiddenNames(document, { ...resource, value: item }, direction, nextSeen),
+    ...hiddenNames(document, { ...resource, value: item }, direction),
   ])
   const target = resolveResource(document, resource)
-  const referenced = target.value === resource.value ? [] : hiddenNames(document, target, direction, nextSeen)
-  return new Set([...declared, ...composed, ...referenced])
+  const referenced = target.value === resource.value ? [] : hiddenNames(document, target, direction)
+  const result = new Set([...declared, ...composed, ...referenced])
+  cache.set(resource.value, result)
+  return result
 }
 
 const nestedSchemas = new Set([
@@ -167,16 +202,21 @@ const directionalSchema = (
   )
 }
 
-const projectSchema = (document: Document, value: unknown, direction: SchemaDirection): JsonSchema => {
-  const projected = directionalSchema(document, { value, root: value }, direction)
-  if (!isRecord(projected)) return {}
+const normalizeSchema = (document: Document, value: unknown): JsonSchema => {
+  if (!isRecord(value)) return {}
   const normalized = nonEmptyString(document.openapi)?.startsWith("3.0")
-    ? fromSchemaOpenApi3_0(projected)
-    : fromSchemaOpenApi3_1(projected)
+    ? fromSchemaOpenApi3_0(value)
+    : fromSchemaOpenApi3_1(value)
   return Object.keys(normalized.definitions).length === 0
     ? normalized.schema
     : { ...normalized.schema, $defs: normalized.definitions }
 }
+
+const projectSchema = (document: Document, value: unknown, direction: SchemaDirection): JsonSchema =>
+  normalizeSchema(
+    document,
+    hasDirectionalSchemas(document) ? directionalSchema(document, { value, root: value }, direction) : value,
+  )
 
 export const componentDefinitions = (
   document: Document,
@@ -323,7 +363,9 @@ const operationBody = (
     }
   }
   const resolvedSchema = resolve(document, selected.schema)
-  const schema = directionalSchema(document, { value: resolvedSchema, root: resolvedSchema }, "request")
+  const schema = hasDirectionalSchemas(document)
+    ? directionalSchema(document, { value: resolvedSchema, root: resolvedSchema }, "request")
+    : resolvedSchema
   const required = resolved.required === true
   if (!isFlattenableObjectBody(schema, required)) {
     return {
@@ -349,11 +391,13 @@ const operationBody = (
   return {
     ok: true,
     value: {
+      // Field schemas were already projected with the body as resolution root; a second
+      // directional pass rooted at the field would misresolve shadowed local $defs.
       fields: Object.entries(schema.properties).map(([name, value]) => ({
         name,
         location: "body" as const,
         required: required && requiredProperties.has(name),
-        schema: projectSchema(document, value, "request"),
+        schema: normalizeSchema(document, value),
         style: undefined,
         explode: undefined,
       })),

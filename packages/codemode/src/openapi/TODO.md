@@ -7,6 +7,7 @@ The initial adapter intentionally skips operations it cannot execute correctly. 
 - External references and complete nested `$defs` support.
 - `$anchor` and nested `$id` resource resolution in directional (`readOnly`/`writeOnly`) projection.
 - Use-site cleanup for `allOf` branches that reference shared component schemas: per-direction component definitions are projected globally, so a directional annotation declared only at one use site cannot remove the property from a referenced component's definition.
+- Hidden-name cleanup inside `then`/`else`/`dependentSchemas`/`dependentRequired`, which constrain the same instance as `allOf`; a hidden property may remain named in those keywords.
 - Relative or templated server URLs and server variables.
 - Base URLs containing query strings or fragments.
 - Runtime response-schema validation and full content negotiation.
