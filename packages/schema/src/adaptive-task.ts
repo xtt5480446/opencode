@@ -2,7 +2,9 @@ export * as AdaptiveTask from "./adaptive-task"
 
 import { Schema } from "effect"
 import { ascending } from "./identifier"
-import { statics } from "./schema"
+import { Model } from "./model"
+import { Provider } from "./provider"
+import { AbsolutePath, NonNegativeInt, optional, PositiveInt, statics } from "./schema"
 
 const id = <Prefix extends string, Brand extends string>(prefix: Prefix, brand: Brand) =>
   Schema.String.check(Schema.isPattern(new RegExp(`^${prefix}[0-9A-Za-z]{26}$`))).pipe(
@@ -44,3 +46,37 @@ export const Status = Schema.Literals([
   "invalid",
 ]).annotate({ identifier: "AdaptiveTask.Status" })
 export type Status = typeof Status.Type
+
+const ModelPolicyBase = Schema.Struct({
+  providerID: Provider.ID,
+  modelID: Model.ID,
+  variant: Model.VariantID.pipe(optional),
+  effectiveContextLimit: PositiveInt,
+  outputReserve: PositiveInt,
+  safetyReserve: PositiveInt,
+  hash: Schema.String.check(Schema.isPattern(/^sha256:[0-9a-f]{64}$/)),
+})
+
+const validContextBudget = Schema.makeFilter<Schema.Schema.Type<typeof ModelPolicyBase>>((policy) =>
+  policy.outputReserve + policy.safetyReserve < policy.effectiveContextLimit
+    ? undefined
+    : "ModelPolicy reserves must be smaller than effectiveContextLimit",
+)
+
+export interface ModelPolicy extends Schema.Schema.Type<typeof ModelPolicy> {}
+export const ModelPolicy = ModelPolicyBase.check(validContextBudget).annotate({
+  identifier: "AdaptiveTask.ModelPolicy",
+})
+
+export interface Summary extends Schema.Schema.Type<typeof Summary> {}
+export const Summary = Schema.Struct({
+  id: ID,
+  directory: AbsolutePath,
+  mode: Mode,
+  status: Status,
+  requirement: Schema.String,
+  modelPolicy: ModelPolicy,
+  roadmapRevision: NonNegativeInt,
+  timeCreated: NonNegativeInt,
+  timeUpdated: NonNegativeInt,
+}).annotate({ identifier: "AdaptiveTask.Summary" })
