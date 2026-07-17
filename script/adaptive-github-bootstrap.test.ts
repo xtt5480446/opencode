@@ -134,6 +134,8 @@ describe("adaptive GitHub bootstrap", () => {
     expect(index.match(/^\| S\d{2}-T\d{2} /gm)).toHaveLength(59)
     expect(index).toContain("| S01-T01 | [#101]")
     expect(index).toContain("| S06-T10 | [#159]")
+    const tableLines = index.split("\n").filter((line) => line.startsWith("|"))
+    expect(new Set(tableLines.map((line) => line.length)).size).toBe(1)
   })
 
   test("GitHub API adapter filters pull requests, finds the project, and batches project items", async () => {
