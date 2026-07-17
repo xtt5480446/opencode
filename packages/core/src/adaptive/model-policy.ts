@@ -22,3 +22,16 @@ export const create = (input: Input) =>
     ...input,
     hash: digest(canonical(input)),
   })
+
+export function assertEqual(expected: AdaptiveTask.ModelPolicy, actual: AdaptiveTask.ModelPolicy) {
+  const expectedCanonical = canonical(expected)
+  const actualCanonical = canonical(actual)
+  if (
+    expected.hash === digest(expectedCanonical) &&
+    actual.hash === digest(actualCanonical) &&
+    expected.hash === actual.hash &&
+    expectedCanonical === actualCanonical
+  )
+    return
+  throw new Error(`Adaptive ModelPolicy mismatch: expected ${expected.hash}, received ${actual.hash}`)
+}
