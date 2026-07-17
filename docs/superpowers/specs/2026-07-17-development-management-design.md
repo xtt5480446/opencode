@@ -12,14 +12,13 @@ Commercial V1 期间冻结上游基线，不合并新的 OpenCode upstream commi
 
 ## 2. 仓库基线与目录
 
-- Git 基线提交：`0344639a8dad88e6577448ac3d7a12551a308468`。
-- 内容来源：OpenCode `5f7091ab4e261cca5383cbd57aa6aa589ed9ee86` 源码快照。
-- 不可移动的基线 tag：`baseline-opencode-5f7091a`。
+- Git 基线提交：OpenCode `5f7091ab4e261cca5383cbd57aa6aa589ed9ee86`。
+- 不可移动的权威基线 tag：`upstream-baseline-5f7091a`。
 - 产品源码保持 OpenCode 原目录结构，实施计划中的 `packages/...` 路径可直接执行。
 - `docs/superpowers/specs` 保存批准的设计；`docs/superpowers/plans` 保存总计划和阶段计划。
 - `docs/superpowers/acceptance` 保存用户 Gate 记录；`research` 保存 baseline 和后续评测证据。
 
-仓库不包含外层实验目录、模型凭据、baseline 运行状态、构建产物、`node_modules`，也不包含 `.baseline-task-export-fix` 中未提交的用户修改。当前不配置 Git remote，待用户给定托管地址后再添加。
+仓库不包含外层实验目录、模型凭据、baseline 运行状态、构建产物、`node_modules`，也不包含 `.baseline-task-export-fix` 中未提交的用户修改。`upstream` 指向 `anomalyco/opencode`，`origin` 指向用户账号下的 GitHub fork。
 
 ## 3. 分支、Worktree 与提交
 
@@ -27,7 +26,7 @@ Commercial V1 期间冻结上游基线，不合并新的 OpenCode upstream commi
 
 - `main`：只包含已经通过最近一个用户 Gate 的集成状态，以及下一阶段开始前批准的设计/计划更新。
 - `stage-01` 至 `stage-06`：当前阶段的唯一集成分支，从上一个 accepted commit 创建。
-- `baseline-opencode-5f7091a`：冻结基线 tag，任何开发操作不得移动。
+- `upstream-baseline-5f7091a`：指向官方 commit 的冻结基线 tag，任何开发操作不得移动。
 - `g1-accepted` 至 `g6-accepted`：用户在验收记录中明确接受后，打在对应 `main` commit 上。
 
 ### 3.2 任务分支

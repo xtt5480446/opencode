@@ -2,7 +2,7 @@
 
 Baseline source: OpenCode `5f7091ab4e261cca5383cbd57aa6aa589ed9ee86`
 
-Baseline Git tag: `baseline-opencode-5f7091a`
+Baseline Git tag: `upstream-baseline-5f7091a`
 
 Only the user changes a gate result to `accepted`. Build revision, evidence export, automated verification, and user notes are required before acceptance.
 
@@ -14,4 +14,3 @@ Only the user changes a gate result to `accepted`. Build revision, evidence expo
 | G4 | | | blocked | | |
 | G5 | | | blocked | | |
 | G6 | | | blocked | | |
-
