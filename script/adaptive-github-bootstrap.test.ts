@@ -403,6 +403,7 @@ describe("adaptive GitHub bootstrap", () => {
       url: "https://github.com/users/xtt5480446/projects/7",
     }
     let written: { path: string; content: string } | undefined
+    let projectUpdates = 0
     const client = {
       listLabels: async () => desiredLabels,
       createLabel: async () => {
@@ -421,7 +422,10 @@ describe("adaptive GitHub bootstrap", () => {
       createProject: async () => {
         throw new Error("unexpected project creation")
       },
-      updateProject: async () => {},
+      updateProject: async () => {
+        projectUpdates++
+        if (projectUpdates === 1) throw new Error("TLS handshake timeout")
+      },
       listProjectIssueNumbers: async () => new Set(issues.map((issue) => issue.number)),
       addProjectItems: async () => {
         throw new Error("unexpected Project item creation")
@@ -435,11 +439,13 @@ describe("adaptive GitHub bootstrap", () => {
       write: async (path, content) => {
         written = { path, content }
       },
+      sleep: async () => {},
     })
 
     expect(result.taskCount).toBe(59)
     expect(result.project).toEqual(project)
     expect(written?.path).toBe("/tmp/github-task-index.md")
     expect(written?.content.match(/^\| S\d{2}-T\d{2} /gm)).toHaveLength(59)
+    expect(projectUpdates).toBe(2)
   })
 })
