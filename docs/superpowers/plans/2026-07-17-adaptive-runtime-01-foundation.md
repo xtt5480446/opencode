@@ -51,6 +51,12 @@
 
 ## Task 1: Public Task and ModelPolicy Contract
 
+> **Approved task design and execution plan:** Follow
+> `../specs/2026-07-17-s01-t01-adaptive-task-contract-design.md` and
+> `2026-07-17-s01-t01-adaptive-task-contract.md`. They strengthen canonical ID,
+> ModelPolicy, Task Summary, export-identity, and contract-hygiene requirements
+> and supersede the narrower code skeleton below.
+
 **Files:**
 
 - Create: `packages/schema/src/adaptive-task.ts`
@@ -206,11 +212,13 @@ git commit -m "feat(schema): add adaptive task contracts"
 ```ts
 import { describe, expect, test } from "bun:test"
 import { AdaptiveModelPolicy } from "@opencode-ai/core/adaptive/model-policy"
+import { Model } from "@opencode-ai/schema/model"
+import { Provider } from "@opencode-ai/schema/provider"
 
 const input = {
-  providerID: "openai-compatible",
-  modelID: "kimi-k2",
-  variant: "default",
+  providerID: Provider.ID.make("openai-compatible"),
+  modelID: Model.ID.make("kimi-k2"),
+  variant: Model.VariantID.make("default"),
   effectiveContextLimit: 262_144,
   outputReserve: 16_384,
   safetyReserve: 8_192,
@@ -231,7 +239,7 @@ describe("AdaptiveModelPolicy", () => {
     expect(() =>
       AdaptiveModelPolicy.assertEqual(
         AdaptiveModelPolicy.create(input),
-        AdaptiveModelPolicy.create({ ...input, variant: "high" }),
+        AdaptiveModelPolicy.create({ ...input, variant: Model.VariantID.make("high") }),
       ),
     ).toThrow("Adaptive ModelPolicy mismatch")
   })
@@ -265,7 +273,7 @@ const canonical = (input: Input) =>
   })
 
 export const create = (input: Input) =>
-  new AdaptiveTask.ModelPolicy({
+  AdaptiveTask.ModelPolicy.make({
     ...input,
     hash: `sha256:${createHash("sha256").update(canonical(input)).digest("hex")}`,
   })
@@ -305,11 +313,13 @@ git commit -m "feat(core): pin adaptive model policy"
 - [ ] **Step 1: Write failing store tests for immutability and stale generation**
 
 ```ts
+import { Model } from "@opencode-ai/schema/model"
+
 it.effect("creates a Task and refuses ModelPolicy mutation", () =>
   Effect.gen(function* () {
     const store = yield* AdaptiveStore.Service
     const task = yield* store.createTask(fixtureTask())
-    const changed = new AdaptiveTask.ModelPolicy({ ...task.modelPolicy, modelID: "forbidden" })
+    const changed = AdaptiveTask.ModelPolicy.make({ ...task.modelPolicy, modelID: Model.ID.make("forbidden") })
     const failure = yield* store.replaceModelPolicy(task.id, changed).pipe(Effect.flip)
     expect(failure._tag).toBe("AdaptiveStore.ImmutableModelPolicy")
   }),
