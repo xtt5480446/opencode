@@ -74,6 +74,7 @@ describe("adaptive GitHub bootstrap", () => {
     const issues: { number: number; nodeID: string; title: string; body: string }[] = []
     const projectItems = new Set<number>()
     let project: { id: string; number: number; url: string } | undefined
+    let projectUpdates = 0
 
     const client = {
       listLabels: async () => labels,
@@ -94,7 +95,11 @@ describe("adaptive GitHub bootstrap", () => {
       getProject: async () => project,
       createProject: async () => {
         project = { id: "project-1", number: 1, url: "https://github.com/users/xtt5480446/projects/1" }
+        projectUpdates++
         return project
+      },
+      updateProject: async () => {
+        projectUpdates++
       },
       listProjectIssueNumbers: async () => projectItems,
       addProjectItems: async (_projectID: string, input: readonly { number: number }[]) => {
@@ -113,6 +118,7 @@ describe("adaptive GitHub bootstrap", () => {
     expect(first.project.url).toBe("https://github.com/users/xtt5480446/projects/1")
     expect(second.issueNumbers).toEqual(first.issueNumbers)
     expect(issues[1]!.body).toContain("Depends on: #1")
+    expect(projectUpdates).toBe(2)
   })
 
   test("renders a stable 59-row GitHub task index", async () => {
@@ -298,7 +304,9 @@ describe("adaptive GitHub bootstrap", () => {
       url: "https://github.com/users/xtt5480446/projects/7",
     })
     expect(calls).toHaveLength(3)
-    expect(calls.some((input) => JSON.stringify(input).includes("updateProjectV2"))).toBe(true)
+    const update = calls.find((input) => JSON.stringify(input).includes("updateProjectV2"))
+    expect(JSON.stringify(update)).toContain("projectId: $projectId")
+    expect(JSON.stringify(update)).not.toContain("projectV2Id")
   })
 
   test("GitHub API adapter reads repository issue numbers from every Project page", async () => {
@@ -413,6 +421,7 @@ describe("adaptive GitHub bootstrap", () => {
       createProject: async () => {
         throw new Error("unexpected project creation")
       },
+      updateProject: async () => {},
       listProjectIssueNumbers: async () => new Set(issues.map((issue) => issue.number)),
       addProjectItems: async () => {
         throw new Error("unexpected Project item creation")

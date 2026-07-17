@@ -61,6 +61,13 @@ export interface GitHubBootstrapClient {
     readonly shortDescription: string
     readonly readme: string
   }) => Promise<ProjectRecord>
+  readonly updateProject: (
+    projectID: string,
+    input: {
+      readonly shortDescription: string
+      readonly readme: string
+    },
+  ) => Promise<void>
   readonly listProjectIssueNumbers: (projectID: string) => Promise<ReadonlySet<number>>
   readonly addProjectItems: (
     projectID: string,
@@ -462,14 +469,22 @@ export async function reconcileGitHub(client: GitHubBootstrapClient, specs: read
     issueRecords.push(issue)
   }
 
+  const existingProject = await client.getProject()
   const project =
-    (await client.getProject()) ??
+    existingProject ??
     (await client.createProject({
       title: projectTitle,
       shortDescription: "Commercial V1 execution board for the 59-task Adaptive Runtime program.",
       readme:
         "Stages are sequential through G1-G6; eligible tasks run in controlled parallel worktrees. Issues are authoritative work items and PRs target stage branches.",
     }))
+  if (existingProject) {
+    await client.updateProject(project.id, {
+      shortDescription: "Commercial V1 execution board for the 59-task Adaptive Runtime program.",
+      readme:
+        "Stages are sequential through G1-G6; eligible tasks run in controlled parallel worktrees. Issues are authoritative work items and PRs target stage branches.",
+    })
+  }
   const currentItems = await client.listProjectIssueNumbers(project.id)
   const missingItems = issueRecords.filter((issue) => !currentItems.has(issue.number))
   if (missingItems.length) await client.addProjectItems(project.id, missingItems)

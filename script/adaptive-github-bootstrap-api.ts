@@ -113,6 +113,21 @@ function batches<T>(values: readonly T[], size: number): readonly (readonly T[])
 }
 
 export function createGitHubClient(runner: GhRunner): GitHubBootstrapClient {
+  const updateProject = async (
+    projectID: string,
+    input: { readonly shortDescription: string; readonly readme: string },
+  ) => {
+    await runner(["api", "graphql", "--input", "-"], {
+      query:
+        "mutation($projectId: ID!, $shortDescription: String!, $readme: String!) { updateProjectV2(input: { projectId: $projectId, shortDescription: $shortDescription, readme: $readme }) { projectV2 { id } } }",
+      variables: {
+        projectId: projectID,
+        shortDescription: input.shortDescription,
+        readme: input.readme,
+      },
+    })
+  }
+
   return {
     listLabels: async () => {
       const response = await runner(["api", `repos/${repository}/labels?per_page=100`, "--paginate", "--slurp"])
@@ -200,15 +215,7 @@ export function createGitHubClient(runner: GhRunner): GitHubBootstrapClient {
       const project = asRecord(value)
       const projectID = requireString(project.id, "project.id")
 
-      await runner(["api", "graphql", "--input", "-"], {
-        query:
-          "mutation($projectId: ID!, $shortDescription: String!, $readme: String!) { updateProjectV2(input: { projectV2Id: $projectId, shortDescription: $shortDescription, readme: $readme }) { projectV2 { id } } }",
-        variables: {
-          projectId: projectID,
-          shortDescription: input.shortDescription,
-          readme: input.readme,
-        },
-      })
+      await updateProject(projectID, input)
 
       return {
         id: projectID,
@@ -216,6 +223,7 @@ export function createGitHubClient(runner: GhRunner): GitHubBootstrapClient {
         url: requireString(project.url, "project.url"),
       }
     },
+    updateProject,
     listProjectIssueNumbers: async (projectID) => {
       const result = new Set<number>()
       let after: string | null = null
