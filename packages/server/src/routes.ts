@@ -113,11 +113,11 @@ function makeRoutes<AuthError, AuthServices>(
         Layer.provide(Observability.layer),
         HttpRouter.provideRequest(requestServices),
         Layer.provideMerge(services),
-        Layer.provideMerge(HttpRouter.layer),
       )
       return Layer.merge(apiRoutes, apiNotFoundRoute(corsOptions)).pipe(
         Layer.provide(cors(corsOptions)),
         Layer.provide(Layer.succeed(CorsConfig)(corsOptions)),
+        Layer.provideMerge(HttpRouter.layer),
       )
     }),
   )
