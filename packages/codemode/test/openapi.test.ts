@@ -435,7 +435,7 @@ describe("OpenAPI.fromSpec", () => {
     }
   })
 
-  test("projects directional annotations through local refs, anchors, and compositions", () => {
+  test("projects directional annotations through local refs and allOf composition", () => {
     const tool = toolAt(
       OpenAPI.fromSpec({
         baseUrl,
@@ -448,18 +448,14 @@ describe("OpenAPI.fromSpec", () => {
                   schema: {
                     type: "object",
                     additionalProperties: false,
-                    required: ["local", "anchored", "union", "choice", "conditional", "name"],
+                    required: ["local", "composed", "name"],
                     properties: {
                       local: { $ref: "#/$defs/ReadOnlyValue" },
-                      anchored: { $ref: "#managed" },
-                      union: { anyOf: [{ $ref: "#/$defs/ReadOnlyValue" }] },
-                      choice: { oneOf: [{ $ref: "#/$defs/ReadOnlyValue" }] },
-                      conditional: { anyOf: [{ $ref: "#/$defs/ReadOnlyValue" }, { type: "number" }] },
+                      composed: { allOf: [{ $ref: "#/$defs/ReadOnlyValue" }] },
                       name: { type: "string" },
                     },
                     $defs: {
                       ReadOnlyValue: { type: "string", readOnly: true },
-                      AnchoredValue: { $anchor: "managed", type: "string", readOnly: true },
                     },
                   },
                 },
@@ -473,89 +469,7 @@ describe("OpenAPI.fromSpec", () => {
     )
     if (!Tool.isDefinition(tool)) throw new Error("test was not generated")
 
-    expect(inputTypeScript(tool)).toBe("{ conditional: unknown; name: string }")
-  })
-
-  test("keeps anchors inside their schema resource", () => {
-    const tool = toolAt(
-      OpenAPI.fromSpec({
-        baseUrl,
-        spec: singleOperation(
-          {
-            requestBody: {
-              required: true,
-              content: {
-                "application/json": {
-                  schema: {
-                    $id: "https://example.test/root",
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["value"],
-                    properties: { value: { $ref: "#managed" } },
-                    $defs: {
-                      Nested: {
-                        $id: "nested",
-                        $anchor: "managed",
-                        type: "string",
-                        readOnly: true,
-                      },
-                      Root: { $anchor: "managed", type: "number" },
-                    },
-                  },
-                },
-              },
-            },
-          },
-          "post",
-        ),
-      }).tools,
-      "test",
-    )
-    if (!Tool.isDefinition(tool)) throw new Error("test was not generated")
-
-    expect(inputTypeScript(tool)).toBe("{ value: unknown }")
-  })
-
-  test("resolves local directional refs inside nested schema resources", () => {
-    const tool = toolAt(
-      OpenAPI.fromSpec({
-        baseUrl,
-        spec: singleOperation(
-          {
-            requestBody: {
-              content: {
-                "application/json": {
-                  schema: {
-                    $id: "https://example.test/root",
-                    type: "object",
-                    required: ["nested"],
-                    properties: {
-                      nested: {
-                        $id: "nested",
-                        type: "object",
-                        required: ["secret", "name"],
-                        properties: {
-                          secret: { $ref: "#managed" },
-                          name: { type: "string" },
-                        },
-                        $defs: {
-                          Secret: { $anchor: "managed", type: "string", readOnly: true },
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-          "post",
-        ),
-      }).tools,
-      "test",
-    )
-    if (!Tool.isDefinition(tool)) throw new Error("test was not generated")
-
-    expect(inputTypeScript(tool)).toBe("{ body?: { nested: { name: string } } }")
+    expect(inputTypeScript(tool)).toBe("{ name: string }")
   })
 
   test("ignores inherited directional annotations", () => {
@@ -621,42 +535,6 @@ describe("OpenAPI.fromSpec", () => {
     expect(body.required).toEqual(["name"])
     expect(branch.required).toEqual(["name"])
     expect(Object.keys(isRecord(branch.properties) ? branch.properties : {})).toEqual(["name"])
-  })
-
-  test("cleans hidden requirements from unions, dependencies, and conditionals", () => {
-    const tool = toolAt(
-      OpenAPI.fromSpec({
-        baseUrl,
-        spec: singleOperation(
-          {
-            requestBody: {
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    required: ["id", "name"],
-                    properties: { id: { type: "string", readOnly: true }, name: { type: "string" } },
-                    anyOf: [{ required: ["id"] }, { required: ["name"] }],
-                    dependentRequired: { id: ["name"], name: ["id"] },
-                    dependentSchemas: { id: { required: ["name"] }, name: { required: ["id"] } },
-                    if: { required: ["name"] },
-                    then: { required: ["id"] },
-                  },
-                },
-              },
-            },
-          },
-          "post",
-        ),
-      }).tools,
-      "test",
-    )
-    if (!Tool.isDefinition(tool) || !isRecord(tool.input)) throw new Error("test was not generated")
-    const properties = isRecord(tool.input.properties) ? tool.input.properties : {}
-    const body = isRecord(properties.body) ? properties.body : {}
-
-    expect(JSON.stringify(body)).not.toContain('"id"')
-    expect(JSON.stringify(body)).toContain('"name"')
   })
 
   test("keeps directional schemas model-facing while preserving runtime pass-through", async () => {

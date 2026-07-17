@@ -5,6 +5,7 @@ The initial adapter intentionally skips operations it cannot execute correctly. 
 - Cookie parameters, authentication, and cookie-header merging.
 - Matrix, label, space-delimited, pipe-delimited, `allowReserved`, and parameter `content` serialization.
 - External references and complete nested `$defs` support.
+- `$anchor` and nested `$id` resource resolution in directional (`readOnly`/`writeOnly`) projection.
 - Relative or templated server URLs and server variables.
 - Base URLs containing query strings or fragments.
 - Runtime response-schema validation and full content negotiation.

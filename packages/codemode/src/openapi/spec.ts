@@ -45,201 +45,114 @@ export const resolve = (document: Document, value: unknown): unknown => {
   return next(value, new Set())
 }
 
+// Model-facing directional projection: `readOnly` properties are omitted from request
+// schemas and `writeOnly` properties from response schemas, with `required` kept
+// consistent. Runtime values pass through unchanged. Reference support is deliberately
+// bounded to JSON pointers (`#/...`); `$anchor` and nested `$id` resource scoping are
+// out of scope for an advisory schema.
 type SchemaDirection = "request" | "response"
-type SchemaContext = { readonly document: Document; readonly root: unknown }
-type SchemaTarget = SchemaContext & { readonly value: unknown }
+type SchemaResource = { readonly value: unknown; readonly root: unknown }
 
-const schemaAnchor = (
-  value: unknown,
-  anchor: string,
-  seen: ReadonlySet<object> = new Set(),
-  nested = false,
-): unknown => {
-  if (!isRecord(value) || seen.has(value)) return undefined
-  if (nested && own(value, "$id") !== undefined) return undefined
-  if (own(value, "$anchor") === anchor) return value
-  const nextSeen = new Set([...seen, value])
-  const maps = [
-    own(value, "properties"),
-    own(value, "patternProperties"),
-    own(value, "dependentSchemas"),
-    own(value, "$defs"),
-    own(value, "definitions"),
-  ]
-  for (const map of maps) {
-    if (!isRecord(map)) continue
-    for (const child of Object.values(map)) {
-      const found = schemaAnchor(child, anchor, nextSeen, true)
-      if (found !== undefined) return found
-    }
+const hiddenKeyword = { request: "readOnly", response: "writeOnly" } as const
+
+// Local `$defs`/`definitions` pointers resolve against the schema being projected;
+// other pointers resolve against the document and rebase local resolution onto the target.
+const resolveResource = (document: Document, resource: SchemaResource): SchemaResource => {
+  const next = (current: SchemaResource, seen: ReadonlySet<string>): SchemaResource => {
+    if (!isRecord(current.value)) return current
+    const ref = nonEmptyString(own(current.value, "$ref"))
+    if (ref === undefined || !ref.startsWith("#/") || seen.has(ref)) return current
+    const local = ref.startsWith("#/$defs/") || ref.startsWith("#/definitions/")
+    const target = resolvePointer(local ? current.root : document, ref)
+    if (target === undefined) return current
+    return next({ value: target, root: local ? current.root : target }, new Set([...seen, ref]))
   }
-  for (const child of [
-    ...asArray(own(value, "allOf")),
-    ...asArray(own(value, "anyOf")),
-    ...asArray(own(value, "oneOf")),
-    ...asArray(own(value, "prefixItems")),
-    own(value, "items"),
-    own(value, "contains"),
-    own(value, "additionalProperties"),
-    own(value, "unevaluatedProperties"),
-    own(value, "propertyNames"),
-    own(value, "not"),
-    own(value, "if"),
-    own(value, "then"),
-    own(value, "else"),
-  ]) {
-    const found = schemaAnchor(child, anchor, nextSeen, true)
-    if (found !== undefined) return found
-  }
-  return undefined
+  return next(resource, new Set())
 }
 
-const schemaReference = (context: SchemaContext, value: Record<string, unknown>): SchemaTarget | undefined => {
-  const ref = nonEmptyString(own(value, "$ref"))
-  if (ref === undefined) return undefined
-  if (ref.startsWith("#/$defs/") || ref.startsWith("#/definitions/")) {
-    const target = resolvePointer(context.root, ref)
-    return target === undefined ? undefined : { ...context, root: context.root, value: target }
-  }
-  if (ref.startsWith("#/")) {
-    const target = resolvePointer(context.document, ref)
-    return target === undefined ? undefined : { document: context.document, root: target, value: target }
-  }
-  if (ref.startsWith("#") && ref.length > 1) {
-    const target = schemaAnchor(context.root, ref.slice(1))
-    return target === undefined ? undefined : { ...context, value: target }
-  }
-  return undefined
-}
-
-const hiddenProperty = (
-  context: SchemaContext,
-  value: unknown,
+const isHidden = (
+  document: Document,
+  resource: SchemaResource,
   direction: SchemaDirection,
   seen: ReadonlySet<object> = new Set(),
 ): boolean => {
-  if (!isRecord(value)) return false
-  const current = own(value, "$id") === undefined ? context : { ...context, root: value }
-  if (own(value, direction === "request" ? "readOnly" : "writeOnly") === true) return true
-  const target = schemaReference(current, value)
-  if (isRecord(target?.value) && !seen.has(target.value)) {
-    if (hiddenProperty(target, target.value, direction, new Set([...seen, target.value]))) return true
-  }
-  const allOf = asArray(own(value, "allOf"))
-  if (allOf.some((item) => hiddenProperty(current, item, direction, seen))) return true
-  for (const keyword of ["anyOf", "oneOf"] as const) {
-    const alternatives = asArray(own(value, keyword))
-    if (alternatives.length > 0 && alternatives.every((item) => hiddenProperty(current, item, direction, seen))) {
-      return true
-    }
-  }
-  return false
+  const resolved = resolveResource(document, resource)
+  if (!isRecord(resolved.value) || seen.has(resolved.value)) return false
+  if (own(resolved.value, hiddenKeyword[direction]) === true) return true
+  const nextSeen = new Set([...seen, resolved.value])
+  return asArray(own(resolved.value, "allOf")).some((item) =>
+    isHidden(document, { ...resolved, value: item }, direction, nextSeen),
+  )
 }
 
-const hiddenPropertyNames = (
-  context: SchemaContext,
-  value: unknown,
+// Hidden property names declared by a schema itself or inherited through `$ref` and
+// `allOf` composition, so sibling `required` lists stay consistent after projection.
+const hiddenNames = (
+  document: Document,
+  resource: SchemaResource,
   direction: SchemaDirection,
   seen: ReadonlySet<object> = new Set(),
 ): ReadonlySet<string> => {
-  if (!isRecord(value)) return new Set()
-  const current = own(value, "$id") === undefined ? context : { ...context, root: value }
-  const declaredProperties = own(value, "properties")
-  const hidden = new Set(
-    isRecord(declaredProperties)
-      ? Object.entries(declaredProperties)
-          .filter(([, property]) => hiddenProperty(current, property, direction))
-          .map(([name]) => name)
-      : [],
-  )
-  const target = schemaReference(current, value)
-  if (isRecord(target?.value) && !seen.has(target.value)) {
-    for (const name of hiddenPropertyNames(target, target.value, direction, new Set([...seen, target.value]))) {
-      hidden.add(name)
-    }
-  }
-  for (const item of asArray(own(value, "allOf"))) {
-    for (const name of hiddenPropertyNames(current, item, direction, seen)) hidden.add(name)
-  }
-  return hidden
+  const resolved = resolveResource(document, resource)
+  if (!isRecord(resolved.value) || seen.has(resolved.value)) return new Set()
+  const nextSeen = new Set([...seen, resolved.value])
+  const properties = own(resolved.value, "properties")
+  const declared = isRecord(properties)
+    ? Object.entries(properties)
+        .filter(([, property]) => isHidden(document, { ...resolved, value: property }, direction))
+        .map(([name]) => name)
+    : []
+  const inherited = asArray(own(resolved.value, "allOf")).flatMap((item) => [
+    ...hiddenNames(document, { ...resolved, value: item }, direction, nextSeen),
+  ])
+  return new Set([...declared, ...inherited])
 }
 
+const nestedSchemas = new Set([
+  "items",
+  "contains",
+  "additionalProperties",
+  "unevaluatedProperties",
+  "propertyNames",
+  "not",
+  "if",
+  "then",
+  "else",
+])
+const nestedSchemaLists = new Set(["anyOf", "oneOf", "prefixItems"])
+const nestedSchemaMaps = new Set(["patternProperties", "dependentSchemas", "$defs", "definitions"])
+
 const directionalSchema = (
-  context: SchemaContext,
-  value: unknown,
+  document: Document,
+  resource: SchemaResource,
   direction: SchemaDirection,
   excluded: ReadonlySet<string> = new Set(),
 ): unknown => {
-  if (!isRecord(value)) return value
-  const current = own(value, "$id") === undefined ? context : { ...context, root: value }
-  const declaredProperties = own(value, "properties")
-  const properties = isRecord(declaredProperties) ? declaredProperties : undefined
-  const hidden = new Set([...excluded, ...hiddenPropertyNames(current, value, direction)])
-  const schemas = (items: unknown, inherited: ReadonlySet<string> = new Set()): unknown =>
-    Array.isArray(items) ? items.map((item) => directionalSchema(current, item, direction, inherited)) : items
-  const schemaMap = (items: unknown): unknown =>
-    isRecord(items)
-      ? Object.fromEntries(
-          Object.entries(items).map(([name, item]) => [name, directionalSchema(current, item, direction)]),
-        )
-      : items
-
+  if (!isRecord(resource.value)) return resource.value
+  const hidden = new Set([...excluded, ...hiddenNames(document, resource, direction)])
+  const project = (item: unknown, inherited: ReadonlySet<string> = new Set()): unknown =>
+    directionalSchema(document, { ...resource, value: item }, direction, inherited)
   return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => {
-      if (key === "properties" && properties !== undefined) {
+    Object.entries(resource.value).map(([key, item]) => {
+      if (key === "properties" && isRecord(item)) {
         return [
           key,
           Object.fromEntries(
-            Object.entries(properties)
+            Object.entries(item)
               .filter(([name]) => !hidden.has(name))
-              .map(([name, property]) => [name, directionalSchema(current, property, direction)]),
+              .map(([name, property]) => [name, project(property)]),
           ),
         ]
       }
       if (key === "required" && Array.isArray(item)) {
         return [key, item.filter((name) => typeof name !== "string" || !hidden.has(name))]
       }
-      if (key === "allOf") return [key, schemas(item, hidden)]
-      if (key === "anyOf" || key === "oneOf") return [key, schemas(item, hidden)]
-      if (key === "prefixItems") return [key, schemas(item)]
-      if (key === "dependentRequired" && isRecord(item)) {
-        return [
-          key,
-          Object.fromEntries(
-            Object.entries(item)
-              .filter(([name]) => !hidden.has(name))
-              .map(([name, names]) => [
-                name,
-                Array.isArray(names) ? names.filter((required) => !hidden.has(String(required))) : names,
-              ]),
-          ),
-        ]
-      }
-      if (key === "dependentSchemas" && isRecord(item)) {
-        return [
-          key,
-          Object.fromEntries(
-            Object.entries(item)
-              .filter(([name]) => !hidden.has(name))
-              .map(([name, schema]) => [name, directionalSchema(current, schema, direction, hidden)]),
-          ),
-        ]
-      }
-      if (key === "properties" || key === "patternProperties" || key === "$defs" || key === "definitions") {
-        return [key, schemaMap(item)]
-      }
-      if (
-        key === "items" ||
-        key === "contains" ||
-        key === "additionalProperties" ||
-        key === "unevaluatedProperties" ||
-        key === "propertyNames" ||
-        key === "not"
-      ) {
-        return [key, directionalSchema(current, item, direction)]
-      }
-      if (key === "if" || key === "then" || key === "else") {
-        return [key, directionalSchema(current, item, direction, hidden)]
+      // allOf branches share one object; hidden names apply across every branch.
+      if (key === "allOf" && Array.isArray(item)) return [key, item.map((entry) => project(entry, hidden))]
+      if (nestedSchemas.has(key)) return [key, project(item)]
+      if (nestedSchemaLists.has(key) && Array.isArray(item)) return [key, item.map((entry) => project(entry))]
+      if (nestedSchemaMaps.has(key) && isRecord(item)) {
+        return [key, Object.fromEntries(Object.entries(item).map(([name, entry]) => [name, project(entry)]))]
       }
       return [key, item]
     }),
@@ -247,7 +160,7 @@ const directionalSchema = (
 }
 
 const projectSchema = (document: Document, value: unknown, direction: SchemaDirection): JsonSchema => {
-  const projected = directionalSchema({ document, root: value }, value, direction)
+  const projected = directionalSchema(document, { value, root: value }, direction)
   if (!isRecord(projected)) return {}
   const normalized = nonEmptyString(document.openapi)?.startsWith("3.0")
     ? fromSchemaOpenApi3_0(projected)
@@ -402,7 +315,7 @@ const operationBody = (
     }
   }
   const resolvedSchema = resolve(document, selected.schema)
-  const schema = directionalSchema({ document, root: resolvedSchema }, resolvedSchema, "request")
+  const schema = directionalSchema(document, { value: resolvedSchema, root: resolvedSchema }, "request")
   const required = resolved.required === true
   if (!isFlattenableObjectBody(schema, required)) {
     return {
