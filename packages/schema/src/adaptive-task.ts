@@ -7,11 +7,12 @@ import { Provider } from "./provider"
 import { AbsolutePath, NonNegativeInt, optional, PositiveInt, statics } from "./schema"
 
 const id = <Prefix extends string, Brand extends string>(prefix: Prefix, brand: Brand) =>
-  Schema.String.check(Schema.isPattern(new RegExp(`^${prefix}[0-9A-Za-z]{26}$`))).pipe(
-    Schema.brand(brand),
-    Schema.annotate({ identifier: brand }),
-    statics((schema) => ({ create: () => schema.make(prefix + ascending()) })),
-  )
+  Schema.String.annotate({ identifier: brand })
+    .check(Schema.isPattern(new RegExp(`^${prefix}[0-9A-Za-z]{26}$`)))
+    .pipe(
+      Schema.brand(brand),
+      statics((schema) => ({ create: () => schema.make(prefix + ascending()) })),
+    )
 
 export const ID = id("adt_", "AdaptiveTask.ID")
 export type ID = typeof ID.Type
@@ -64,9 +65,9 @@ const validContextBudget = Schema.makeFilter<Schema.Schema.Type<typeof ModelPoli
 )
 
 export interface ModelPolicy extends Schema.Schema.Type<typeof ModelPolicy> {}
-export const ModelPolicy = ModelPolicyBase.check(validContextBudget).annotate({
+export const ModelPolicy = ModelPolicyBase.annotate({
   identifier: "AdaptiveTask.ModelPolicy",
-})
+}).check(validContextBudget)
 
 export interface Summary extends Schema.Schema.Type<typeof Summary> {}
 export const Summary = Schema.Struct({

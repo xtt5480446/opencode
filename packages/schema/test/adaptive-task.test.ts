@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
+import { AdaptiveTask as RootAdaptiveTask } from "../src"
 import { AdaptiveTask } from "../src/adaptive-task"
 import { Model } from "../src/model"
 import { Provider } from "../src/provider"
@@ -98,5 +99,11 @@ describe("AdaptiveTask", () => {
     expect(() => decode({ ...summaryInput, timeCreated: -1 })).toThrow()
     expect(() => decode({ ...summaryInput, timeCreated: 1.5 })).toThrow()
     expect(() => decode({ ...summaryInput, timeUpdated: Number.POSITIVE_INFINITY })).toThrow()
+  })
+
+  test("root and direct entrypoints expose the same schema identity", () => {
+    expect(RootAdaptiveTask.ID).toBe(AdaptiveTask.ID)
+    expect(RootAdaptiveTask.ModelPolicy).toBe(AdaptiveTask.ModelPolicy)
+    expect(RootAdaptiveTask.Summary).toBe(AdaptiveTask.Summary)
   })
 })
