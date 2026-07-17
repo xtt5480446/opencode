@@ -10,6 +10,10 @@ BUN_VERSION="${BENCH_BUN_VERSION:-1.3.14}"
 NODE_VERSION="${BENCH_NODE_VERSION:-24.14.1}"
 ROOT="${BENCH_ROOT:-/tmp/opencode-provider-benchmark}"
 KEEP_ROOT="${BENCH_KEEP_ROOT:-false}"
+PROVIDER="${BENCH_PROVIDER:-unknown}"
+REGION="${BENCH_REGION:-unknown}"
+
+declare -A PHASE_MS=()
 
 timestamp() {
   date +%s%N
@@ -20,9 +24,50 @@ phase() {
   shift
   local start end
   start="$(timestamp)"
+  set +e
   "$@"
+  local status=$?
+  set -e
   end="$(timestamp)"
-  printf 'BENCH_PHASE\t%s\t%s\n' "$name" "$(( (end - start) / 1000000 ))"
+  PHASE_MS["$name"]="$(( (end - start) / 1000000 ))"
+  printf 'BENCH_PHASE\t%s\t%s\n' "$name" "${PHASE_MS[$name]}"
+  return "$status"
+}
+
+seconds() {
+  awk -v milliseconds="${1:-0}" 'BEGIN { printf "%.3fs", milliseconds / 1000 }'
+}
+
+render_table() {
+  local result="$1"
+  local typecheck="—"
+  local workload="—"
+  if [[ -n "${PHASE_MS[typecheck]:-}" ]]; then
+    typecheck="$(seconds "${PHASE_MS[typecheck]}")"
+  fi
+  if [[ "$result" == "✅" ]]; then
+    workload="$(seconds "$(( ${PHASE_MS[clone]} + ${PHASE_MS[install]} + ${PHASE_MS[typecheck]} ))")"
+  elif [[ -n "${PHASE_MS[typecheck]:-}" ]]; then
+    typecheck="${typecheck} (failed)"
+  fi
+  local memory
+  memory="$(awk '/MemTotal/{printf "%.2f GiB", $2 / 1048576}' /proc/meminfo)"
+  local cpu_model
+  cpu_model="$(awk -F: '/model name/{gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo)"
+  printf '\n| Provider | CPU / RAM | Region / CPU | Prepare | Clone | Install | Typecheck | Workload total | Result |\n'
+  printf '|---|---|---|---:|---:|---:|---:|---:|---|\n'
+  printf '| **%s** | %s CPU / %s | %s, %s | %s | %s | %s | %s | %s | %s |\n' \
+    "$PROVIDER" \
+    "$(getconf _NPROCESSORS_ONLN)" \
+    "$memory" \
+    "$REGION" \
+    "$cpu_model" \
+    "$(seconds "${PHASE_MS[prepare]:-0}")" \
+    "$(seconds "${PHASE_MS[clone]:-0}")" \
+    "$(seconds "${PHASE_MS[install]:-0}")" \
+    "$typecheck" \
+    "$workload" \
+    "$result"
 }
 
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -104,7 +149,10 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 total_start="$(timestamp)"
-phase prepare prepare
+if ! phase prepare prepare; then
+  render_table "❌ prepare"
+  exit 1
+fi
 
 rm -rf "$ROOT"
 mkdir -p "$ROOT/bun/bin" "$ROOT/home" "$ROOT/bun-cache"
@@ -123,17 +171,33 @@ printf 'BENCH_META\tlogical_cpus\t%s\n' "$(getconf _NPROCESSORS_ONLN)"
 printf 'BENCH_META\tcpu_model\t%s\n' "$(awk -F: '/model name/{gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo)"
 printf 'BENCH_META\tmemory_kib\t%s\n' "$(awk '/MemTotal/{print $2}' /proc/meminfo)"
 
-phase bun_download download_bun
-phase bun_unpack unpack_bun
+if ! phase bun_download download_bun; then
+  render_table "❌ Bun download"
+  exit 1
+fi
+if ! phase bun_unpack unpack_bun; then
+  render_table "❌ Bun unpack"
+  exit 1
+fi
 printf 'BENCH_META\tbun_version\t%s\n' "$(bun --version)"
 printf 'BENCH_META\tnode_version\t%s\n' "$(node --version)"
 
-phase clone clone_repo
+if ! phase clone clone_repo; then
+  render_table "❌ clone"
+  exit 1
+fi
 printf 'BENCH_DISK\tafter_clone\t%s\n' "$(disk)"
-phase install install_dependencies
+if ! phase install install_dependencies; then
+  render_table "❌ install"
+  exit 1
+fi
 printf 'BENCH_DISK\tafter_install\t%s\n' "$(disk)"
-phase typecheck typecheck
+if ! phase typecheck typecheck; then
+  render_table "❌ typecheck"
+  exit 1
+fi
 printf 'BENCH_DISK\tafter_typecheck\t%s\n' "$(disk)"
 printf 'BENCH_DONE\t%s\n' "$(git -C "$ROOT/repo" rev-parse HEAD)"
 total_end="$(timestamp)"
 printf 'BENCH_PHASE\ttotal\t%s\n' "$(( (total_end - total_start) / 1000000 ))"
+render_table "✅"
