@@ -1,10 +1,10 @@
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core"
+import { Workspace } from "@opencode-ai/schema/workspace"
 import { ProjectTable } from "../project/sql"
 import { ProjectV2 } from "../project"
-import { WorkspaceV2 } from "../workspace"
 
 export const WorkspaceTable = sqliteTable("workspace", {
-  id: text().$type<WorkspaceV2.ID>().primaryKey(),
+  id: text().$type<Workspace.ID>().primaryKey(),
   type: text().notNull(),
   name: text().notNull().default(""),
   branch: text(),

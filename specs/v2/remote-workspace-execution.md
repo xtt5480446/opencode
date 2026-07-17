@@ -149,7 +149,7 @@ existing Core policy services:
 ```ts
 interface WorkspaceFileBackend {
   readonly inspect: (path: string) => Effect.Effect<FileInfo, FileError>
-  readonly realPath: (path: string) => Effect.Effect<string, FileError>
+  readonly resolve: (path: string) => Effect.Effect<ResolvedPath, FileError>
   readonly read: (path: string) => Effect.Effect<Uint8Array, FileError>
   readonly list: (path: string) => Effect.Effect<readonly DirectoryEntry[], FileError>
   readonly ensureDirectory: (path: string) => Effect.Effect<void, FileError>
@@ -168,9 +168,9 @@ interface WorkspaceFileBackend {
 not emulate it with an unlocked client-side read followed by write.
 `FileMutation` remains the owner of create/write/remove semantics, stale-edit
 errors, parent-directory creation, result metadata, BOM handling, and
-OpenCode-side mutation ordering. `LocationMutation` retains symlink-safe path
-containment by composing `realPath` and `inspect`, including its nearest
-existing ancestor resolution for new targets.
+OpenCode-side mutation ordering. `resolve` returns a provider-canonical path
+for an existing target or through the nearest existing ancestor for a new
+target. `LocationMutation` uses it to retain symlink-safe containment.
 
 Provider process transports adapt native command handles to Effect's scoped
 `ChildProcessSpawner` contract. Scope finalization interrupts an unfinished
@@ -265,28 +265,31 @@ or when detached process reconnection and richer runtime semantics justify it.
 
 ## Implementation Sequence
 
-The first integration PR is a narrow vertical slice across stages 1 through 4:
+The first integration PR establishes the narrow seam needed by stages 1
+through 4:
 
-- add the provider-neutral file, process, environment, and lifecycle contracts;
+- add provider-neutral file, process, environment, connection, and binding
+  reconciliation contracts;
 - add the local environment and a test-only fake hosted provider;
-- replace the experimental Workspace storage shape with public metadata plus
-  private placement state;
-- add the Workspace connection manager and Location-scoped
+- add browser-safe Workspace metadata while keeping provider placement private
+  in the existing experimental row;
+- add a scoped, idle-expiring Workspace connection cache and Location-scoped
   `WorkspaceEnvironment.Service`;
 - make `Location.boundNode` resolve hosted project/root metadata without
   `Project.resolve` or any host-path access; and
 - prove lazy connection and scoped release using a hosted directory that does
   not exist on the test host.
 
-It does not add Vercel or migrate every tool. Its purpose is to establish the
-placement seam and prevent cloud-provider details from shaping later Core
-changes.
+It does not add Vercel, lifecycle mutation, or migrate existing tools. Its
+purpose is to establish the placement seam and prevent cloud-provider details
+from shaping later Core changes. The lifecycle gate and create, suspend, and
+remove orchestration land with stage 3 rather than as unused first-PR methods.
 
 ### 1. Define Behavioral Contracts
 
 - Add internal Sandbox provider, binding, file-backend, process-transport, and
   environment services in Core.
-- Include provider-side real-path and directory primitives plus explicit
+- Include provider-side canonical-path and directory primitives plus explicit
   Workspace shell/environment policy in the contract.
 - Keep provider registration process-global and provider implementations out
   of tool modules.
@@ -364,7 +367,7 @@ requires a host checkout.
   Node filesystem use.
 - Adapt `FileMutation` to the Workspace file backend while preserving its
   current policy and result surface.
-- Adapt `LocationMutation` to provider-side `realPath` and `inspect` so existing
+- Adapt `LocationMutation` to provider-side `resolve` and `inspect` so existing
   targets, missing-target ancestors, and symlink escapes retain current
   containment behavior.
 - Adapt hosted process transport once to `ChildProcessSpawner`, then reuse

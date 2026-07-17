@@ -16,6 +16,7 @@ import { Image } from "./image"
 import { LocationWatcher } from "./filesystem/location-watcher"
 import { Integration } from "./integration"
 import { Location } from "./location"
+import { WorkspaceEnvironment } from "./workspace/environment"
 import { LocationMutation } from "./location-mutation"
 import { LocationServiceMap } from "./location-service-map"
 import { MCP } from "./mcp/index"
@@ -50,6 +51,7 @@ export { LocationServiceMap } from "./location-service-map"
 
 const locationServiceNodes = [
   Location.node,
+  WorkspaceEnvironment.node,
   Config.node,
   AgentV2.node,
   CommandV2.node,
@@ -115,7 +117,10 @@ export function buildLocationServiceMap(
       LayerMap.make(
         (ref: Location.Ref) => {
           const startedAt = performance.now()
-          const allReplacements = replacements.concat([[Location.node, Location.boundNode(ref)]])
+          const allReplacements = replacements.concat([
+            [Location.node, Location.boundNode(ref)],
+            [WorkspaceEnvironment.node, WorkspaceEnvironment.boundNode(ref)],
+          ])
           // Apply replacements during hoist, not afterward: replacements can
           // introduce new tagged dependencies (Location.boundNode depends on
           // Project), and the hoist walk is the only pass that can still slice
