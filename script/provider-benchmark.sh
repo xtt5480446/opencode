@@ -54,15 +54,14 @@ render_table() {
   memory="$(awk '/MemTotal/{printf "%.2f GiB", $2 / 1048576}' /proc/meminfo)"
   local cpu_model
   cpu_model="$(awk -F: '/model name/{gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo)"
-  printf '\n| Provider | CPU / RAM | Region / CPU | Prepare | Clone | Install | Typecheck | Workload total | Result |\n'
-  printf '|---|---|---|---:|---:|---:|---:|---:|---|\n'
-  printf '| **%s** | %s CPU / %s | %s, %s | %s | %s | %s | %s | %s | %s |\n' \
+  printf '\n| Provider | CPU / RAM | Region / CPU | Clone | Install | Typecheck | Workload total | Result |\n'
+  printf '|---|---|---|---:|---:|---:|---:|---|\n'
+  printf '| **%s** | %s CPU / %s | %s, %s | %s | %s | %s | %s | %s |\n' \
     "$PROVIDER" \
     "$(getconf _NPROCESSORS_ONLN)" \
     "$memory" \
     "$REGION" \
     "$cpu_model" \
-    "$(seconds "${PHASE_MS[prepare]:-0}")" \
     "$(seconds "${PHASE_MS[clone]:-0}")" \
     "$(seconds "${PHASE_MS[install]:-0}")" \
     "$typecheck" \
