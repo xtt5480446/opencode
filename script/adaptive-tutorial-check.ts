@@ -15,6 +15,11 @@ export type ValidationInput = {
   readonly readFile: (path: string) => Promise<string>
 }
 
+export type PullRequestEventInput = {
+  readonly event: unknown
+  readonly runGit?: (args: readonly string[]) => Promise<string>
+}
+
 export const requiredHeadings = [
   "## 先说结论",
   "## 它在当前 Milestone 中的位置",
@@ -85,6 +90,28 @@ export async function validateAdaptiveTutorial(input: ValidationInput): Promise<
   return errors
 }
 
+export async function validatePullRequestEvent(input: PullRequestEventInput) {
+  const event = asRecord(input.event, "event")
+  const pullRequest = asRecord(event.pull_request, "event.pull_request")
+  const base = asRecord(pullRequest.base, "event.pull_request.base")
+  const head = asRecord(pullRequest.head, "event.pull_request.head")
+  const baseRef = requireString(base.ref, "event.pull_request.base.ref")
+  const baseSha = requireSha(base.sha)
+  const headSha = requireSha(head.sha)
+  const labels = Array.isArray(pullRequest.labels)
+    ? pullRequest.labels.map((label) => requireString(asRecord(label, "pull_request.label").name, "label.name"))
+    : []
+  const runGit = input.runGit ?? git
+  const changes = parseChanges(await runGit(["diff", "--name-status", baseSha, headSha]))
+  return validateAdaptiveTutorial({
+    baseRef,
+    body: typeof pullRequest.body === "string" ? pullRequest.body : "",
+    labels,
+    changes,
+    readFile: (path) => runGit(["show", `${headSha}:${path}`]),
+  })
+}
+
 async function read(input: ValidationInput, path: string, errors: string[]) {
   try {
     return await input.readFile(path)
@@ -120,4 +147,54 @@ function validateTutorial(tutorial: string, errors: string[]) {
       errors.push(`Tutorial section has insufficient content: ${heading}.`)
     }
   }
+}
+
+function parseChanges(output: string): readonly Change[] {
+  return output
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const fields = line.split("\t")
+      return { status: fields[0]!, path: fields.at(-1)! }
+    })
+}
+
+function asRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Missing ${field}`)
+  return value as Record<string, unknown>
+}
+
+function requireString(value: unknown, field: string) {
+  if (typeof value !== "string") throw new Error(`Missing ${field}`)
+  return value
+}
+
+function requireSha(value: unknown) {
+  if (typeof value !== "string" || !/^[0-9a-f]{40,64}$/.test(value)) {
+    throw new Error("Pull request event contains an invalid Git SHA")
+  }
+  return value
+}
+
+async function git(args: readonly string[]) {
+  const child = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "pipe" })
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ])
+  if (exitCode !== 0) throw new Error(stderr.trim() || `git ${args[0]} exited with status ${exitCode}`)
+  return stdout
+}
+
+if (import.meta.main) {
+  const eventPath = process.env.GITHUB_EVENT_PATH
+  if (!eventPath) throw new Error("GITHUB_EVENT_PATH is required")
+  const errors = await validatePullRequestEvent({ event: await Bun.file(eventPath).json() })
+  if (errors.length) {
+    console.error(["Adaptive Runtime tutorial check failed:", ...errors.map((error) => `- ${error}`)].join("\n"))
+    process.exit(1)
+  }
+  console.log("Adaptive Runtime tutorial check passed")
 }

@@ -178,4 +178,96 @@ describe("adaptive tutorial check", () => {
     )
     expect(await validateAdaptiveTutorial(validInput({ body: "N/A", changes: [] }))).not.toEqual([])
   })
+
+  test("loads a PR event and reads head Markdown only through trusted git commands", async () => {
+    const module = await import("./adaptive-tutorial-check")
+    expect(module).toHaveProperty("validatePullRequestEvent")
+    const validatePullRequestEvent = (
+      module as typeof module & {
+        validatePullRequestEvent: (input: {
+          event: unknown
+          runGit: (args: readonly string[]) => Promise<string>
+        }) => Promise<readonly string[]>
+      }
+    ).validatePullRequestEvent
+    const calls: readonly string[][] = []
+    const recorded = calls as string[][]
+    const baseSha = "a".repeat(40)
+    const headSha = "b".repeat(40)
+    const event = {
+      pull_request: {
+        base: { ref: "stage-01", sha: baseSha },
+        head: { sha: headSha },
+        body: completeBody,
+        labels: [],
+      },
+    }
+    const runGit = async (args: readonly string[]) => {
+      recorded.push([...args])
+      if (args[0] === "diff") return `A\t${tutorialPath}\nM\t${indexPath}\n`
+      if (args.at(-1) === `${headSha}:${tutorialPath}`) return completeTutorial
+      if (args.at(-1) === `${headSha}:${indexPath}`) {
+        return `[S01-T03](./${tutorialPath.split("/").at(-1)})\n`
+      }
+      throw new Error(`Unexpected git command: ${args.join(" ")}`)
+    }
+
+    expect(await validatePullRequestEvent({ event, runGit })).toEqual([])
+    expect(calls[0]).toEqual(["diff", "--name-status", baseSha, headSha])
+    expect(calls).toContainEqual(["show", `${headSha}:${indexPath}`])
+    expect(calls).toContainEqual(["show", `${headSha}:${tutorialPath}`])
+    expect(calls.flat()).not.toContain("checkout")
+  })
+
+  test("rejects malformed event SHAs before invoking git", async () => {
+    const module = await import("./adaptive-tutorial-check")
+    expect(module).toHaveProperty("validatePullRequestEvent")
+    const validatePullRequestEvent = (
+      module as typeof module & {
+        validatePullRequestEvent: (input: {
+          event: unknown
+          runGit: (args: readonly string[]) => Promise<string>
+        }) => Promise<readonly string[]>
+      }
+    ).validatePullRequestEvent
+    let calls = 0
+    await expect(
+      validatePullRequestEvent({
+        event: {
+          pull_request: {
+            base: { ref: "stage-01", sha: "not-a-sha" },
+            head: { sha: "also-not-a-sha" },
+            body: completeBody,
+            labels: [],
+          },
+        },
+        runGit: async () => {
+          calls++
+          return ""
+        },
+      }),
+    ).rejects.toThrow("Pull request event contains an invalid Git SHA")
+    expect(calls).toBe(0)
+  })
+
+  test("repository PR template exposes the Adaptive delivery fields", async () => {
+    const template = await Bun.file(new URL("../.github/pull_request_template.md", import.meta.url)).text()
+    expect(template).toContain("### Adaptive Runtime implementation tutorial")
+    expect(template).toContain("Adaptive Runtime Task: `N/A`")
+    expect(template).toContain("Adaptive Runtime Tutorial: `N/A`")
+    expect(template).toContain("I added and indexed the required Adaptive Runtime implementation tutorial.")
+  })
+
+  test("repository workflow runs the trusted validator for stage PR events", async () => {
+    const file = Bun.file(new URL("../.github/workflows/adaptive-tutorial.yml", import.meta.url))
+    expect(await file.exists()).toBe(true)
+    const workflow = await file.text()
+    expect(workflow).toContain("pull_request_target:")
+    expect(workflow).toContain('branches: ["stage-*"]')
+    expect(workflow).toContain("contents: read")
+    expect(workflow).not.toContain("pull-requests: write")
+    expect(workflow).toContain("working-directory: script")
+    expect(workflow).toContain("bun test adaptive-tutorial-check.test.ts")
+    expect(workflow).toContain("bun script/adaptive-tutorial-check.ts")
+  })
 })

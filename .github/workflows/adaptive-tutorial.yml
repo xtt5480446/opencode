@@ -1,0 +1,36 @@
+name: adaptive-tutorial
+
+on:
+  pull_request_target:
+    branches: ["stage-*"]
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  adaptive-tutorial:
+    name: adaptive-tutorial
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted base revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch PR head as validation data
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: git fetch --no-tags origin "pull/${PR_NUMBER}/head"
+
+      - name: Setup Bun from trusted base
+        uses: ./.github/actions/setup-bun
+
+      - name: Test tutorial validator
+        working-directory: script
+        run: bun test adaptive-tutorial-check.test.ts
+
+      - name: Validate Adaptive Runtime tutorial
+        run: bun script/adaptive-tutorial-check.ts
