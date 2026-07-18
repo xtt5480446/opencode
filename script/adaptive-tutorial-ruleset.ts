@@ -123,7 +123,10 @@ function pullRequestPolicy(parameters: Record<string, unknown>) {
     require_last_push_approval: parameters.require_last_push_approval,
     required_approving_review_count: parameters.required_approving_review_count,
     required_review_thread_resolution: parameters.required_review_thread_resolution,
-    automatic_copilot_code_review_enabled: parameters.automatic_copilot_code_review_enabled,
+    automatic_copilot_code_review_enabled:
+      parameters.automatic_copilot_code_review_enabled === undefined
+        ? false
+        : parameters.automatic_copilot_code_review_enabled,
     allowed_merge_methods: strings(parameters.allowed_merge_methods),
   }
 }
