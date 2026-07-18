@@ -438,7 +438,7 @@ function tutorialRequirement(key: string) {
 }
 
 export function ensureTutorialDoD(body: string, key: string, state: IssueRecord["state"]) {
-  if (body.includes("The implementation tutorial matching `docs/adaptive-runtime/tutorials/")) return body
+  if (body.includes(tutorialRequirement(key))) return body
   if (!body.includes("## Definition of Done")) throw new Error(`Issue ${key} is missing Definition of Done`)
   return `${body.trimEnd()}\n- [${state === "closed" ? "x" : " "}] ${tutorialRequirement(key)}\n`
 }

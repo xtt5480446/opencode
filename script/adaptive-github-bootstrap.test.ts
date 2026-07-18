@@ -77,6 +77,13 @@ describe("adaptive GitHub bootstrap", () => {
     expect(closed).toContain("- [x] The implementation tutorial")
     expect(open).toContain("- [x] Existing completed item")
     expect(ensureTutorialDoD(open, "S01-T03", "open")).toBe(open)
+    expect(
+      ensureTutorialDoD(
+        `${existing}- [ ] The implementation tutorial matching \`docs/adaptive-runtime/tutorials/s01-t04-*.md\` is added, indexed, CI-validated, and reviewed before acceptance.\n`,
+        "S01-T03",
+        "open",
+      ),
+    ).toContain("docs/adaptive-runtime/tutorials/s01-t03-*.md")
   })
 
   test("idempotent reconciliation returns only desired entries missing by exact key", () => {
