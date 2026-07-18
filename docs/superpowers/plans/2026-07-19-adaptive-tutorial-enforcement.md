@@ -73,7 +73,8 @@ Cover wrong path/prefix, tutorial status `M` instead of `A`, two new files for t
 Run:
 
 ```bash
-bun test script/adaptive-tutorial-check.test.ts
+cd script
+bun test adaptive-tutorial-check.test.ts
 ```
 
 Expected: FAIL because `adaptive-tutorial-check.ts` does not exist.
@@ -142,7 +143,8 @@ Each marker tells the author what evidence belongs in that section. Include a ri
 Run:
 
 ```bash
-bun test script/adaptive-tutorial-check.test.ts
+cd script
+bun test adaptive-tutorial-check.test.ts
 ```
 
 Expected: all Task 1 tests pass.
@@ -170,7 +172,8 @@ expect(workflow).toContain("pull_request_target:")
 expect(workflow).toContain('branches: ["stage-*"]')
 expect(workflow).toContain("contents: read")
 expect(workflow).not.toContain("pull-requests: write")
-expect(workflow).toContain("bun test script/adaptive-tutorial-check.test.ts")
+expect(workflow).toContain("working-directory: script")
+expect(workflow).toContain("bun test adaptive-tutorial-check.test.ts")
 expect(workflow).toContain("bun script/adaptive-tutorial-check.ts")
 ```
 
@@ -181,7 +184,8 @@ Add adapter tests with a temporary Git repository or injected command/read funct
 Run:
 
 ```bash
-bun test script/adaptive-tutorial-check.test.ts
+cd script
+bun test adaptive-tutorial-check.test.ts
 ```
 
 Expected: repository-contract and adapter tests fail for the intended missing behavior.
@@ -226,7 +230,8 @@ Use `pull_request_target` for `stage-*` and events `opened`, `reopened`, `synchr
 Run:
 
 ```bash
-bun test script/adaptive-tutorial-check.test.ts
+cd script
+bun test adaptive-tutorial-check.test.ts
 ```
 
 Then create event JSON under a temporary directory and run the CLI once with missing PR fields (expected exit `1`) and once with a complete tutorial/index fixture commit (expected exit `0`). Do not add temporary fixtures to the repository.
@@ -265,7 +270,8 @@ Extend reconciliation mocks to assert existing Issue bodies are updated exactly 
 Run:
 
 ```bash
-bun test script/adaptive-github-bootstrap.test.ts
+cd script
+bun test adaptive-github-bootstrap.test.ts
 ```
 
 Expected: FAIL because `ensureTutorialDoD`, Issue state, and `updateIssue` do not exist.
@@ -312,7 +318,8 @@ Append to `desiredLabels`:
 Run:
 
 ```bash
-bun test script/adaptive-github-bootstrap.test.ts
+cd script
+bun test adaptive-github-bootstrap.test.ts
 ```
 
 Expected: all bootstrap, API adapter, retry, idempotency, and 59-task tests pass.
@@ -344,7 +351,8 @@ Assert it contains a pull-request rule and a required-status-check rule for cont
 Run:
 
 ```bash
-bun test script/adaptive-tutorial-ruleset.test.ts
+cd script
+bun test adaptive-tutorial-ruleset.test.ts
 ```
 
 Expected: FAIL because the ruleset module does not exist.
@@ -370,7 +378,8 @@ The `gh` adapter uses `GET /repos/xtt5480446/opencode/rulesets`, `POST` to creat
 Run:
 
 ```bash
-bun test script/adaptive-tutorial-ruleset.test.ts
+cd script
+bun test adaptive-tutorial-ruleset.test.ts
 ```
 
 Expected: all policy and idempotency tests pass without calling GitHub.
@@ -396,7 +405,8 @@ Expected: Bun 1.3.14 installs without changing `bun.lock`.
 Run:
 
 ```bash
-bun test script/adaptive-tutorial-check.test.ts script/adaptive-tutorial-ruleset.test.ts script/adaptive-github-bootstrap.test.ts
+cd script
+bun test adaptive-tutorial-check.test.ts adaptive-tutorial-ruleset.test.ts adaptive-github-bootstrap.test.ts
 ```
 
 Expected: zero failures.
