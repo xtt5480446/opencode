@@ -73,10 +73,68 @@ describe("adaptive tutorial check", () => {
     )
   })
 
+  test("ignores task declarations and confirmations hidden in comments or fenced code", async () => {
+    const body = [
+      "Adaptive Runtime Task: `N/A`",
+      "Adaptive Runtime Tutorial: `N/A`",
+      "",
+      "- [ ] I added and indexed the required Adaptive Runtime implementation tutorial.",
+      "",
+      "<!--",
+      completeBody,
+      "-->",
+      "",
+      "```markdown",
+      completeBody,
+      "```",
+    ].join("\n")
+
+    expect(await validateAdaptiveTutorial(validInput({ body }))).toEqual(
+      expect.arrayContaining([
+        "PR body must declare Adaptive Runtime Task as Sxx-Txx.",
+        "PR body must declare one canonical Adaptive Runtime Tutorial path.",
+        "Adaptive Runtime tutorial confirmation is not checked.",
+      ]),
+    )
+  })
+
+  test("requires exactly one visible task declaration, tutorial declaration, and confirmation", async () => {
+    const body = `${completeBody}\n\n${completeBody}`
+    expect(await validateAdaptiveTutorial(validInput({ body }))).toEqual(
+      expect.arrayContaining([
+        "PR body must declare Adaptive Runtime Task as Sxx-Txx.",
+        "PR body must declare one canonical Adaptive Runtime Tutorial path.",
+        "Adaptive Runtime tutorial confirmation is not checked.",
+      ]),
+    )
+  })
+
   test("rejects a task whose stage differs from the base branch", async () => {
     expect(await validateAdaptiveTutorial(validInput({ baseRef: "stage-02" }))).toContain(
       "Task S01-T03 does not belong to base branch stage-02.",
     )
+  })
+
+  test("rejects a syntactically valid task that is absent from the 59-task program", async () => {
+    const invalidTask = "S01-T99"
+    const invalidPath = "docs/adaptive-runtime/tutorials/s01-t99-nonexistent-task.md"
+    const body = completeBody.replaceAll(task, invalidTask).replace(tutorialPath, invalidPath)
+    expect(
+      await validateAdaptiveTutorial(
+        validInput({
+          body,
+          changes: [
+            { status: "A", path: invalidPath },
+            { status: "M", path: indexPath },
+          ],
+          readFile: async (path) => {
+            if (path === invalidPath) return completeTutorial
+            if (path === indexPath) return `[Nonexistent Task](./${invalidPath.split("/").at(-1)})\n`
+            throw new Error(`Missing fixture ${path}`)
+          },
+        }),
+      ),
+    ).toContain("Adaptive Runtime Task S01-T99 is not present in the canonical 59-task program.")
   })
 
   test("rejects a tutorial path for another task", async () => {
@@ -127,6 +185,18 @@ describe("adaptive tutorial check", () => {
         validInput({ readFile: async (path) => (path === tutorialPath ? completeTutorial : "no link") }),
       ),
     ).toContain("Tutorial index does not link s01-t03-foundation-store.md.")
+
+    for (const hiddenLink of [
+      `<!-- [Hidden](./${tutorialPath.split("/").at(-1)}) -->`,
+      `\`\`\`markdown\n[Fenced](./${tutorialPath.split("/").at(-1)})\n\`\`\``,
+      `\`[Inline code](./${tutorialPath.split("/").at(-1)})\``,
+    ]) {
+      expect(
+        await validateAdaptiveTutorial(
+          validInput({ readFile: async (path) => (path === tutorialPath ? completeTutorial : hiddenLink) }),
+        ),
+      ).toContain("Tutorial index does not link s01-t03-foundation-store.md.")
+    }
   })
 
   test("rejects missing, out-of-order, and insubstantial required sections", async () => {
@@ -159,6 +229,38 @@ describe("adaptive tutorial check", () => {
         }),
       ),
     ).toContain(`Tutorial section has insufficient content: ${headings[0]}.`)
+  })
+
+  test("requires real level-two headings instead of headings hidden in comments or code", async () => {
+    for (const hiddenTutorial of [`<!--\n${completeTutorial}\n-->`, `\`\`\`markdown\n${completeTutorial}\n\`\`\``]) {
+      expect(
+        await validateAdaptiveTutorial(
+          validInput({
+            readFile: async (path) =>
+              path === tutorialPath ? hiddenTutorial : `[Tutorial](./${tutorialPath.split("/").at(-1)})`,
+          }),
+        ),
+      ).toContain(`Tutorial is missing required heading: ${headings[0]}.`)
+    }
+  })
+
+  test("requires substantive Chinese prose outside code and authoring comments", async () => {
+    const english =
+      "This section provides a detailed implementation explanation, testing evidence, architectural boundaries, and reproducible results."
+    const tutorial = headings
+      .map(
+        (heading) =>
+          `${heading}\n\n${english}\n\n\`\`\`text\n这段中文只存在于代码块，不能算作教程正文。\n\`\`\`\n\n<!-- 这段中文只存在于注释，也不能算作教程正文。 -->`,
+      )
+      .join("\n\n")
+    expect(
+      await validateAdaptiveTutorial(
+        validInput({
+          readFile: async (path) =>
+            path === tutorialPath ? tutorial : `[Tutorial](./${tutorialPath.split("/").at(-1)})`,
+        }),
+      ),
+    ).toContain(`Tutorial section must contain substantive Chinese prose: ${headings[0]}.`)
   })
 
   test("rejects an unchanged authoring marker", async () => {

@@ -226,6 +226,8 @@ const dependencies: Readonly<Record<string, readonly string[]>> = {
   "S06-T10": ["S06-T05", "S06-T08", "S06-T09"],
 }
 
+export const adaptiveTaskKeys: ReadonlySet<string> = new Set(Object.keys(dependencies))
+
 const branchTopics: Readonly<Record<string, string>> = {
   "S01-T01": "schema",
   "S01-T02": "policy",

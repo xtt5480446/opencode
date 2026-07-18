@@ -6,13 +6,14 @@
 
 **Architecture:** A pure Bun validator checks trusted PR event metadata, Git name-status changes, tutorial structure, and the tutorial index. Existing GitHub bootstrap code renders and incrementally reconciles task-specific DoD entries, while a separate idempotent ruleset reconciler activates merge protection after the trusted default-branch workflow has exercised a stage PR.
 
-**Tech Stack:** TypeScript, Bun test, GitHub Actions, GitHub REST API through the existing `gh` runner, Markdown.
+**Tech Stack:** TypeScript, Bun test, `marked` Markdown parser, GitHub Actions, GitHub REST API through the existing `gh` runner, Markdown.
 
 ---
 
 ## File map
 
 - Create `docs/adaptive-runtime/tutorials/TEMPLATE.md`: canonical learner-facing tutorial structure and author instructions.
+- Modify `package.json`: expose the existing catalog-pinned `marked` parser to trusted repository scripts.
 - Create `script/adaptive-tutorial-check.ts`: pure validation plus trusted `pull_request_target` event adapter.
 - Create `script/adaptive-tutorial-check.test.ts`: validator, PR template, tutorial template, and workflow safety tests.
 - Create `.github/workflows/adaptive-tutorial.yml`: required stage-PR check executed from the trusted default-branch workflow commit.
@@ -112,7 +113,7 @@ export const requiredHeadings = [
 export async function validateAdaptiveTutorial(input: ValidationInput): Promise<readonly string[]>
 ```
 
-Parse visible PR lines in this exact form:
+Parse visible Markdown paragraph/list nodes in this exact form; fields or confirmations inside HTML comments or code do not count:
 
 ```text
 Adaptive Runtime Task: `S01-T03`
@@ -126,7 +127,7 @@ Accept tutorial paths only when they match:
 ;/^docs\/adaptive-runtime\/tutorials\/(s\d{2}-t\d{2})-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/
 ```
 
-For each required heading, find its line index, require strictly increasing order, and require at least 40 letters/numbers/CJK characters before the next required heading. Return all failures in stable validation order. Return immediately for a non-`stage-NN` base or when `tutorial-exempt` is present.
+The declared Task must exist in the canonical 59-task management set. Parse the tutorial index as Markdown and require a real relative link node. Parse tutorial headings as real level-two heading nodes, require strictly increasing order, exclude code/comments/inline identifiers from prose measurement, and require at least 40 letters/numbers plus 20 Han characters in every section. Return all failures in stable validation order. Return immediately for a non-`stage-NN` base or when `tutorial-exempt` is present.
 
 - [ ] **Step 4: Write the canonical Tutorial template**
 
@@ -371,7 +372,7 @@ export interface RulesetClient {
 export async function reconcileRuleset(client: RulesetClient): Promise<"created" | "updated" | "unchanged">
 ```
 
-The `gh` adapter uses `GET /repos/xtt5480446/opencode/rulesets`, `POST` to create, and `PUT /repos/xtt5480446/opencode/rulesets/<id>` to update. Compare normalized rule/condition JSON, ignoring API response-only fields. The CLI prints the resulting action.
+The `gh` adapter uses `GET /repos/xtt5480446/opencode/rulesets`, `POST` to create, and `PUT /repos/xtt5480446/opencode/rulesets/<id>` to update. Compare normalized rule/condition JSON while ignoring API response-only fields, preserving every rule type, and treating only missing/null status-check `integration_id` as equivalent. The CLI prints the resulting action.
 
 - [ ] **Step 4: Run focused ruleset tests**
 

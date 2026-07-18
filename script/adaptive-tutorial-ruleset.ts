@@ -91,8 +91,6 @@ function policy(input: Record<string, unknown>) {
   const conditions = record(input.conditions)
   const refName = record(conditions.ref_name)
   const rules = Array.isArray(input.rules) ? input.rules.map(record) : []
-  const pullRequest = rules.find((rule) => rule.type === "pull_request")
-  const statusChecks = rules.find((rule) => rule.type === "required_status_checks")
   return {
     name: input.name,
     target: input.target,
@@ -104,16 +102,17 @@ function policy(input: Record<string, unknown>) {
         exclude: strings(refName.exclude),
       },
     },
-    rules: [
-      {
-        type: "pull_request",
-        parameters: pullRequest ? pullRequestPolicy(record(pullRequest.parameters)) : undefined,
-      },
-      {
-        type: "required_status_checks",
-        parameters: statusChecks ? statusCheckPolicy(record(statusChecks.parameters)) : undefined,
-      },
-    ],
+    rules: rules
+      .map((rule) => {
+        if (rule.type === "pull_request") {
+          return { type: rule.type, parameters: pullRequestPolicy(record(rule.parameters)) }
+        }
+        if (rule.type === "required_status_checks") {
+          return { type: rule.type, parameters: statusCheckPolicy(record(rule.parameters)) }
+        }
+        return { type: rule.type, parameters: rule.parameters }
+      })
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
   }
 }
 
@@ -131,7 +130,13 @@ function pullRequestPolicy(parameters: Record<string, unknown>) {
 
 function statusCheckPolicy(parameters: Record<string, unknown>) {
   const checks = Array.isArray(parameters.required_status_checks)
-    ? parameters.required_status_checks.map((check) => ({ context: record(check).context }))
+    ? parameters.required_status_checks.map((check) => {
+        const value = record(check)
+        return {
+          context: value.context,
+          integration_id: typeof value.integration_id === "number" ? value.integration_id : null,
+        }
+      })
     : []
   return {
     required_status_checks: checks,

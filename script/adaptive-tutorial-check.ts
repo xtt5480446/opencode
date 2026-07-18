@@ -1,3 +1,6 @@
+import { marked, type Token, type Tokens } from "marked"
+import { adaptiveTaskKeys } from "./adaptive-github-bootstrap-lib"
+
 const tutorialDirectory = "docs/adaptive-runtime/tutorials/"
 const indexPath = `${tutorialDirectory}README.md`
 const tutorialPathPattern = /^docs\/adaptive-runtime\/tutorials\/(s\d{2}-t\d{2})-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/
@@ -32,24 +35,40 @@ export const requiredHeadings = [
   "## 当前边界与下一步",
 ] as const
 
-const taskField = /^Adaptive Runtime Task:\s*`(S\d{2}-T\d{2})`\s*$/m
-const tutorialField = /^Adaptive Runtime Tutorial:\s*`([^`]+)`\s*$/m
-const confirmation = /^- \[[xX]\] I added and indexed the required Adaptive Runtime implementation tutorial\.\s*$/m
+const taskField = /^Adaptive Runtime Task:\s*`(S\d{2}-T\d{2})`\s*$/
+const tutorialField = /^Adaptive Runtime Tutorial:\s*`([^`]+)`\s*$/
+const confirmation = "I added and indexed the required Adaptive Runtime implementation tutorial."
 
 export async function validateAdaptiveTutorial(input: ValidationInput): Promise<readonly string[]> {
   const stage = input.baseRef.match(/^stage-(\d{2})$/)?.[1]
   if (!stage || input.labels.includes("tutorial-exempt")) return []
 
   const errors: string[] = []
-  const task = input.body.match(taskField)?.[1]
-  const tutorialPath = input.body.match(tutorialField)?.[1]
+  const body = marked.lexer(input.body)
+  const lines = body.flatMap((token) =>
+    token.type === "paragraph"
+      ? visibleInline(token.tokens)
+          .split("\n")
+          .map((line) => line.trim())
+      : [],
+  )
+  const tasks = lines.flatMap((line) => line.match(taskField)?.[1] ?? [])
+  const tutorialPaths = lines.flatMap((line) => line.match(tutorialField)?.[1] ?? [])
+  const confirmations = listItems(body).filter((item) => visibleInline(item.tokens).trim() === confirmation)
+  const task = tasks.length === 1 ? tasks[0] : undefined
+  const tutorialPath = tutorialPaths.length === 1 ? tutorialPaths[0] : undefined
 
   if (!task) errors.push("PR body must declare Adaptive Runtime Task as Sxx-Txx.")
   if (!tutorialPath || !tutorialPathPattern.test(tutorialPath)) {
     errors.push("PR body must declare one canonical Adaptive Runtime Tutorial path.")
   }
-  if (!confirmation.test(input.body)) errors.push("Adaptive Runtime tutorial confirmation is not checked.")
+  if (confirmations.length !== 1 || confirmations[0]?.checked !== true) {
+    errors.push("Adaptive Runtime tutorial confirmation is not checked.")
+  }
 
+  if (task && !adaptiveTaskKeys.has(task)) {
+    errors.push(`Adaptive Runtime Task ${task} is not present in the canonical 59-task program.`)
+  }
   if (task && task.slice(1, 3) !== stage) {
     errors.push(`Task ${task} does not belong to base branch ${input.baseRef}.`)
   }
@@ -79,7 +98,7 @@ export async function validateAdaptiveTutorial(input: ValidationInput): Promise<
     const filename = tutorialPath.split("/").at(-1)!
     if (indexChanged) {
       const index = await read(input, indexPath, errors)
-      if (index !== undefined && !index.includes(`](./${filename})`)) {
+      if (index !== undefined && !hasLink(index, `./${filename}`)) {
         errors.push(`Tutorial index does not link ${filename}.`)
       }
     }
@@ -125,12 +144,14 @@ function validateTutorial(tutorial: string, errors: string[]) {
     errors.push("Tutorial still contains authoring markers from TEMPLATE.md.")
   }
 
-  const lines = tutorial.split("\n")
-  const indexes = requiredHeadings.map((heading) => lines.findIndex((line) => line.trim() === heading))
+  const tokens = marked.lexer(tutorial)
+  const indexes = requiredHeadings.map((heading) =>
+    tokens.findIndex((token) => token.type === "heading" && token.depth === 2 && `## ${token.text.trim()}` === heading),
+  )
   for (let index = 0; index < requiredHeadings.length; index++) {
     const heading = requiredHeadings[index]!
-    const line = indexes[index]!
-    if (line < 0) {
+    const position = indexes[index]!
+    if (position < 0) {
       errors.push(`Tutorial is missing required heading: ${heading}.`)
       continue
     }
@@ -138,15 +159,80 @@ function validateTutorial(tutorial: string, errors: string[]) {
       .slice(0, index)
       .filter((value) => value >= 0)
       .at(-1)
-    if (previous !== undefined && line <= previous) {
+    if (previous !== undefined && position <= previous) {
       errors.push(`Tutorial headings are out of order at: ${heading}.`)
     }
-    const next = lines.findIndex((value, position) => position > line && /^##\s/.test(value))
-    const content = lines.slice(line + 1, next < 0 ? lines.length : next).join("\n")
+    const next = tokens.findIndex(
+      (token, tokenIndex) => tokenIndex > position && token.type === "heading" && token.depth === 2,
+    )
+    const content = visibleProse(tokens.slice(position + 1, next < 0 ? tokens.length : next))
     if ((content.match(/[\p{L}\p{N}]/gu) ?? []).length < 40) {
       errors.push(`Tutorial section has insufficient content: ${heading}.`)
     }
+    if ((content.match(/[\p{Script=Han}]/gu) ?? []).length < 20) {
+      errors.push(`Tutorial section must contain substantive Chinese prose: ${heading}.`)
+    }
   }
+}
+
+function hasLink(markdown: string, href: string) {
+  let found = false
+  marked.walkTokens(marked.lexer(markdown), (token) => {
+    if (token.type === "link" && token.href === href) found = true
+  })
+  return found
+}
+
+function listItems(tokens: readonly Token[]): readonly Tokens.ListItem[] {
+  return tokens.flatMap((token) => {
+    if (token.type === "list") {
+      return token.items.flatMap((item) => [item, ...listItems(item.tokens)])
+    }
+    if (token.type === "blockquote") return listItems(token.tokens)
+    return []
+  })
+}
+
+function visibleInline(tokens: readonly Token[]): string {
+  return tokens
+    .map((token) => {
+      if (token.type === "codespan") return `\`${token.text}\``
+      if (token.type === "br") return "\n"
+      if (token.type === "text" || token.type === "escape") {
+        return token.tokens ? visibleInline(token.tokens) : token.text
+      }
+      if (
+        token.type === "strong" ||
+        token.type === "em" ||
+        token.type === "del" ||
+        token.type === "link" ||
+        token.type === "blockquote"
+      ) {
+        return visibleInline(token.tokens)
+      }
+      return ""
+    })
+    .join("")
+}
+
+function visibleProse(tokens: readonly Token[]): string {
+  return tokens
+    .map((token) => {
+      if (token.type === "paragraph" || token.type === "blockquote") return visibleProse(token.tokens)
+      if (token.type === "list") return token.items.map((item) => visibleProse(item.tokens)).join(" ")
+      if (token.type === "list_item") return visibleProse(token.tokens)
+      if (token.type === "table") {
+        return [...token.header, ...token.rows.flat()].map((cell) => visibleProse(cell.tokens)).join(" ")
+      }
+      if (token.type === "text" || token.type === "escape") {
+        return token.tokens ? visibleProse(token.tokens) : token.text
+      }
+      if (token.type === "strong" || token.type === "em" || token.type === "del" || token.type === "link") {
+        return visibleProse(token.tokens)
+      }
+      return ""
+    })
+    .join(" ")
 }
 
 function parseChanges(output: string): readonly Change[] {

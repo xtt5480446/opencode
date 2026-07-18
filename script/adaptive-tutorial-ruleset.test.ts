@@ -69,6 +69,56 @@ describe("adaptive tutorial ruleset", () => {
     expect(writes).toBe(0)
   })
 
+  test("updates a required check bound to a non-default integration", async () => {
+    const live = {
+      id: 7,
+      ...desiredRuleset,
+      rules: desiredRuleset.rules.map((rule) =>
+        rule.type === "required_status_checks"
+          ? {
+              ...rule,
+              parameters: {
+                ...rule.parameters,
+                required_status_checks: [{ context: "adaptive-tutorial", integration_id: 999999 }],
+              },
+            }
+          : rule,
+      ),
+    } as RulesetRecord
+    let updates = 0
+
+    expect(
+      await reconcileRuleset({
+        list: async () => [live],
+        create: async () => {
+          throw new Error("unexpected create")
+        },
+        update: async () => void updates++,
+      }),
+    ).toBe("updated")
+    expect(updates).toBe(1)
+  })
+
+  test("updates a live ruleset containing an unexpected extra rule", async () => {
+    const live = {
+      id: 7,
+      ...desiredRuleset,
+      rules: [...desiredRuleset.rules, { type: "non_fast_forward" }],
+    } as RulesetRecord
+    let updates = 0
+
+    expect(
+      await reconcileRuleset({
+        list: async () => [live],
+        create: async () => {
+          throw new Error("unexpected create")
+        },
+        update: async () => void updates++,
+      }),
+    ).toBe("updated")
+    expect(updates).toBe(1)
+  })
+
   test("updates drifted policy without creating a duplicate", async () => {
     const updates: { id: number; input: DesiredRuleset }[] = []
     expect(

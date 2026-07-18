@@ -27,13 +27,13 @@ The default PR template adds an Adaptive Runtime section with visible Task ID an
 
 ## 4. CI validator
 
-A small repository script owns validation logic and is covered by focused unit tests. The `pull_request_target` workflow checks out `github.workflow_sha`, so the validator and setup action always come from the trusted default-branch revision that triggered the run; it fetches the PR head only as Git data and never executes it. For a PR whose base matches `stage-NN`, it verifies:
+A small repository script owns validation logic and is covered by focused unit tests. It parses Markdown into structural tokens so HTML comments, fenced/inline code, and other non-visible source text cannot impersonate PR fields, checklist items, index links, headings, or tutorial prose. The `pull_request_target` workflow checks out `github.workflow_sha`, so the validator and setup action always come from the trusted default-branch revision that triggered the run; it fetches the PR head only as Git data and never executes it. For a PR whose base matches `stage-NN`, it verifies:
 
-1. the PR body contains one `Sxx-Txx` Task ID and one canonical tutorial path;
-2. the Task stage equals the base branch stage;
+1. the PR body contains exactly one visible `Sxx-Txx` Task ID and one visible canonical tutorial path;
+2. the Task belongs to the canonical 59-task program and its stage equals the base branch stage;
 3. the declared tutorial is newly added in the PR and is the only new tutorial with that Task prefix;
-4. `docs/adaptive-runtime/tutorials/README.md` changed and links the declared file;
-5. all required headings exist in order, every section has substantive content, and no template marker remains;
+4. `docs/adaptive-runtime/tutorials/README.md` changed and contains a real relative link to the declared file;
+5. all required level-two headings exist in order, every section has substantive Chinese prose outside code/comments, and no template marker remains;
 6. the Adaptive Runtime PR checkbox is checked.
 
 PRs not targeting `stage-*` pass without an Adaptive tutorial. A non-task maintenance PR targeting a stage branch may bypass the tutorial only when a maintainer applies the `tutorial-exempt` label; writing `N/A` in the body is insufficient. The validator reports every violation in one run so the author can repair the PR without repeated CI cycles.
@@ -59,9 +59,11 @@ GitHub reads the automatic PR template and `pull_request_target` workflow from t
 
 The trusted default-branch workflow covers every future stage branch through its `stage-*` event filter and the same ruleset pattern. Enforcement sources are also synchronized into stage history so accepted stage commits remain self-describing.
 
+Ruleset comparison ignores GitHub response metadata but preserves every rule type and non-null status-check `integration_id`. This makes repeated runs no-ops while extra rules, wrong check bindings, and other policy drift are repaired.
+
 ## 6. Verification
 
-Automated tests cover non-stage bypass, malformed/missing PR fields, stage mismatch, wrong or duplicate tutorial files, modified instead of newly added tutorial, missing index entry, missing/out-of-order/empty sections, unchanged template markers, unchecked PR confirmation, and maintainer-label exemption.
+Automated tests cover non-stage bypass, malformed/missing/hidden/duplicate PR fields, plan-unknown Task IDs, stage mismatch, wrong or duplicate tutorial files, modified instead of newly added tutorial, fake or missing index links, hidden/missing/out-of-order/empty/English-only sections, unchanged template markers, unchecked PR confirmation, and maintainer-label exemption.
 
 Bootstrap tests prove that the DoD line is rendered for new tasks, inserted exactly once for existing tasks, preserves existing body/checklist state, and updates GitHub only when needed. API adapter tests cover Issue update payloads.
 
