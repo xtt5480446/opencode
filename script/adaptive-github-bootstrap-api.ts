@@ -91,11 +91,14 @@ function requireNumber(value: unknown, field: string) {
 
 function issueFromAPI(value: unknown): IssueRecord {
   const issue = asRecord(value)
+  const state = requireString(issue.state, "issue.state")
+  if (state !== "open" && state !== "closed") throw new Error(`GitHub returned invalid issue.state: ${state}`)
   return {
     number: requireNumber(issue.number, "issue.number"),
     nodeID: requireString(issue.node_id, "issue.node_id"),
     title: requireString(issue.title, "issue.title"),
     body: typeof issue.body === "string" ? issue.body : "",
+    state,
   }
 }
 
@@ -175,6 +178,11 @@ export function createGitHubClient(runner: GhRunner): GitHubBootstrapClient {
     createIssue: async (input) => {
       return issueFromAPI(
         await runner(["api", "--method", "POST", `repos/${repository}/issues`, "--input", "-"], input),
+      )
+    },
+    updateIssue: async (number, input) => {
+      return issueFromAPI(
+        await runner(["api", "--method", "PATCH", `repos/${repository}/issues/${number}`, "--input", "-"], input),
       )
     },
     getProject: async () => {

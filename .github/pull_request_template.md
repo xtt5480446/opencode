@@ -17,6 +17,15 @@ Please provide a description of the issue, the changes you made to fix it, and w
 
 ### How did you verify your code works?
 
+### Adaptive Runtime implementation tutorial
+
+_Required for Sxx-Txx PRs targeting `stage-*`; ordinary OpenCode PRs leave both fields as `N/A`._
+
+Adaptive Runtime Task: `N/A`
+Adaptive Runtime Tutorial: `N/A`
+
+- [ ] I added and indexed the required Adaptive Runtime implementation tutorial.
+
 ### Screenshots / recordings
 
 _If this is a UI change, please include a screenshot or recording._
