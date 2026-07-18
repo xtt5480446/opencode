@@ -69,6 +69,63 @@ describe("adaptive tutorial ruleset", () => {
     expect(writes).toBe(0)
   })
 
+  test("treats GitHub-omitted optional false fields as equivalent policy", async () => {
+    const live = {
+      id: 7,
+      ...desiredRuleset,
+      rules: desiredRuleset.rules.map((rule) =>
+        rule.type === "pull_request"
+          ? {
+              ...rule,
+              parameters: {
+                ...Object.fromEntries(
+                  Object.entries(rule.parameters).filter(([key]) => key !== "automatic_copilot_code_review_enabled"),
+                ),
+                required_reviewers: [],
+              },
+            }
+          : rule,
+      ),
+    } as RulesetRecord
+    let writes = 0
+
+    expect(
+      await reconcileRuleset({
+        list: async () => [live],
+        create: async () => void writes++,
+        update: async () => void writes++,
+      }),
+    ).toBe("unchanged")
+    expect(writes).toBe(0)
+  })
+
+  test("repairs non-false optional review policy values instead of defaulting them", async () => {
+    for (const value of [true, null, "false"]) {
+      const live = {
+        id: 7,
+        ...desiredRuleset,
+        rules: desiredRuleset.rules.map((rule) =>
+          rule.type === "pull_request"
+            ? {
+                ...rule,
+                parameters: { ...rule.parameters, automatic_copilot_code_review_enabled: value },
+              }
+            : rule,
+        ),
+      } as RulesetRecord
+      let writes = 0
+
+      expect(
+        await reconcileRuleset({
+          list: async () => [live],
+          create: async () => void writes++,
+          update: async () => void writes++,
+        }),
+      ).toBe("updated")
+      expect(writes).toBe(1)
+    }
+  })
+
   test("updates a required check bound to a non-default integration", async () => {
     const live = {
       id: 7,
