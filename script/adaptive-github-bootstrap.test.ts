@@ -56,6 +56,27 @@ describe("adaptive GitHub bootstrap", () => {
     expect(body).toContain("## Correctness evidence")
     expect(body).toContain("## Definition of Done")
     expect(body).toContain("Closes this Issue")
+    expect(body).toContain(
+      "The implementation tutorial matching `docs/adaptive-runtime/tutorials/s01-t02-*.md` is added, indexed, CI-validated, and reviewed before acceptance.",
+    )
+  })
+
+  test("adds one task-specific Tutorial DoD item without rewriting existing checklist state", async () => {
+    const module = await import("./adaptive-github-bootstrap-lib")
+    expect(module).toHaveProperty("ensureTutorialDoD")
+    const ensureTutorialDoD = (
+      module as typeof module & {
+        ensureTutorialDoD: (body: string, key: string, state: "open" | "closed") => string
+      }
+    ).ensureTutorialDoD
+    const existing = "## Definition of Done\n\n- [x] Existing completed item\n"
+    const open = ensureTutorialDoD(existing, "S01-T03", "open")
+    const closed = ensureTutorialDoD(existing, "S01-T02", "closed")
+
+    expect(open).toContain("- [ ] The implementation tutorial")
+    expect(closed).toContain("- [x] The implementation tutorial")
+    expect(open).toContain("- [x] Existing completed item")
+    expect(ensureTutorialDoD(open, "S01-T03", "open")).toBe(open)
   })
 
   test("idempotent reconciliation returns only desired entries missing by exact key", () => {
@@ -71,7 +92,13 @@ describe("adaptive GitHub bootstrap", () => {
   test("reconciles milestones, labels, issues, project, and items exactly once", async () => {
     const labels: { name: string }[] = []
     const milestones: { number: number; title: string }[] = []
-    const issues: { number: number; nodeID: string; title: string; body: string }[] = []
+    const issues: {
+      number: number
+      nodeID: string
+      title: string
+      body: string
+      state: "open" | "closed"
+    }[] = []
     const projectItems = new Set<number>()
     let project: { id: string; number: number; url: string } | undefined
     let projectUpdates = 0
@@ -88,9 +115,18 @@ describe("adaptive GitHub bootstrap", () => {
       listIssues: async () => issues,
       createIssue: async (input: { title: string; body: string }) => {
         const number = issues.length + 1
-        const value = { number, nodeID: `issue-${number}`, title: input.title, body: input.body }
+        const value = {
+          number,
+          nodeID: `issue-${number}`,
+          title: input.title,
+          body: input.body,
+          state: "open" as const,
+        }
         issues.push(value)
         return value
+      },
+      updateIssue: async () => {
+        throw new Error("unexpected issue update")
       },
       getProject: async () => project,
       createProject: async () => {
@@ -121,6 +157,54 @@ describe("adaptive GitHub bootstrap", () => {
     expect(projectUpdates).toBe(2)
   })
 
+  test("incrementally reconciles Tutorial DoD into all existing task Issues exactly once", async () => {
+    const specs = buildTaskSpecs(await discoverTasks(plans))
+    const issues = specs.map((spec, index) => ({
+      number: index + 1,
+      nodeID: `issue-${index + 1}`,
+      title: `[${spec.key}] ${spec.title}`,
+      body: `<!-- adaptive-runtime-task:${spec.key} -->\n\n## Definition of Done\n\n- [x] Existing completed item\n`,
+      state: index < 2 ? ("closed" as const) : ("open" as const),
+    }))
+    const updates: number[] = []
+    const project = { id: "project-1", number: 1, url: "https://example.test/project" }
+    const client = {
+      listLabels: async () => desiredLabels,
+      createLabel: async () => {},
+      listMilestones: async () =>
+        stageDefinitions.map((stage, index) => ({ number: index + 1, title: stage.milestone })),
+      createMilestone: async () => {
+        throw new Error("unexpected milestone creation")
+      },
+      listIssues: async () => issues,
+      createIssue: async () => {
+        throw new Error("unexpected issue creation")
+      },
+      updateIssue: async (number: number, input: { readonly body: string }) => {
+        updates.push(number)
+        issues[number - 1]!.body = input.body
+        return issues[number - 1]!
+      },
+      getProject: async () => project,
+      createProject: async () => {
+        throw new Error("unexpected project creation")
+      },
+      updateProject: async () => {},
+      listProjectIssueNumbers: async () => new Set(issues.map((issue) => issue.number)),
+      addProjectItems: async () => {},
+    }
+
+    await reconcileGitHub(client, specs)
+    await reconcileGitHub(client, specs)
+
+    expect(updates).toHaveLength(59)
+    expect(issues[0]!.body).toContain("- [x] The implementation tutorial")
+    expect(issues[1]!.body).toContain("- [x] The implementation tutorial")
+    expect(issues[2]!.body).toContain("- [ ] The implementation tutorial")
+    expect(issues[58]!.body).toContain("- [ ] The implementation tutorial")
+    expect(issues.every((issue) => issue.body.includes("- [x] Existing completed item"))).toBe(true)
+  })
+
   test("renders a stable 59-row GitHub task index", async () => {
     const specs = buildTaskSpecs(await discoverTasks(plans))
     const issueNumbers = new Map(specs.map((spec, index) => [spec.key, index + 101]))
@@ -145,8 +229,8 @@ describe("adaptive GitHub bootstrap", () => {
       const command = args.join(" ")
       if (command.includes("/issues?")) {
         return [
-          { number: 1, node_id: "I_1", title: "issue", body: "body" },
-          { number: 2, node_id: "PR_2", title: "pull", body: "body", pull_request: {} },
+          { number: 1, node_id: "I_1", title: "issue", body: "body", state: "open" },
+          { number: 2, node_id: "PR_2", title: "pull", body: "body", state: "open", pull_request: {} },
         ]
       }
       if (command === "api graphql --input -" && JSON.stringify(input).includes("projectsV2")) {
@@ -176,7 +260,9 @@ describe("adaptive GitHub bootstrap", () => {
     }
     const client = createGitHubClient(runner)
 
-    expect(await client.listIssues()).toEqual([{ number: 1, nodeID: "I_1", title: "issue", body: "body" }])
+    expect(await client.listIssues()).toEqual([
+      { number: 1, nodeID: "I_1", title: "issue", body: "body", state: "open" },
+    ])
     expect((await client.getProject())?.number).toBe(7)
     await client.addProjectItems(
       "project-7",
@@ -231,7 +317,7 @@ describe("adaptive GitHub bootstrap", () => {
     const calls: { args: readonly string[]; input?: unknown }[] = []
     const client = createGitHubClient(async (args, input) => {
       calls.push({ args, input })
-      return { number: 42, node_id: "I_42", title: "[S01-T01] Schema", body: "Task body" }
+      return { number: 42, node_id: "I_42", title: "[S01-T01] Schema", body: "Task body", state: "open" }
     })
 
     expect(
@@ -241,7 +327,7 @@ describe("adaptive GitHub bootstrap", () => {
         labels: ["adaptive-runtime", "stage:1"],
         milestone: 1,
       }),
-    ).toEqual({ number: 42, nodeID: "I_42", title: "[S01-T01] Schema", body: "Task body" })
+    ).toEqual({ number: 42, nodeID: "I_42", title: "[S01-T01] Schema", body: "Task body", state: "open" })
     expect(calls).toEqual([
       {
         args: ["api", "--method", "POST", "repos/xtt5480446/opencode/issues", "--input", "-"],
@@ -255,19 +341,47 @@ describe("adaptive GitHub bootstrap", () => {
     ])
   })
 
+  test("GitHub API adapter updates only an Issue body through REST", async () => {
+    const calls: { args: readonly string[]; input?: unknown }[] = []
+    const client = createGitHubClient(async (args, input) => {
+      calls.push({ args, input })
+      return { number: 42, node_id: "I_42", title: "[S01-T01] Schema", body: "updated", state: "open" }
+    })
+    const updateIssue = (
+      client as typeof client & {
+        updateIssue: (number: number, input: { readonly body: string }) => Promise<unknown>
+      }
+    ).updateIssue
+    expect(updateIssue).toBeFunction()
+
+    expect(await updateIssue(42, { body: "updated" })).toEqual({
+      number: 42,
+      nodeID: "I_42",
+      title: "[S01-T01] Schema",
+      body: "updated",
+      state: "open",
+    })
+    expect(calls).toEqual([
+      {
+        args: ["api", "--method", "PATCH", "repos/xtt5480446/opencode/issues/42", "--input", "-"],
+        input: { body: "updated" },
+      },
+    ])
+  })
+
   test("GitHub API adapter flattens paginated issue responses", async () => {
     let requestedArgs: readonly string[] = []
     const client = createGitHubClient(async (args) => {
       requestedArgs = args
       return [
-        [{ number: 1, node_id: "I_1", title: "first", body: "one" }],
-        [{ number: 2, node_id: "I_2", title: "second", body: "two" }],
+        [{ number: 1, node_id: "I_1", title: "first", body: "one", state: "open" }],
+        [{ number: 2, node_id: "I_2", title: "second", body: "two", state: "closed" }],
       ]
     })
 
     expect(await client.listIssues()).toEqual([
-      { number: 1, nodeID: "I_1", title: "first", body: "one" },
-      { number: 2, nodeID: "I_2", title: "second", body: "two" },
+      { number: 1, nodeID: "I_1", title: "first", body: "one", state: "open" },
+      { number: 2, nodeID: "I_2", title: "second", body: "two", state: "closed" },
     ])
     expect(requestedArgs).toContain("--slurp")
   })
@@ -397,7 +511,8 @@ describe("adaptive GitHub bootstrap", () => {
       number: index + 101,
       nodeID: `I_${index + 101}`,
       title: `[${spec.key}] ${spec.title}`,
-      body: "existing",
+      body: `<!-- adaptive-runtime-task:${spec.key} -->\n\n## Definition of Done\n\n- [x] Existing completed item\n`,
+      state: "open" as const,
     }))
     const project = {
       id: "project-7",
@@ -419,6 +534,11 @@ describe("adaptive GitHub bootstrap", () => {
       listIssues: async () => issues,
       createIssue: async () => {
         throw new Error("unexpected issue creation")
+      },
+      updateIssue: async (number: number, input: { readonly body: string }) => {
+        const issue = issues.find((item) => item.number === number)!
+        issue.body = input.body
+        return issue
       },
       getProject: async () => project,
       createProject: async () => {
