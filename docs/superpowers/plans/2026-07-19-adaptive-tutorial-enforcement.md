@@ -4,7 +4,7 @@
 
 **Goal:** Make one substantive implementation tutorial a visible and merge-blocking deliverable for every Adaptive Runtime Sxx-Txx task.
 
-**Architecture:** A pure Bun validator checks trusted PR event metadata, Git name-status changes, tutorial structure, and the tutorial index. Existing GitHub bootstrap code renders and incrementally reconciles task-specific DoD entries, while a separate idempotent ruleset reconciler activates merge protection only after the workflow is present on `stage-01`.
+**Architecture:** A pure Bun validator checks trusted PR event metadata, Git name-status changes, tutorial structure, and the tutorial index. Existing GitHub bootstrap code renders and incrementally reconciles task-specific DoD entries, while a separate idempotent ruleset reconciler activates merge protection after the trusted default-branch workflow has exercised a stage PR.
 
 **Tech Stack:** TypeScript, Bun test, GitHub Actions, GitHub REST API through the existing `gh` runner, Markdown.
 
@@ -15,7 +15,7 @@
 - Create `docs/adaptive-runtime/tutorials/TEMPLATE.md`: canonical learner-facing tutorial structure and author instructions.
 - Create `script/adaptive-tutorial-check.ts`: pure validation plus trusted `pull_request_target` event adapter.
 - Create `script/adaptive-tutorial-check.test.ts`: validator, PR template, tutorial template, and workflow safety tests.
-- Create `.github/workflows/adaptive-tutorial.yml`: required stage-PR check executed from the trusted base commit.
+- Create `.github/workflows/adaptive-tutorial.yml`: required stage-PR check executed from the trusted default-branch workflow commit.
 - Modify `.github/pull_request_template.md`: visible Adaptive Task/Tutorial fields and completion checkbox.
 - Modify `script/adaptive-github-bootstrap-lib.ts`: Tutorial DoD rendering and incremental existing-Issue reconciliation.
 - Modify `script/adaptive-github-bootstrap-api.ts`: Issue state decoding and body-only Issue update API.
@@ -223,7 +223,7 @@ Adaptive Runtime Tutorial: `N/A`
 
 - [ ] **Step 5: Add the trusted workflow**
 
-Use `pull_request_target` for `stage-*` and events `opened`, `reopened`, `synchronize`, `edited`, `labeled`, and `unlabeled`. Grant only `contents: read`. Checkout the base SHA with full history, fetch the head SHA as data, set up Bun from the base commit, run the focused validator test, then run the base validator against `GITHUB_EVENT_PATH`. Name the job `adaptive-tutorial` so the ruleset context is stable.
+Use `pull_request_target` for `stage-*` and events `opened`, `reopened`, `synchronize`, `edited`, `labeled`, and `unlabeled`. Grant only `contents: read`. Checkout `github.workflow_sha` with full history, fetch the PR head as data, set up Bun from that trusted workflow revision, run the focused validator test, then run the trusted validator against `GITHUB_EVENT_PATH`. Name the job `adaptive-tutorial` so the ruleset context is stable.
 
 - [ ] **Step 6: Run focused tests and a local fail/pass event pair**
 
@@ -430,15 +430,11 @@ Resolve all review/CI findings, rerun Step 2/3, merge without force-push, and up
 - Synchronize the merged enforcement files to `stage-01`.
 - Synchronize the already reviewed T01/T02 tutorial backfill into `stage-01`.
 
-- [ ] **Step 1: Create a stage synchronization branch and PR**
+- [ ] **Step 1: Exercise the trusted live workflow**
 
-Create a short branch from current `stage-01`, apply the merged management changes and the T01/T02 backfill, correct the S01-T01 wording to say OpenCode Agent execution configuration is reusable but not sufficient as Adaptive durable lifecycle, and run the focused enforcement/T01/T02 tests. Create a non-task synchronization PR targeting `stage-01` before the ruleset is activated.
+After the management PR merges to `main`, open a temporary stage PR with missing Adaptive fields and verify `adaptive-tutorial` fails with all expected diagnostics. Update the same PR with a complete synthetic tutorial/index and verify it passes. Close the temporary PR without merging fixture content.
 
-- [ ] **Step 2: Merge stage synchronization and exercise the live workflow**
-
-After the sync PR merges, open a temporary stage PR with missing Adaptive fields and verify `adaptive-tutorial` fails with all expected diagnostics. Update the same PR with a complete synthetic tutorial/index and verify it passes. Close the temporary PR without merging fixture content.
-
-- [ ] **Step 3: Activate and inspect the repository ruleset**
+- [ ] **Step 2: Activate and inspect the repository ruleset**
 
 Run:
 
@@ -447,6 +443,10 @@ bun script/adaptive-tutorial-ruleset.ts
 ```
 
 Expected: first run prints `created` or `updated`; second run prints `unchanged`. Read the live ruleset through `gh api` and verify the `stage-*` pattern and required `adaptive-tutorial` context.
+
+- [ ] **Step 3: Synchronize enforcement sources and tutorials to stage**
+
+Create a short branch from current `stage-01`, apply the merged management changes and the T01/T02 backfill, correct the S01-T01 wording to say OpenCode Agent execution configuration is reusable but not sufficient as Adaptive durable lifecycle, and run the focused enforcement/T01/T02 tests. Create a non-task synchronization PR targeting `stage-01` with the maintainer-controlled `tutorial-exempt` label, verify the required check passes through that explicit exemption, and merge it.
 
 - [ ] **Step 4: Synchronize all Task DoD entries**
 

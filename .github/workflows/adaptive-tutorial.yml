@@ -13,10 +13,10 @@ jobs:
     name: adaptive-tutorial
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout trusted base revision
+      - name: Checkout trusted workflow revision
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -25,7 +25,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: git fetch --no-tags origin "pull/${PR_NUMBER}/head"
 
-      - name: Setup Bun from trusted base
+      - name: Setup Bun from trusted workflow revision
         uses: ./.github/actions/setup-bun
 
       - name: Test tutorial validator

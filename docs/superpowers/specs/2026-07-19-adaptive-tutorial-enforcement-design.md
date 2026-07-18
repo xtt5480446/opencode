@@ -27,7 +27,7 @@ The default PR template adds an Adaptive Runtime section with visible Task ID an
 
 ## 4. CI validator
 
-A small repository script owns validation logic and is covered by focused unit tests. For a PR whose base matches `stage-NN`, it verifies:
+A small repository script owns validation logic and is covered by focused unit tests. The `pull_request_target` workflow checks out `github.workflow_sha`, so the validator and setup action always come from the trusted default-branch revision that triggered the run; it fetches the PR head only as Git data and never executes it. For a PR whose base matches `stage-NN`, it verifies:
 
 1. the PR body contains one `Sxx-Txx` Task ID and one canonical tutorial path;
 2. the Task stage equals the base branch stage;
@@ -49,15 +49,15 @@ A CI result alone is advisory because `stage-01` currently has no branch protect
 - permits creation of a new stage branch before its first check exists;
 - does not provide a PR-body-only bypass.
 
-GitHub reads the automatic PR template from the default branch, while a pull-request workflow must exist on the target branch before it can check that PR. Bootstrap therefore uses this order:
+GitHub reads the automatic PR template and `pull_request_target` workflow from the default branch. Bootstrap therefore uses this order:
 
 1. land the management files and PR template on `main`;
-2. synchronize the same enforcement commit into `stage-01`;
-3. run the workflow once and activate the `stage-*` ruleset with `adaptive-tutorial` required;
+2. run the trusted workflow against a stage PR and activate the `stage-*` ruleset with `adaptive-tutorial` required;
+3. synchronize the enforcement sources and reviewed tutorial backfill into `stage-01` for source continuity;
 4. update all 59 Issue bodies through the tested bootstrap reconciler;
 5. confirm a deliberately incomplete fixture/event fails and a complete one passes before S01-T03 resumes.
 
-Future stage branches inherit the workflow from the accepted preceding stage and are covered by the same ruleset pattern.
+The trusted default-branch workflow covers every future stage branch through its `stage-*` event filter and the same ruleset pattern. Enforcement sources are also synchronized into stage history so accepted stage commits remain self-describing.
 
 ## 6. Verification
 

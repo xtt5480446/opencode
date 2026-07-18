@@ -266,6 +266,8 @@ describe("adaptive tutorial check", () => {
     expect(workflow).toContain('branches: ["stage-*"]')
     expect(workflow).toContain("contents: read")
     expect(workflow).not.toContain("pull-requests: write")
+    expect(workflow).toContain("ref: ${{ github.workflow_sha }}")
+    expect(workflow).not.toContain("ref: ${{ github.event.pull_request.base.sha }}")
     expect(workflow).toContain("working-directory: script")
     expect(workflow).toContain("bun test adaptive-tutorial-check.test.ts")
     expect(workflow).toContain("bun script/adaptive-tutorial-check.ts")
