@@ -8,7 +8,7 @@ S01-T01 没有实现一个会运行的 Agent。它先为 Adaptive Runtime 建立
 
 合并记录：[PR #62 `feat(schema): add adaptive task contract`](https://github.com/xtt5480446/opencode/pull/62)
 
-## 它在 G1 中的位置
+## 它在当前 Milestone 中的位置
 
 S01-T01 是 G1 Execution Foundation 的根契约，没有前置 Task：
 
@@ -25,7 +25,7 @@ S01-T01 AdaptiveTask contract
 
 S01-T01 只定义其中四类 ID；`generation` 和权威存储从 S01-T03 开始实现。
 
-## OpenCode baseline 原来提供了什么
+## OpenCode baseline 与复用边界
 
 ### `@opencode-ai/schema` 是跨层契约包
 
@@ -61,11 +61,11 @@ S01-T01 直接复用了这些 baseline primitive：
 
 ### 哪些 baseline 语义没有复用
 
-OpenCode 已有 `Session`、内置 `Agent` 和 Task tool，但它们服务于现有 Session 执行路径。Adaptive Agent 的目标是可独立启动、拥有持久 generation、可以清空上下文后由另一个进程恢复，因此不能把 legacy Session ID 或内置 Agent name 重新解释为 Adaptive Agent identity。
+OpenCode 内置 Agent 已经提供成熟的 execution configuration，例如 system prompt 片段、model 选择、permission 和 tool 配置；这些能力可以在后续 Adaptive Worker 启动链路中直接复用或组合。不能直接复用的是它当前依附于 Session 的生命周期身份：Adaptive Agent 需要可独立启动、拥有持久 generation，并能在清空上下文后由另一个进程恢复，因此现有 Agent name 本身不足以充当 durable Adaptive Agent identity。
 
 S01-T01 新增的是平行契约，没有修改 baseline 的 Session、Message、Agent 或 Model 语义。
 
-## 最终实现怎样组成
+## 最终实现
 
 主要实现集中在 [`adaptive-task.ts`](../../../packages/schema/src/adaptive-task.ts)。文件很短，因为它只承担契约职责。
 
