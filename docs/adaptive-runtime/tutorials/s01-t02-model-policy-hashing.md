@@ -8,7 +8,7 @@ S01-T02 把 S01-T01 定义的 `ModelPolicy` 从“一组经过校验的字段”
 
 合并记录：[PR #63 `feat(core): pin adaptive model policy`](https://github.com/xtt5480446/opencode/pull/63)
 
-## 为什么有类型还需要 hash
+### 为什么有类型还需要 hash
 
 Effect Schema 能回答：
 
@@ -31,7 +31,7 @@ Effect Schema 能回答：
 
 它们各自合法，但不是同一个执行承诺。Adaptive Runtime 需要在 Task 创建、进程重启、请求重试和最终 benchmark 验证之间传播一个短小、确定、可重算的 policy identity，这就是 `modelPolicy.hash`。
 
-## 它在 G1 中的位置
+## 它在当前 Milestone 中的位置
 
 ```text
 S01-T01 validates ModelPolicy shape
@@ -44,7 +44,7 @@ S01-T01 validates ModelPolicy shape
 
 它对最终目标的贡献不是节省 token，而是保证实验约束没有在复杂调度中漂移。只有能够证明短上下文 Adaptive Runtime 和 baseline 使用了约定模型，后续效果比较才有意义。
 
-## OpenCode baseline 原来提供了什么
+## OpenCode baseline 与复用边界
 
 ### 复用 Core 的 `Hash.sha256`
 
@@ -87,7 +87,7 @@ AdaptiveModelPolicy.assertEqual(expected, actual)
 
 代码短不代表缺少行为。它的正确性主要来自非常窄的输入投影和覆盖每种漂移方式的测试，而不是抽象层数。
 
-## 1. `Input` 不允许调用方提供 hash
+### 1. `Input` 不允许调用方提供 hash
 
 ```ts
 export type Input = Omit<AdaptiveTask.ModelPolicy, "hash">
@@ -97,7 +97,7 @@ export type Input = Omit<AdaptiveTask.ModelPolicy, "hash">
 
 这不是绝对安全边界，因为 TypeScript 类型可以被绕过，SQLite 也可能被外部修改；所以 `assertEqual()` 仍会在消费时重新计算。
 
-## 2. 固定六字段 canonical projection
+### 2. 固定六字段 canonical projection
 
 hash 输入不是调用方传来的原始对象，而是显式构造的新对象：
 
@@ -133,7 +133,7 @@ JSON.stringify({
 
 ModelPolicy 是一个固定、扁平、只有六个字段的业务边界。引入递归 canonicalizer 会扩大需要验证的语义，例如数组、嵌套 object、数字表示和 Unicode 处理，却没有带来实际收益。这里把 canonical form 直接写出来更容易审查。
 
-## 3. `create()` 同时计算和验证
+### 3. `create()` 同时计算和验证
 
 ```ts
 const digest = (value: string) => `sha256:${Hash.sha256(value)}`
@@ -158,7 +158,7 @@ caller fields
 
 最后一步再次执行 S01-T01 Schema，所以 `outputReserve: 0` 或 reserve 总和超限不会因为 hash 已经生成就被接受。
 
-## 4. `assertEqual()` 为什么重算两边
+### 4. `assertEqual()` 为什么重算两边
 
 只比较：
 
@@ -189,7 +189,7 @@ Adaptive ModelPolicy mismatch: expected <hash>, received <hash>
 
 S01-T02 的 API 还是一个很窄的同步 Core helper，因此使用普通 `Error`。S01-T03 Store 会在读取数据库时把这类失败映射为可分类的 typed corruption error。
 
-## 典型数据流
+### 典型数据流
 
 假设 Task 请求 Kimi 256k：
 

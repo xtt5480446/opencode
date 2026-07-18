@@ -37,6 +37,7 @@ export type IssueRecord = {
   readonly nodeID: string
   readonly title: string
   readonly body: string
+  readonly state: "open" | "closed"
 }
 export type ProjectRecord = { readonly id: string; readonly number: number; readonly url: string }
 
@@ -55,6 +56,7 @@ export interface GitHubBootstrapClient {
     readonly labels: readonly string[]
     readonly milestone: number
   }) => Promise<IssueRecord>
+  readonly updateIssue: (number: number, input: { readonly body: string }) => Promise<IssueRecord>
   readonly getProject: () => Promise<ProjectRecord | undefined>
   readonly createProject: (input: {
     readonly title: string
@@ -90,6 +92,11 @@ export const desiredLabels: readonly LabelDefinition[] = [
   { name: "kind:hardening", color: "D4C5F9", description: "Security, reliability, or release hardening" },
   { name: "kind:gate", color: "FBCA04", description: "Stage integration and user acceptance gate" },
   { name: "user-gate", color: "B60205", description: "Cannot close without explicit user acceptance" },
+  {
+    name: "tutorial-exempt",
+    color: "D93F0B",
+    description: "Maintainer-approved non-task stage PR without a new implementation tutorial",
+  },
   { name: "area:schema", color: "C5DEF5", description: "Schema and wire contracts" },
   { name: "area:core", color: "C5DEF5", description: "Core deterministic state logic" },
   { name: "area:runtime", color: "C5DEF5", description: "Adaptive execution runtime" },
@@ -218,6 +225,8 @@ const dependencies: Readonly<Record<string, readonly string[]>> = {
   "S06-T09": ["S06-T03", "S06-T04", "S06-T05", "S06-T06", "S06-T07", "S06-T08"],
   "S06-T10": ["S06-T05", "S06-T08", "S06-T09"],
 }
+
+export const adaptiveTaskKeys: ReadonlySet<string> = new Set(Object.keys(dependencies))
 
 const branchTopics: Readonly<Record<string, string>> = {
   "S01-T01": "schema",
@@ -421,8 +430,19 @@ ${spec.evidence}
 - [ ] Generated files and migrations have no drift where applicable.
 - [ ] The PR targets \`${spec.targetBranch}\`, links this task, and uses \`Closes this Issue\`.
 - [ ] Review findings are resolved and verification evidence is attached.
+- [ ] ${tutorialRequirement(spec.key)}
 ${gateKeys.has(spec.key) ? "- [ ] The user has run the packaged artifact and explicitly accepted the Gate before the stage PR merges to `main`." : ""}
 `
+}
+
+function tutorialRequirement(key: string) {
+  return `The implementation tutorial matching \`docs/adaptive-runtime/tutorials/${key.toLowerCase()}-*.md\` is added, indexed, CI-validated, and reviewed before acceptance.`
+}
+
+export function ensureTutorialDoD(body: string, key: string, state: IssueRecord["state"]) {
+  if (body.includes(tutorialRequirement(key))) return body
+  if (!body.includes("## Definition of Done")) throw new Error(`Issue ${key} is missing Definition of Done`)
+  return `${body.trimEnd()}\n- [${state === "closed" ? "x" : " "}] ${tutorialRequirement(key)}\n`
 }
 
 export function missingByKey<T>(desired: readonly T[], existing: readonly T[], key: (item: T) => string): readonly T[] {
@@ -464,6 +484,12 @@ export async function reconcileGitHub(client: GitHubBootstrapClient, specs: read
         milestone: milestone.number,
       })
       issueByTitle.set(title, issue)
+    } else {
+      const body = ensureTutorialDoD(issue.body, spec.key, issue.state)
+      if (body !== issue.body) {
+        issue = await client.updateIssue(issue.number, { body })
+        issueByTitle.set(title, issue)
+      }
     }
     issueNumbers.set(spec.key, issue.number)
     issueRecords.push(issue)
