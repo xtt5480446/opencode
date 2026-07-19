@@ -376,10 +376,10 @@ const layer = Layer.effect(
       const row = yield* db
         .update(AdaptiveModelRequestTable)
         .set({
-          provider_id: input.providerID,
-          model_id: input.modelID,
-          variant: input.variant ?? null,
-          effective_context_limit: input.effectiveContextLimit,
+          resolved_provider_id: input.providerID,
+          resolved_model_id: input.modelID,
+          resolved_variant: input.variant ?? null,
+          resolved_effective_context_limit: input.effectiveContextLimit,
           status: input.status,
           input_tokens: input.inputTokens ?? null,
           output_tokens: input.outputTokens ?? null,
@@ -421,19 +421,42 @@ const layer = Layer.effect(
           .map((request) => `UNSETTLED_MODEL_REQUEST:${request.id}`),
       )
 
-      const identities = [...new Set(ordered.map((request) => `${request.provider_id}/${request.model_id}`))].toSorted()
-      if (identities.length > 1) reasons.push(`MULTIPLE_MODEL_IDENTITIES:${identities.join(",")}`)
-      if (task && identities.length === 1) {
+      const terminal = ordered.filter(
+        (request) => request.status === "succeeded" || request.status === "failed" || request.status === "interrupted",
+      )
+      const observed = terminal.filter(
+        (request) =>
+          request.resolved_provider_id !== null &&
+          request.resolved_model_id !== null &&
+          request.resolved_effective_context_limit !== null,
+      )
+      reasons.push(
+        ...terminal
+          .filter(
+            (request) =>
+              request.resolved_provider_id === null ||
+              request.resolved_model_id === null ||
+              request.resolved_effective_context_limit === null,
+          )
+          .map((request) => `MISSING_RESOLVED_MODEL_OBSERVATION:${request.id}`),
+      )
+
+      const resolvedIdentities = [
+        ...new Set(observed.map((request) => `${request.resolved_provider_id}/${request.resolved_model_id}`)),
+      ].toSorted()
+      if (resolvedIdentities.length > 1) reasons.push(`MULTIPLE_MODEL_IDENTITIES:${resolvedIdentities.join(",")}`)
+      if (task && resolvedIdentities.length === 1) {
         const expected = `${task.provider_id}/${task.model_id}`
-        if (identities[0] !== expected) reasons.push(`MODEL_IDENTITY_MISMATCH:${identities[0]}!=${expected}`)
+        if (resolvedIdentities[0] !== expected)
+          reasons.push(`MODEL_IDENTITY_MISMATCH:${resolvedIdentities[0]}!=${expected}`)
       }
       if (task)
         reasons.push(
-          ...ordered
-            .filter((request) => request.variant !== task.variant)
+          ...observed
+            .filter((request) => request.resolved_variant !== task.variant)
             .map(
               (request) =>
-                `MODEL_VARIANT_MISMATCH:${request.id}:${request.variant ?? "<none>"}!=${task.variant ?? "<none>"}`,
+                `MODEL_VARIANT_MISMATCH:${request.id}:${request.resolved_variant ?? "<none>"}!=${task.variant ?? "<none>"}`,
             ),
         )
 
@@ -443,11 +466,11 @@ const layer = Layer.effect(
         reasons.push(`POLICY_HASH_MISMATCH:${hashes[0]}!=${task.model_policy_hash}`)
       if (task)
         reasons.push(
-          ...ordered
-            .filter((request) => request.effective_context_limit > task.effective_context_limit)
+          ...observed
+            .filter((request) => request.resolved_effective_context_limit! > task.effective_context_limit)
             .map(
               (request) =>
-                `CONTEXT_LIMIT_EXCEEDS_TASK_POLICY:${request.id}:${request.effective_context_limit}>${task.effective_context_limit}`,
+                `CONTEXT_LIMIT_EXCEEDS_TASK_POLICY:${request.id}:${request.resolved_effective_context_limit}>${task.effective_context_limit}`,
             ),
         )
 
@@ -460,8 +483,8 @@ const layer = Layer.effect(
         }
       return {
         valid: true as const,
-        providerID: ordered[0]!.provider_id,
-        modelID: ordered[0]!.model_id,
+        providerID: observed[0]!.resolved_provider_id!,
+        modelID: observed[0]!.resolved_model_id!,
         policyHash: hashes[0]!,
         requests: ordered.length,
       }

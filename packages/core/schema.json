@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "8d180005-95ca-440e-aae7-608144fb569a",
+  "id": "bb426b9f-d268-434b-9ac6-8392eab94960",
   "prevIds": [
-    "f14a9b18-8207-487e-a3d3-227e629ba9ad"
+    "8d180005-95ca-440e-aae7-608144fb569a"
   ],
   "ddl": [
     {
@@ -755,6 +755,46 @@
       "default": null,
       "generated": null,
       "name": "model_policy_hash",
+      "entityType": "columns",
+      "table": "adaptive_model_request"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "resolved_provider_id",
+      "entityType": "columns",
+      "table": "adaptive_model_request"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "resolved_model_id",
+      "entityType": "columns",
+      "table": "adaptive_model_request"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "resolved_variant",
+      "entityType": "columns",
+      "table": "adaptive_model_request"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "resolved_effective_context_limit",
       "entityType": "columns",
       "table": "adaptive_model_request"
     },
@@ -3087,6 +3127,12 @@
     {
       "value": "length(\"model_policy_hash\") = 71 AND substr(\"model_policy_hash\", 1, 7) = 'sha256:' AND substr(\"model_policy_hash\", 8) NOT GLOB '*[^0-9a-f]*'",
       "name": "adaptive_model_request_policy_hash_check",
+      "entityType": "checks",
+      "table": "adaptive_model_request"
+    },
+    {
+      "value": "(\"resolved_provider_id\" IS NULL AND \"resolved_model_id\" IS NULL AND \"resolved_variant\" IS NULL AND \"resolved_effective_context_limit\" IS NULL) OR (\"resolved_provider_id\" IS NOT NULL AND length(\"resolved_provider_id\") > 0 AND \"resolved_model_id\" IS NOT NULL AND length(\"resolved_model_id\") > 0 AND \"resolved_effective_context_limit\" > 0)",
+      "name": "adaptive_model_request_resolved_tuple_check",
       "entityType": "checks",
       "table": "adaptive_model_request"
     },

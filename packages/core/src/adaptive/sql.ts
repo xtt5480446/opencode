@@ -148,6 +148,10 @@ export const AdaptiveModelRequestTable = sqliteTable(
     output_reserve: integer().notNull(),
     safety_reserve: integer().notNull(),
     model_policy_hash: text().notNull(),
+    resolved_provider_id: text(),
+    resolved_model_id: text(),
+    resolved_variant: text(),
+    resolved_effective_context_limit: integer(),
     status: text().$type<AdaptiveModelRequestStatus>().notNull(),
     input_tokens: integer(),
     output_tokens: integer(),
@@ -176,6 +180,10 @@ export const AdaptiveModelRequestTable = sqliteTable(
       sql`${table.output_reserve} + ${table.safety_reserve} < ${table.effective_context_limit}`,
     ),
     check("adaptive_model_request_policy_hash_check", hashCheck(table.model_policy_hash)),
+    check(
+      "adaptive_model_request_resolved_tuple_check",
+      sql`(${table.resolved_provider_id} IS NULL AND ${table.resolved_model_id} IS NULL AND ${table.resolved_variant} IS NULL AND ${table.resolved_effective_context_limit} IS NULL) OR (${table.resolved_provider_id} IS NOT NULL AND length(${table.resolved_provider_id}) > 0 AND ${table.resolved_model_id} IS NOT NULL AND length(${table.resolved_model_id}) > 0 AND ${table.resolved_effective_context_limit} > 0)`,
+    ),
     check(
       "adaptive_model_request_input_tokens_check",
       sql`${table.input_tokens} IS NULL OR ${table.input_tokens} >= 0`,

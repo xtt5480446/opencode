@@ -299,6 +299,33 @@ it.effect("returns deterministic model-mixing evidence for different settled res
   }),
 )
 
+it.effect("keeps the immutable policy readable beside a different resolved observation", () =>
+  Effect.gen(function* () {
+    const audit = yield* AdaptiveModelAudit.Service
+    const store = yield* AdaptiveStore.Service
+    const state = yield* setup()
+    const input = admission(state)
+    yield* audit.admit(input)
+    yield* audit.settle(
+      settlement(input.requestID, {
+        providerID: "anthropic",
+        modelID: "claude-sonnet",
+        variant: "high",
+        effectiveContextLimit: 131_072,
+      }),
+    )
+
+    const request = yield* store.getModelRequest(input.requestID)
+    expect(request.modelPolicy).toEqual(state.task.modelPolicy)
+    expect(request.resolved).toEqual({
+      providerID: Provider.ID.make("anthropic"),
+      modelID: Model.ID.make("claude-sonnet"),
+      variant: Model.VariantID.make("high"),
+      effectiveContextLimit: 131_072,
+    })
+  }),
+)
+
 it.effect("identifies every admitted or streaming request as unsettled", () =>
   Effect.gen(function* () {
     const audit = yield* AdaptiveModelAudit.Service
@@ -318,6 +345,24 @@ it.effect("identifies every admitted or streaming request as unsettled", () =>
       valid: false,
       code: "INVALID_MODEL_MIXING",
       reasons: [`UNSETTLED_MODEL_REQUEST:${input.requestID}`],
+      requests: 1,
+    })
+  }),
+)
+
+it.effect("fails closed when a terminal request has no resolved observation", () =>
+  Effect.gen(function* () {
+    const audit = yield* AdaptiveModelAudit.Service
+    const store = yield* AdaptiveStore.Service
+    const state = yield* setup()
+    const input = admission(state)
+    yield* audit.admit(input)
+    yield* store.settleModelRequest({ requestID: input.requestID, status: "failed", failure: "before resolve" })
+
+    expect(yield* audit.verify(state.task.id)).toEqual({
+      valid: false,
+      code: "INVALID_MODEL_MIXING",
+      reasons: [`MISSING_RESOLVED_MODEL_OBSERVATION:${input.requestID}`],
       requests: 1,
     })
   }),

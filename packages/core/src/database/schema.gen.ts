@@ -115,6 +115,10 @@ export default {
           \`output_reserve\` integer NOT NULL,
           \`safety_reserve\` integer NOT NULL,
           \`model_policy_hash\` text NOT NULL,
+          \`resolved_provider_id\` text,
+          \`resolved_model_id\` text,
+          \`resolved_variant\` text,
+          \`resolved_effective_context_limit\` integer,
           \`status\` text NOT NULL,
           \`input_tokens\` integer,
           \`output_tokens\` integer,
@@ -132,6 +136,7 @@ export default {
           CONSTRAINT "adaptive_model_request_safety_reserve_check" CHECK("safety_reserve" > 0),
           CONSTRAINT "adaptive_model_request_reserve_total_check" CHECK("output_reserve" + "safety_reserve" < "effective_context_limit"),
           CONSTRAINT "adaptive_model_request_policy_hash_check" CHECK(length("model_policy_hash") = 71 AND substr("model_policy_hash", 1, 7) = 'sha256:' AND substr("model_policy_hash", 8) NOT GLOB '*[^0-9a-f]*'),
+          CONSTRAINT "adaptive_model_request_resolved_tuple_check" CHECK(("resolved_provider_id" IS NULL AND "resolved_model_id" IS NULL AND "resolved_variant" IS NULL AND "resolved_effective_context_limit" IS NULL) OR ("resolved_provider_id" IS NOT NULL AND length("resolved_provider_id") > 0 AND "resolved_model_id" IS NOT NULL AND length("resolved_model_id") > 0 AND "resolved_effective_context_limit" > 0)),
           CONSTRAINT "adaptive_model_request_input_tokens_check" CHECK("input_tokens" IS NULL OR "input_tokens" >= 0),
           CONSTRAINT "adaptive_model_request_output_tokens_check" CHECK("output_tokens" IS NULL OR "output_tokens" >= 0),
           CONSTRAINT "adaptive_model_request_completion_check" CHECK(("status" IN ('admitted', 'streaming') AND "time_completed" IS NULL) OR ("status" IN ('succeeded', 'failed', 'interrupted') AND "time_completed" IS NOT NULL))
