@@ -52,6 +52,7 @@ Tutorial 与实现位于同一个 Task、Issue 和 PR 中，是 Definition of Do
 | S01-T03 | [Foundation Database 与 Transactional Store](./s01-t03-foundation-store.md) | 可重启的 Task/Agent/Manifest/Request 权威状态                       | 已完成，随任务 PR 交付 |
 | S01-T04 | [固定模型引用的直接解析](./s01-t04-direct-model-resolution.md)              | 复用 Location catalog 的 provider/model/variant 精确解析            | 已完成，随任务 PR 交付 |
 | S01-T05 | [模型请求审计与准入](./s01-t05-model-request-audit.md)                      | 原子请求准入、resolved identity settlement 与确定性有效性证明       | 已完成，随任务 PR 交付 |
+| S01-T06 | [有界 Agent 进程协议](./s01-t06-bounded-process-protocol.md)                | LF-only NDJSON、严格 handshake、heartbeat 与有界 child RPC          | 已完成，随任务 PR 交付 |
 
 后续教程会继续按依赖顺序加入本索引，而不是按文档创建时间排列。
 
