@@ -17,6 +17,12 @@ describe("fork GitHub runner policy", () => {
     expect(workflow).toContain("timeout-minutes: 30\n        run: GITHUB_ACTIONS=false bun turbo test --concurrency=1")
   })
 
+  test("process-heavy core tests allow hosted Windows startup latency", async () => {
+    const pkg = await Bun.file(new URL("../packages/core/package.json", import.meta.url)).json()
+
+    expect(pkg.scripts.test).toBe("bun test --timeout 30000 --only-failures")
+  })
+
   test("duplicate detection skips forks that do not own the upstream model secret", async () => {
     const workflow = await Bun.file(new URL("pr-management.yml", workflows)).text()
 
