@@ -120,7 +120,7 @@ AND (owner is empty OR lease expired)
 
 ### Manifest transaction 与 JSON 边界
 
-`putManifest()` 在接触 SQLite 前递归校验 JSON。允许 `null`、boolean、finite number、string、dense array 和 plain object；拒绝 `undefined`、BigInt、function、symbol、`NaN`、Infinity、class instance、循环引用、sparse array、array extra property，以及会被 JSON 静默忽略的 symbol/non-enumerable/accessor object property。这样损坏输入会在创建 Manifest 时得到 `InvalidManifest`，而不是在重启恢复或 provider serialization 时才爆炸。
+`putManifest()` 在接触 SQLite 前递归校验 JSON。允许 `null`、boolean、finite number、string、dense array 和 plain object；拒绝 `undefined`、BigInt、function、symbol、`NaN`、Infinity、class instance、循环引用、sparse array、array extra property，以及会被 JSON 静默忽略的 symbol/non-enumerable/accessor object property。`system/messages/tools/components` 四个顶层 array 自身与所有嵌套值经过同一检查，不能借顶层边界绕过。这样损坏输入会在创建 Manifest 时得到 `InvalidManifest`，而不是在重启恢复或 provider serialization 时才爆炸。
 
 plain object 复制到 null-prototype dictionary，并通过 data-property 定义保存键，所以自有 `__proto__`、`constructor`、`prototype` 等合法 JSON key 不会触发 JavaScript prototype setter 或被吞掉。读取时四个 JSON 列以 raw text 进入 Store，再在 `decodeManifest` 的 typed boundary 内解析；即使数据库文件被外部损坏，调用方也得到 `InvalidManifest`，而不是无法分类的 Effect defect。数据库连接、磁盘或 SQL 执行故障仍然是 defect，不会被伪装成内容错误。
 
@@ -210,25 +210,25 @@ Foreign key 要求引用目标真实存在。Manifest 不能指向不存在的 A
 
 ## 测试看护逻辑
 
-| 风险                           | 测试方法                       | 关键断言                                    | 证明范围                    |
-| ------------------------------ | ------------------------------ | ------------------------------------------- | --------------------------- |
-| Task 重启后字段丢失            | Task create/get round trip     | 完整 record 与时间相同                      | Task foundation 可持久读取  |
-| duplicate 覆盖原需求           | duplicate Task/Agent tests     | typed duplicate 且原记录不变                | retry 不会变成覆盖写        |
-| DB 中 policy 被篡改            | raw hash mutation test         | `CorruptModelPolicy`                        | 读取不盲信 stored hash      |
-| 两个 Controller 同时持有 Agent | concurrent claim               | 一个 success、一个 failure、generation 为 1 | claim 是原子 CAS            |
-| 旧 owner 覆盖新一代            | expired reclaim + stale settle | stale settlement 返回 ownership conflict    | generation 隔离成立         |
-| lease 到期边界不一致           | heartbeat at exact expiry      | heartbeat 被拒绝                            | 到期比较语义明确            |
-| 非 JSON context 污染数据库     | unsupported Manifest input     | `InvalidManifest` 且无记录                  | 写入前 JSON 边界有效        |
-| JSON key 被 prototype 语义吞掉 | prototype-name round-trip      | `__proto__` 等自有 key 原样读回             | Manifest 内容精确恢复       |
-| DB 内 Manifest JSON 已损坏     | raw JSON corruption            | `InvalidManifest`                           | 恢复错误可分类              |
-| 错 owner 写 Manifest           | ownership mismatch             | transaction 回滚且 Manifest not found       | 授权验证与 insert 原子      |
-| Request 指向错误 generation    | tuple mismatch                 | `RequestReferenceMismatch` 且无记录         | Request/Manifest 关联可信   |
-| retry parent 缺失或跨 Task     | retry reference guards         | `RequestReferenceMismatch` 且无记录         | retry lineage 不串 Task     |
-| Request policy hash 不一致     | malformed policy snapshot      | `InvalidRequest` 且无记录                   | 请求输入错误不击穿进程      |
-| Request 被重复终结             | second settlement              | `RequestAlreadySettled`                     | terminal transition 一次性  |
-| 非法 token 部分更新状态        | negative token settlement      | `InvalidRequest` 且 status 仍 admitted      | validation 在 mutation 之前 |
-| Store 偷用进程内 cache         | file-backed layer rebuild      | 新 layer 读回四类记录完全相等               | SQLite 足以支持进程重建     |
-| migration 破坏 baseline        | Adaptive-only legacy-row test  | Session/Event 行不变且新增四张表            | 新表与既有 schema 共存      |
+| 风险                           | 测试方法                       | 关键断言                                    | 证明范围                     |
+| ------------------------------ | ------------------------------ | ------------------------------------------- | ---------------------------- |
+| Task 重启后字段丢失            | Task create/get round trip     | 完整 record 与时间相同                      | Task foundation 可持久读取   |
+| duplicate 覆盖原需求           | duplicate Task/Agent tests     | typed duplicate 且原记录不变                | retry 不会变成覆盖写         |
+| DB 中 policy 被篡改            | raw hash mutation test         | `CorruptModelPolicy`                        | 读取不盲信 stored hash       |
+| 两个 Controller 同时持有 Agent | concurrent claim               | 一个 success、一个 failure、generation 为 1 | claim 是原子 CAS             |
+| 旧 owner 覆盖新一代            | expired reclaim + stale settle | stale settlement 返回 ownership conflict    | generation 隔离成立          |
+| lease 到期边界不一致           | heartbeat at exact expiry      | heartbeat 被拒绝                            | 到期比较语义明确             |
+| 非 JSON context 污染数据库     | unsupported Manifest input     | `InvalidManifest` 且无记录                  | 写入前 JSON 边界有效         |
+| JSON key 被 prototype 语义吞掉 | prototype-name round-trip      | `__proto__` 等自有 key 原样读回             | Manifest 内容精确恢复        |
+| DB 内 Manifest JSON 已损坏     | raw JSON corruption            | `InvalidManifest`                           | 恢复错误可分类               |
+| 错 owner 写 Manifest           | ownership mismatch             | transaction 回滚且 Manifest not found       | 授权验证与 insert 原子       |
+| Request 指向错误 generation    | tuple mismatch                 | `RequestReferenceMismatch` 且无记录         | Request/Manifest 关联可信    |
+| retry parent 缺失或跨 Task     | retry reference guards         | `RequestReferenceMismatch` 且无记录         | retry lineage 不串 Task      |
+| Request policy hash 不一致     | malformed policy snapshot      | `InvalidRequest` 且无记录                   | 请求输入错误不击穿进程       |
+| Request 被重复终结             | second settlement              | `RequestAlreadySettled`                     | terminal transition 一次性   |
+| 非法 token 部分更新状态        | negative token settlement      | `InvalidRequest` 且 status 仍 admitted      | validation 在 mutation 之前  |
+| Store 偷用进程内 cache         | file-backed layer rebuild      | 新 layer 读回四类记录完全相等               | SQLite 足以支持进程重建      |
+| migration 破坏 baseline        | registry/journal legacy test   | Session/Event 行不变、journal +1、新增四表  | 真实升级路径与旧 schema 共存 |
 
 这些测试没有证明：多机 SQLite 共享、网络文件系统 lease、Coordinator 自动恢复流程、Roadmap/Detail 的一致性、真实 provider call、tokenizer 估算准确性或 benchmark 同模型报告。它们属于后续 Task。
 

@@ -446,6 +446,29 @@ describe("AdaptiveStore Manifest and Request", () => {
           expect(failure._tag).toBe("AdaptiveStore.InvalidManifest")
         }),
       )
+      const extra = () => {
+        const value = ["value"] as unknown[] & Record<string, unknown>
+        value.extra = "not JSON array data"
+        return value
+      }
+      const invalidTopLevel = [
+        { system: Array(1) as string[] },
+        { system: extra() as string[] },
+        { messages: Array(1) },
+        { messages: extra() },
+        { tools: Array(1) },
+        { tools: extra() },
+        { components: Array(1) },
+        { components: extra() },
+      ]
+      yield* Effect.forEach(invalidTopLevel, (values) =>
+        Effect.gen(function* () {
+          const failure = yield* store
+            .putManifest({ ...base, ...values, id: AdaptiveTask.ContextManifestID.create() })
+            .pipe(Effect.flip)
+          expect(failure._tag).toBe("AdaptiveStore.InvalidManifest")
+        }),
+      )
       expect(
         (yield* store
           .putManifest({ ...base, id: AdaptiveTask.ContextManifestID.create(), owner: "wrong" })

@@ -354,14 +354,18 @@ const manifestValues = (input: {
   readonly tools: unknown
   readonly components: unknown
 }) => {
-  if (!Array.isArray(input.system) || input.system.some((part) => typeof part !== "string"))
-    throw new Error("Manifest system must contain only strings")
   const array = (name: string, value: unknown) => {
     if (!Array.isArray(value)) throw new Error(`Manifest ${name} must be an array`)
-    return value.map((item) => jsonValue(item))
+    const output = jsonValue(value)
+    if (!Array.isArray(output)) throw new Error(`Manifest ${name} must be an array`)
+    return output
   }
+  const system = array("system", input.system).map((part) => {
+    if (typeof part !== "string") throw new Error("Manifest system must contain only strings")
+    return part
+  })
   return {
-    system: [...input.system],
+    system,
     messages: array("messages", input.messages),
     tools: array("tools", input.tools),
     components: array("components", input.components),

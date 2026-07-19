@@ -152,8 +152,13 @@ describe("DatabaseMigration", () => {
         yield* db.run(
           sql`INSERT INTO event (id, aggregate_id, seq, data) VALUES ('evt_legacy', 'ses_legacy', 7, '{"type":"legacy"}')`,
         )
+        yield* db.run(sql`CREATE TABLE migration (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`)
+        yield* Effect.forEach(
+          migrations.filter((migration) => migration.id !== adaptiveRuntimeFoundationMigration.id),
+          (migration) => db.run(sql`INSERT INTO migration (id, time_completed) VALUES (${migration.id}, 1)`),
+        )
 
-        yield* DatabaseMigration.applyOnly(db, [adaptiveRuntimeFoundationMigration])
+        yield* DatabaseMigration.apply(db)
 
         expect(yield* db.all(sql`SELECT id, data FROM session`)).toEqual([
           { id: "ses_legacy", data: '{"title":"unchanged"}' },
@@ -171,6 +176,10 @@ describe("DatabaseMigration", () => {
           { name: "adaptive_model_request" },
           { name: "adaptive_task" },
         ])
+        expect(
+          yield* db.get(sql`SELECT id FROM migration WHERE id = ${adaptiveRuntimeFoundationMigration.id}`),
+        ).toEqual({ id: adaptiveRuntimeFoundationMigration.id })
+        expect(yield* db.get(sql`SELECT count(*) AS count FROM migration`)).toEqual({ count: migrations.length })
       }),
     )
   })
