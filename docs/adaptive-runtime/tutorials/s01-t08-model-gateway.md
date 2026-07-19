@@ -88,11 +88,17 @@ effectiveContextLimit = Math.min(routeContextLimit, policy.effectiveContextLimit
 
 因此 provider 当前 route 可以比 policy 更小，但一次请求永远不会以高于 policy 的上限记账。若 route 没有正整数 limit、limit 连 `outputReserve + safetyReserve` 都无法容纳，或 Manifest 估算加 reserves 超出有效预算，网关在 `LLMClient` 调用前返回 typed `RoutePolicyMismatchError`。已经插入的 audit row 仍由 finalizer 结算为 terminal `failed`，不会残留 `admitted|streaming`。
 
-### Terminal settlement 与错误脱敏
+### Admission ownership 与 terminal settlement
+
+Task policy 在 admission 前以普通 interruptible Effect 读取；Task 不存在或 policy 损坏时，网关尚未拥有 Request，不注册 finalizer。真正的 ownership handoff 使用 `Effect.uninterruptibleMask` 把两件事合成一个不可分割区间：`AdaptiveModelAudit.admit()` 成功插入 row，紧接着向当前 stream Scope 注册 terminal finalizer。只有 finalizer 安装完成后才恢复正常 interruption。这样即使取消信号恰好到达数据库 commit 与下一步 prepare 之间，也会先完成 handoff，再由 finalizer 把 row 结算为 `interrupted`。
+
+### 错误脱敏
 
 `RequestState` 只保存结算需要的少量事实：policy、resolved provider、effective limit、最新的 input/output token counters、provider 是否开始以及是否收到 `provider-error`。不同 usage event 可以分别提供 input 或 output，网关会保留每个字段最近一次有效的非负整数值，不会因后续事件省略另一个字段而清空已观测计数。
 
-Scope finalizer 根据 stream exit 决定 terminal status：正常结束为 `succeeded`，canonical `provider-error` event 为 `failed`，fiber interruption 为 `interrupted`，transport failure 为 `failed`。数据库只保存固定的脱敏摘要。transport 的原始 `LLMError` 也不会返回 credential-free 调用方，而会转换成不带 cause/message 的 typed `ProviderStreamError`；canonical events 则原样转发。
+Scope finalizer 根据 stream exit 决定 terminal status：正常结束为 `succeeded`，canonical `provider-error` event 为 `failed`，fiber interruption 为 `interrupted`，transport failure 为 `failed`。数据库只保存固定的脱敏摘要。
+
+credential-free 调用方不会收到可能带 provider 或 credential 细节的底层 cause。resolver/location 的 typed failure、`Integration.AuthorizationError.cause` 和 defect 统一映射成只含 `requestID + "Model resolution failed"` 的 `ModelResolutionError`；Manifest load corruption 与 Message/Tool decode failure 统一映射成只含 IDs 和固定 reason 的 `InvalidManifestContentError`。transport 的原始 `LLMError` 同样转换成不带 cause/message 的 `ProviderStreamError`。最终 settlement 自身若异常，只记录 request ID 和固定日志，不把 defect carrier 暴露到 public Gateway error；canonical provider events 则仍原样转发。
 
 Retry 不在网关内自动执行。调用方显式提交新的 `requestID` 和旧的 `retryOf`，`AdaptiveModelAudit.admit` 验证 Task、Agent 与 policy lineage，两个 provider turn 仍分别只有一次 `LLMClient.stream`。
 
@@ -128,16 +134,19 @@ Retry lineage 是新 Request 对失败父 Request 的显式引用。它不是“
 
 ## 测试看护逻辑
 
-| 风险                                              | 测试方法                                                   | 关键断言                                                                                          | 证明范围                                               |
-| ------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| child 注入 provider/model/text                    | `uses only stored model identity and Manifest context`     | fake request 只含 stored system/messages/tools；resolver 收到 pinned ref                          | 不可信 extra payload 不进入 provider request           |
-| logical ID 与 wire ID 被错误混为一谈              | 同一测试                                                   | resolver 输入 `kimi-catalog`，provider request 使用 `kimi-wire-api`，audit 仍记录 logical ID/hash | exact catalog identity 与 wire route identity 都被保留 |
-| stale Worker 越权调用                             | `rejects a stale generation`                               | typed stale error；resolver 与 LLM 调用均为 0                                                     | admission 在 provider 前执行                           |
-| caller 中断留下 running row 或丢失 partial usage  | `settles interruption with the latest partial usage`       | `interrupted`、input/output 分段计数、`timeCompleted`                                             | stream cancellation 仍完成 terminal settlement         |
-| transport 错误把 credential 泄露给 child 或数据库 | `keeps exact retry lineage after a failed provider stream` | caller 只见 generic typed error；stored failure 不含 secret                                       | provider transport failure 被双重脱敏                  |
-| retry 偷换 policy/model                           | 同一测试                                                   | `retryOf` 精确；两条 policy hash、resolver ref 和 provider request identity 相同                  | retry 保持单一模型 lineage                             |
-| canonical provider error 被误判成功               | `settles a provider-error event`                           | event 对象原样返回；row 为 redacted `failed`                                                      | event forwarding 与 audit status 同时正确              |
-| resolver/provider 或 route budget 漂移            | 两个 `fails closed` 测试                                   | 0 LLM calls；row terminal failed；actual observation 可审计                                       | mismatch 不会到达 provider，也不留 unfinished row      |
+| 风险                                              | 测试方法                                                                | 关键断言                                                                                          | 证明范围                                                     |
+| ------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| child 注入 provider/model/text                    | `uses only stored model identity and Manifest context`                  | fake request 只含 stored system/messages/tools；resolver 收到 pinned ref                          | 不可信 extra payload 不进入 provider request                 |
+| logical ID 与 wire ID 被错误混为一谈              | 同一测试                                                                | resolver 输入 `kimi-catalog`，provider request 使用 `kimi-wire-api`，audit 仍记录 logical ID/hash | exact catalog identity 与 wire route identity 都被保留       |
+| stale Worker 越权调用                             | `rejects a stale generation`                                            | typed stale error；resolver 与 LLM 调用均为 0                                                     | admission 在 provider 前执行                                 |
+| caller 中断留下 running row 或丢失 partial usage  | `settles interruption with the latest partial usage`                    | `interrupted`、input/output 分段计数、`timeCompleted`                                             | stream cancellation 仍完成 terminal settlement               |
+| transport 错误把 credential 泄露给 child 或数据库 | `keeps exact retry lineage after a failed provider stream`              | caller 只见 generic typed error；stored failure 不含 secret                                       | provider transport failure 被双重脱敏                        |
+| retry 偷换 policy/model                           | 同一测试                                                                | `retryOf` 精确；两条 policy hash、resolver ref 和 provider request identity 相同                  | retry 保持单一模型 lineage                                   |
+| canonical provider error 被误判成功               | `settles a provider-error event`                                        | event 对象原样返回；row 为 redacted `failed`                                                      | event forwarding 与 audit status 同时正确                    |
+| resolver/provider 或 route budget 漂移            | 两个 `fails closed` 测试                                                | 0 LLM calls；row terminal failed；actual observation 可审计                                       | mismatch 不会到达 provider，也不留 unfinished row            |
+| resolver/auth defect 泄露 credential              | 两个 `maps resolver` 测试                                               | defect 与 `Integration.AuthorizationError.cause` 都变成 fixed `ModelResolutionError`              | child 与 audit summary 都看不到 resolver secret              |
+| malformed/corrupt Manifest 泄露上下文             | 两个 `maps ... Manifest` 测试                                           | fixed `InvalidManifestContentError`、0 LLM calls、terminal failed                                 | load/parse diagnostics 不穿过 credential-free boundary       |
+| admit commit 后立刻中断留下 unfinished row        | `settles after admission when interrupted during the ownership handoff` | wrapped real Audit 在 admit 返回处阻塞；取消后 row 为 `interrupted` 且有 completion time          | admission 与 finalizer registration 是原子 ownership handoff |
 
 这些自动化测试使用 fake model resolver 和 fake LLM stream，不访问真实 provider，也不证明用户 credential 当前有效、packaged child 能发起 RPC、Controller 能正确分配 Manifest，或 G1 benchmark 结果已经有效。真实 CLI/router 由 S01-T09 接入，packaged/live evidence 由 S01-T10 和用户 gate 完成。
 

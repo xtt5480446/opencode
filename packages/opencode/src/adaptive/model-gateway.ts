@@ -31,12 +31,26 @@ export class RoutePolicyMismatchError extends Schema.TaggedErrorClass<RoutePolic
   },
 ) {}
 
+export class TaskStateError extends Schema.TaggedErrorClass<TaskStateError>()("AdaptiveModelGateway.TaskState", {
+  requestID: AdaptiveTask.RequestID,
+  taskID: AdaptiveTask.ID,
+  reason: Schema.Literal("Task state invalid"),
+}) {}
+
+export class ModelResolutionError extends Schema.TaggedErrorClass<ModelResolutionError>()(
+  "AdaptiveModelGateway.ModelResolution",
+  {
+    requestID: AdaptiveTask.RequestID,
+    reason: Schema.Literal("Model resolution failed"),
+  },
+) {}
+
 export class InvalidManifestContentError extends Schema.TaggedErrorClass<InvalidManifestContentError>()(
   "AdaptiveModelGateway.InvalidManifestContent",
   {
     requestID: AdaptiveTask.RequestID,
     manifestID: AdaptiveTask.ContextManifestID,
-    reason: Schema.String,
+    reason: Schema.Literals(["Manifest unavailable", "Manifest content invalid"]),
   },
 ) {}
 
@@ -50,13 +64,11 @@ export class ProviderStreamError extends Schema.TaggedErrorClass<ProviderStreamE
 
 export type Error =
   | AdaptiveStore.TaskNotFoundError
-  | AdaptiveStore.CorruptModelPolicyError
-  | AdaptiveStore.ManifestNotFoundError
-  | AdaptiveStore.InvalidManifestError
   | AdaptiveModelAudit.AdmissionError
   | AdaptiveModelAudit.RequestNotFoundError
   | AdaptiveModelAudit.InvalidTransitionError
-  | SessionRunnerModel.Error
+  | TaskStateError
+  | ModelResolutionError
   | RoutePolicyMismatchError
   | InvalidManifestContentError
   | ProviderStreamError
@@ -125,6 +137,22 @@ const routeLimit = (model: ResolvedModel) => model.defaults?.limits?.context ?? 
 const publicStreamError = (requestID: AdaptiveTask.RequestID) =>
   new ProviderStreamError({ requestID, reason: "Provider stream failed" })
 
+const taskStateError = (input: StreamInput) =>
+  new TaskStateError({ requestID: input.requestID, taskID: input.taskID, reason: "Task state invalid" })
+
+const modelResolutionError = (input: StreamInput) =>
+  new ModelResolutionError({ requestID: input.requestID, reason: "Model resolution failed" })
+
+const invalidManifest = (input: StreamInput, reason: InvalidManifestContentError["reason"]) =>
+  new InvalidManifestContentError({
+    requestID: input.requestID,
+    manifestID: input.manifestID,
+    reason,
+  })
+
+const safeDefects = <A, E, R, E2>(effect: Effect.Effect<A, E, R>, error: E2) =>
+  effect.pipe(Effect.catchDefect(() => Effect.fail(error)))
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -135,24 +163,39 @@ const layer = Layer.effect(
 
     const prepare = (input: StreamInput): Effect.Effect<Stream.Stream<LLMEvent, Error>, Error, Scope.Scope> =>
       Effect.gen(function* () {
-        const task = yield* store.getTask(input.taskID)
-        const admitted = yield* audit.admit({
-          ...input,
-          modelPolicy: task.modelPolicy,
-        })
-        const state: RequestState = {
-          policy: task.modelPolicy,
-          providerID: task.modelPolicy.providerID,
-          effectiveContextLimit: task.modelPolicy.effectiveContextLimit,
-          providerStarted: false,
-          providerError: false,
-        }
+        const task = yield* store.getTask(input.taskID).pipe(
+          Effect.catchTag("AdaptiveStore.CorruptModelPolicy", () => Effect.fail(taskStateError(input))),
+          (effect) => safeDefects(effect, taskStateError(input)),
+        )
         const scope = yield* Scope.Scope
-        yield* Scope.addFinalizerExit(scope, (exit) =>
-          audit.settle(settlement(state, input, exit)).pipe(Effect.uninterruptible, Effect.orDie),
+        const { admitted, state } = yield* Effect.uninterruptibleMask(() =>
+          Effect.gen(function* () {
+            const admitted = yield* safeDefects(
+              audit.admit({
+                ...input,
+                modelPolicy: task.modelPolicy,
+              }),
+              taskStateError(input),
+            )
+            const state: RequestState = {
+              policy: task.modelPolicy,
+              providerID: task.modelPolicy.providerID,
+              effectiveContextLimit: task.modelPolicy.effectiveContextLimit,
+              providerStarted: false,
+              providerError: false,
+            }
+            yield* Scope.addFinalizerExit(scope, (exit) =>
+              audit.settle(settlement(state, input, exit)).pipe(
+                Effect.catchCause(() =>
+                  Effect.logError("Adaptive model request settlement failed", { requestID: input.requestID }),
+                ),
+                Effect.uninterruptible,
+              ),
+            )
+            return { admitted, state }
+          }),
         )
 
-        const manifest = yield* store.getManifest(input.manifestID)
         const modelRef: ModelV2.Ref = {
           providerID: task.modelPolicy.providerID,
           id: task.modelPolicy.modelID,
@@ -166,6 +209,8 @@ const layer = Layer.effect(
               }),
             ),
           ),
+          Effect.mapError(() => modelResolutionError(input)),
+          (effect) => safeDefects(effect, modelResolutionError(input)),
         )
 
         if (model.provider.length > 0) state.providerID = Provider.ID.make(model.provider)
@@ -187,6 +232,16 @@ const layer = Layer.effect(
             requestID: input.requestID,
             reason: "resolved route context limit cannot satisfy the pinned reserves",
           })
+
+        const manifest = yield* store.getManifest(input.manifestID).pipe(
+          Effect.catchTag("AdaptiveStore.ManifestNotFound", () =>
+            Effect.fail(invalidManifest(input, "Manifest unavailable")),
+          ),
+          Effect.catchTag("AdaptiveStore.InvalidManifest", () =>
+            Effect.fail(invalidManifest(input, "Manifest content invalid")),
+          ),
+          (effect) => safeDefects(effect, invalidManifest(input, "Manifest content invalid")),
+        )
         if (
           manifest.estimatedTokens + task.modelPolicy.outputReserve + task.modelPolicy.safetyReserve >
           state.effectiveContextLimit
@@ -196,27 +251,27 @@ const layer = Layer.effect(
             reason: "authoritative Manifest exceeds the effective context budget",
           })
 
-        const decodeFailure = (reason: unknown) =>
-          new InvalidManifestContentError({
-            requestID: input.requestID,
-            manifestID: input.manifestID,
-            reason: String(reason),
-          })
         const messages = yield* Schema.decodeUnknownEffect(Schema.Array(Message))(manifest.messages).pipe(
-          Effect.mapError(decodeFailure),
+          Effect.mapError(() => invalidManifest(input, "Manifest content invalid")),
+          (effect) => safeDefects(effect, invalidManifest(input, "Manifest content invalid")),
         )
         const tools = yield* Schema.decodeUnknownEffect(Schema.Array(ToolDefinition))(manifest.tools).pipe(
-          Effect.mapError(decodeFailure),
+          Effect.mapError(() => invalidManifest(input, "Manifest content invalid")),
+          (effect) => safeDefects(effect, invalidManifest(input, "Manifest content invalid")),
         )
-        const request = LLM.request({
-          model,
-          system: manifest.system.map(SystemPart.make),
-          messages,
-          tools,
-          generation: { maxTokens: task.modelPolicy.outputReserve },
+        const request = yield* Effect.try({
+          try: () =>
+            LLM.request({
+              model,
+              system: manifest.system.map(SystemPart.make),
+              messages,
+              tools,
+              generation: { maxTokens: task.modelPolicy.outputReserve },
+            }),
+          catch: () => invalidManifest(input, "Manifest content invalid"),
         })
 
-        yield* audit.streaming(input.requestID)
+        yield* safeDefects(audit.streaming(input.requestID), taskStateError(input))
         state.providerStarted = true
         return llm.stream(request).pipe(
           Stream.tap((event) => Effect.sync(() => updateUsage(state, event))),

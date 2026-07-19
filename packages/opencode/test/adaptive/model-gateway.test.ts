@@ -12,6 +12,7 @@ import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { AdaptiveModelAudit } from "@opencode-ai/core/adaptive/model-audit"
 import { AdaptiveModelPolicy } from "@opencode-ai/core/adaptive/model-policy"
 import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
+import { AdaptiveContextManifestTable } from "@opencode-ai/core/adaptive/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
@@ -19,10 +20,12 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Location } from "@opencode-ai/core/location"
 import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
 import type { LocationServices } from "@opencode-ai/core/location-services"
+import { Integration } from "@opencode-ai/core/integration"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Model } from "@opencode-ai/schema/model"
 import { Provider } from "@opencode-ai/schema/provider"
+import { eq, sql } from "drizzle-orm"
 import { Deferred, Effect, Fiber, Layer, LayerMap, Stream } from "effect"
 import { AdaptiveModelGateway } from "@/adaptive/model-gateway"
 import { testEffect } from "../lib/effect"
@@ -30,6 +33,9 @@ import { testEffect } from "../lib/effect"
 const requests: LLMRequest[] = []
 const refs: Array<{ readonly directory: string; readonly input: SessionRunnerModel.RefInput }> = []
 let responses: Array<Stream.Stream<LLMEvent, LLMError>> = []
+let resolverFailure: "authorization" | "defect" | "none" = "none"
+let admitPause: Deferred.Deferred<void> | undefined
+let admitReturned: Deferred.Deferred<void> | undefined
 
 const resolvedModel = () =>
   LLMModel.make({
@@ -46,10 +52,15 @@ const modelResolver = (directory: string) =>
     SessionRunnerModel.Service.of({
       resolve: () => Effect.die("unused"),
       resolveRef: (input) =>
-        Effect.sync(() => {
-          refs.push({ directory, input })
-          return currentModel
-        }),
+        Effect.sync(() => refs.push({ directory, input })).pipe(
+          Effect.andThen(
+            resolverFailure === "authorization"
+              ? Effect.fail(new Integration.AuthorizationError({ cause: new Error("resolver-secret") }))
+              : resolverFailure === "defect"
+                ? Effect.die(new Error("resolver-secret"))
+                : Effect.succeed(currentModel),
+          ),
+        ),
     }),
   )
 
@@ -74,11 +85,35 @@ const client = Layer.succeed(
   }),
 )
 
+const database = Database.layerFromPath(":memory:")
+const realAudit = AppNodeBuilder.build(AdaptiveModelAudit.node, [[Database.node, database]])
+
+const wrappedAudit = Layer.effect(
+  AdaptiveModelAudit.Service,
+  Effect.gen(function* () {
+    const base = yield* AdaptiveModelAudit.Service
+    return AdaptiveModelAudit.Service.of({
+      ...base,
+      admit: (input) =>
+        base
+          .admit(input)
+          .pipe(
+            Effect.tap(() =>
+              admitPause === undefined || admitReturned === undefined
+                ? Effect.void
+                : Deferred.succeed(admitReturned, undefined).pipe(Effect.andThen(Deferred.await(admitPause))),
+            ),
+          ),
+    })
+  }),
+).pipe(Layer.provide(realAudit))
+
 const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([AdaptiveModelGateway.node, AdaptiveModelAudit.node, AdaptiveStore.node, Database.node]),
     [
-      [Database.node, Database.layerFromPath(":memory:")],
+      [Database.node, database],
+      [AdaptiveModelAudit.node, wrappedAudit],
       [LocationServiceMap.node, locationMap],
       [LayerNodePlatform.llmClient, client],
     ],
@@ -166,6 +201,9 @@ beforeEach(() => {
   refs.length = 0
   responses = []
   currentModel = resolvedModel()
+  resolverFailure = "none"
+  admitPause = undefined
+  admitReturned = undefined
 })
 
 describe("AdaptiveModelGateway", () => {
@@ -411,6 +449,139 @@ describe("AdaptiveModelGateway", () => {
         status: "succeeded",
         resolved: { effectiveContextLimit: 131_072 },
       })
+    }),
+  )
+
+  it.live("maps resolver defects to a safe typed error and settles the audit row", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      resolverFailure = "defect"
+      const request = input(state)
+
+      const failure = yield* Stream.runDrain((yield* AdaptiveModelGateway.Service).stream(request)).pipe(Effect.flip)
+
+      expect(failure).toMatchObject({
+        _tag: "AdaptiveModelGateway.ModelResolution",
+        requestID: request.requestID,
+        reason: "Model resolution failed",
+      })
+      expect(JSON.stringify(failure)).not.toContain("resolver-secret")
+      expect(requests).toHaveLength(0)
+      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({
+        status: "failed",
+        failure: "Model gateway rejected request before provider execution",
+        timeCompleted: expect.any(Number),
+      })
+    }),
+  )
+
+  it.live("maps resolver authorization causes to the same safe typed error", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      resolverFailure = "authorization"
+      const request = input(state)
+
+      const failure = yield* Stream.runDrain((yield* AdaptiveModelGateway.Service).stream(request)).pipe(Effect.flip)
+
+      expect(failure).toMatchObject({
+        _tag: "AdaptiveModelGateway.ModelResolution",
+        requestID: request.requestID,
+        reason: "Model resolution failed",
+      })
+      expect(JSON.stringify(failure)).not.toContain("resolver-secret")
+      expect(requests).toHaveLength(0)
+      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({
+        status: "failed",
+        timeCompleted: expect.any(Number),
+      })
+    }),
+  )
+
+  it.live("maps malformed authoritative Manifest content to a safe typed error", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      const database = yield* Database.Service
+      yield* database.db
+        .update(AdaptiveContextManifestTable)
+        .set({
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "manifest-secret" },
+                { type: "invalid", text: "manifest-secret" },
+              ],
+            },
+          ],
+        })
+        .where(eq(AdaptiveContextManifestTable.id, state.manifest.id))
+        .run()
+        .pipe(Effect.orDie)
+      const request = input(state)
+
+      const failure = yield* Stream.runDrain((yield* AdaptiveModelGateway.Service).stream(request)).pipe(Effect.flip)
+
+      expect(JSON.parse(JSON.stringify(failure))).toMatchObject({
+        _tag: "AdaptiveModelGateway.InvalidManifestContent",
+        requestID: request.requestID,
+        manifestID: state.manifest.id,
+        reason: "Manifest content invalid",
+      })
+      expect(JSON.stringify(failure)).not.toContain("manifest-secret")
+      expect(requests).toHaveLength(0)
+      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({
+        status: "failed",
+        failure: "Model gateway rejected request before provider execution",
+        timeCompleted: expect.any(Number),
+      })
+    }),
+  )
+
+  it.live("maps corrupt persisted Manifest JSON to the same safe typed error", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      const database = yield* Database.Service
+      yield* database.db
+        .update(AdaptiveContextManifestTable)
+        .set({ messages: sql`${"manifest-secret"}` })
+        .where(eq(AdaptiveContextManifestTable.id, state.manifest.id))
+        .run()
+        .pipe(Effect.orDie)
+      const request = input(state)
+
+      const failure = yield* Stream.runDrain((yield* AdaptiveModelGateway.Service).stream(request)).pipe(Effect.flip)
+
+      expect(JSON.parse(JSON.stringify(failure))).toMatchObject({
+        _tag: "AdaptiveModelGateway.InvalidManifestContent",
+        requestID: request.requestID,
+        manifestID: state.manifest.id,
+        reason: "Manifest content invalid",
+      })
+      expect(JSON.stringify(failure)).not.toContain("manifest-secret")
+      expect(requests).toHaveLength(0)
+      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({
+        status: "failed",
+        timeCompleted: expect.any(Number),
+      })
+    }),
+  )
+
+  it.live("settles after admission when interrupted during the ownership handoff", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      admitPause = yield* Deferred.make<void>()
+      admitReturned = yield* Deferred.make<void>()
+      const request = input(state)
+      const run = yield* Stream.runDrain((yield* AdaptiveModelGateway.Service).stream(request)).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      )
+      yield* Deferred.await(admitReturned)
+      yield* Fiber.interrupt(run).pipe(Effect.forkChild({ startImmediately: true }))
+      yield* Deferred.succeed(admitPause, undefined)
+      yield* Fiber.await(run)
+
+      const row = yield* state.store.getModelRequest(request.requestID)
+      expect(row).toMatchObject({ status: "interrupted", timeCompleted: expect.any(Number) })
     }),
   )
 })
