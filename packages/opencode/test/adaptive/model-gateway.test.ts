@@ -36,7 +36,8 @@ let responses: Array<Stream.Stream<LLMEvent, LLMError>> = []
 let resolverFailure: "authorization" | "defect" | "none" = "none"
 let admitPause: Deferred.Deferred<void> | undefined
 let admitReturned: Deferred.Deferred<void> | undefined
-let settleFailure: "defect" | "none" = "none"
+let settleFailure: "defect" | "once" | "none" = "none"
+let settleAttempts = 0
 let streamConstructionFailure = false
 
 const resolvedModel = () =>
@@ -107,7 +108,14 @@ const wrappedAudit = Layer.effect(
                 : Deferred.succeed(admitReturned, undefined).pipe(Effect.andThen(Deferred.await(admitPause))),
             ),
           ),
-      settle: (input) => (settleFailure === "defect" ? Effect.die(new Error("settlement-secret")) : base.settle(input)),
+      settle: (input) =>
+        Effect.sync(() => settleAttempts++).pipe(
+          Effect.flatMap(() =>
+            settleFailure === "defect" || (settleFailure === "once" && settleAttempts === 1)
+              ? Effect.die(new Error("settlement-secret"))
+              : base.settle(input),
+          ),
+        ),
     })
   }),
 ).pipe(Layer.provide(realAudit))
@@ -209,6 +217,7 @@ beforeEach(() => {
   admitPause = undefined
   admitReturned = undefined
   settleFailure = "none"
+  settleAttempts = 0
   streamConstructionFailure = false
 })
 
@@ -717,11 +726,29 @@ describe("AdaptiveModelGateway", () => {
         reason: "Model request settlement failed",
       })
       expect(JSON.stringify(failure)).not.toContain("settlement-secret")
-      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({ status: "streaming" })
+      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({
+        status: "failed",
+        failure: "Model request settlement failed",
+        timeCompleted: expect.any(Number),
+      })
       expect(yield* (yield* AdaptiveModelAudit.Service).verify(state.task.id)).toMatchObject({
         valid: false,
-        reasons: [`UNSETTLED_MODEL_REQUEST:${request.requestID}`],
+        reasons: [`SETTLEMENT_RECOVERY_REQUIRED:${request.requestID}`],
       })
+    }),
+  )
+
+  it.live("retries one transient settlement defect before returning the provider result", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      const request = input(state)
+      settleFailure = "once"
+      responses.push(Stream.make(LLMEvent.finish({ reason: "stop" })))
+
+      yield* Stream.runDrain((yield* AdaptiveModelGateway.Service).stream(request))
+
+      expect(settleAttempts).toBe(2)
+      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({ status: "succeeded" })
     }),
   )
 

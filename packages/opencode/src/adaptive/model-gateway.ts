@@ -270,17 +270,33 @@ const layer = Layer.effect(
               finished: false,
             }
             yield* Scope.addFinalizerExit(scope, (exit) =>
-              audit.settle(settlement(state, input, exit)).pipe(
-                Effect.catchCause(() =>
+              Effect.suspend(() => {
+                const value = settlement(state, input, exit)
+                const safeFailure = () =>
                   Effect.die(
                     new SettlementError({
                       requestID: input.requestID,
                       reason: "Model request settlement failed",
                     }),
-                  ),
-                ),
-                Effect.uninterruptible,
-              ),
+                  )
+                const attempt = (remaining: number): Effect.Effect<void> =>
+                  Effect.gen(function* () {
+                    const result = yield* audit.settle(value).pipe(Effect.exit)
+                    if (Exit.isSuccess(result)) return undefined
+                    if (remaining > 1) {
+                      yield* attempt(remaining - 1)
+                      return undefined
+                    }
+                    const recovery = yield* audit.settleFailed(value).pipe(Effect.exit)
+                    if (Exit.isFailure(recovery)) {
+                      yield* safeFailure()
+                      return undefined
+                    }
+                    yield* safeFailure()
+                    return undefined
+                  })
+                return attempt(3).pipe(Effect.uninterruptible)
+              }),
             )
             return { admitted, state }
           }),

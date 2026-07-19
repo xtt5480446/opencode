@@ -161,6 +161,14 @@ export interface Interface {
   readonly settle: (
     input: SettlementInput,
   ) => Effect.Effect<void, InvalidSettlementError | RequestNotFoundError | InvalidTransitionError>
+  /**
+   * Records a fixed failed terminal outcome after normal settlement has exhausted its retries.
+   * The CAS transition is identical to normal settlement; callers must still surface recovery
+   * to their owner because this outcome invalidates the provider result.
+   */
+  readonly settleFailed: (
+    input: SettlementInput,
+  ) => Effect.Effect<void, InvalidSettlementError | RequestNotFoundError | InvalidTransitionError>
   readonly verify: (taskID: AdaptiveTask.ID) => Effect.Effect<ValidityProof>
 }
 
@@ -221,7 +229,7 @@ const transitionFailure = Effect.fnUntraced(function* (
   return yield* new InvalidTransitionError({ requestID, expected, actual: row.status })
 })
 
-const invalidSettlement = (input: SettlementInput) => {
+const invalidSettlement = (input: SettlementInput): string | undefined => {
   if (input.providerID.length === 0) return "providerID must not be empty"
   if (input.modelID.length === 0) return "modelID must not be empty"
   if (input.effectiveContextLimit <= 0 || !Number.isSafeInteger(input.effectiveContextLimit))
@@ -233,6 +241,7 @@ const invalidSettlement = (input: SettlementInput) => {
     if (value !== undefined && (value < 0 || !Number.isSafeInteger(value)))
       return `${name} must be a nonnegative integer`
   }
+  return undefined
 }
 
 const layer = Layer.effect(
@@ -396,35 +405,50 @@ const layer = Layer.effect(
         .get()
         .pipe(Effect.orDie)
       if (!row) return yield* transitionFailure(requestID, "admitted", db)
+      return undefined
     })
 
+    const settleRow = (input: SettlementInput) =>
+      Effect.gen(function* () {
+        const invalid = invalidSettlement(input)
+        if (invalid) return yield* new InvalidSettlementError({ requestID: input.requestID, reason: invalid })
+        const now = yield* Clock.currentTimeMillis
+        const row = yield* db
+          .update(AdaptiveModelRequestTable)
+          .set({
+            resolved_provider_id: input.providerID,
+            resolved_model_id: input.modelID,
+            resolved_variant: input.variant ?? null,
+            resolved_effective_context_limit: input.effectiveContextLimit,
+            status: input.status,
+            input_tokens: input.inputTokens ?? null,
+            output_tokens: input.outputTokens ?? null,
+            failure: input.failure ?? null,
+            time_completed: now,
+          })
+          .where(
+            and(
+              eq(AdaptiveModelRequestTable.id, input.requestID),
+              inArray(AdaptiveModelRequestTable.status, ["admitted", "streaming"]),
+            ),
+          )
+          .returning({ id: AdaptiveModelRequestTable.id })
+          .get()
+          .pipe(Effect.orDie)
+        if (!row) return yield* transitionFailure(input.requestID, "admitted|streaming", db)
+        return undefined
+      })
+
     const settle = Effect.fn("AdaptiveModelAudit.settle")(function* (input: SettlementInput) {
-      const invalid = invalidSettlement(input)
-      if (invalid) return yield* new InvalidSettlementError({ requestID: input.requestID, reason: invalid })
-      const now = yield* Clock.currentTimeMillis
-      const row = yield* db
-        .update(AdaptiveModelRequestTable)
-        .set({
-          resolved_provider_id: input.providerID,
-          resolved_model_id: input.modelID,
-          resolved_variant: input.variant ?? null,
-          resolved_effective_context_limit: input.effectiveContextLimit,
-          status: input.status,
-          input_tokens: input.inputTokens ?? null,
-          output_tokens: input.outputTokens ?? null,
-          failure: input.failure ?? null,
-          time_completed: now,
-        })
-        .where(
-          and(
-            eq(AdaptiveModelRequestTable.id, input.requestID),
-            inArray(AdaptiveModelRequestTable.status, ["admitted", "streaming"]),
-          ),
-        )
-        .returning({ id: AdaptiveModelRequestTable.id })
-        .get()
-        .pipe(Effect.orDie)
-      if (!row) return yield* transitionFailure(input.requestID, "admitted|streaming", db)
+      yield* settleRow(input)
+    })
+
+    const settleFailed = Effect.fn("AdaptiveModelAudit.settleFailed")(function* (input: SettlementInput) {
+      yield* settleRow({
+        ...input,
+        status: "failed",
+        failure: "Model request settlement failed",
+      })
     })
 
     const verify = Effect.fn("AdaptiveModelAudit.verify")(function* (taskID: AdaptiveTask.ID) {
@@ -465,6 +489,11 @@ const layer = Layer.effect(
         ...ordered
           .filter((request) => request.status === "admitted" || request.status === "streaming")
           .map((request) => `UNSETTLED_MODEL_REQUEST:${request.id}`),
+      )
+      reasons.push(
+        ...ordered
+          .filter((request) => request.failure === "Model request settlement failed")
+          .map((request) => `SETTLEMENT_RECOVERY_REQUIRED:${request.id}`),
       )
 
       const terminal = ordered.filter(
@@ -527,16 +556,28 @@ const layer = Layer.effect(
           reasons,
           requests: ordered.length,
         }
+      const firstObserved = observed[0]
+      if (
+        firstObserved === undefined ||
+        firstObserved.resolved_provider_id === null ||
+        firstObserved.resolved_model_id === null
+      )
+        return {
+          valid: false as const,
+          code: "INVALID_MODEL_MIXING" as const,
+          reasons: ["MISSING_RESOLVED_MODEL_OBSERVATION"],
+          requests: ordered.length,
+        }
       return {
         valid: true as const,
-        providerID: observed[0]!.resolved_provider_id!,
-        modelID: observed[0]!.resolved_model_id!,
+        providerID: firstObserved.resolved_provider_id,
+        modelID: firstObserved.resolved_model_id,
         policyHash: taskPolicy!.hash,
         requests: ordered.length,
       }
     })
 
-    return Service.of({ admit, streaming, settle, verify })
+    return Service.of({ admit, streaming, settle, settleFailed, verify })
   }),
 )
 
