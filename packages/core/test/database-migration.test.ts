@@ -121,6 +121,11 @@ describe("DatabaseMigration", () => {
             sql`SELECT name FROM pragma_table_info('session_context_epoch') WHERE name IN ('agent', 'replacement_seq', 'revision')`,
           ),
         ).toBeUndefined()
+        expect(
+          (yield* db.all<{ name: string }>(sql`PRAGMA table_info(adaptive_model_request)`))
+            .map((column) => column.name)
+            .filter((name) => name.startsWith("resolved_")),
+        ).toEqual(["resolved_provider_id", "resolved_model_id", "resolved_variant", "resolved_effective_context_limit"])
         expect(yield* db.get(sql`SELECT count(*) as count FROM migration`)).toEqual({ count: migrations.length })
         expect(
           yield* db.all(
@@ -180,6 +185,128 @@ describe("DatabaseMigration", () => {
           yield* db.get(sql`SELECT id FROM migration WHERE id = ${adaptiveRuntimeFoundationMigration.id}`),
         ).toEqual({ id: adaptiveRuntimeFoundationMigration.id })
         expect(yield* db.get(sql`SELECT count(*) AS count FROM migration`)).toEqual({ count: migrations.length })
+      }),
+    )
+  })
+
+  test("adds resolved model observations to an existing T03 request without losing policy data", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`PRAGMA foreign_keys = ON`)
+        yield* DatabaseMigration.applyOnly(db, [adaptiveRuntimeFoundationMigration])
+        yield* db.run(sql`
+          INSERT INTO adaptive_task (
+            id, directory, mode, status, requirement, provider_id, model_id, variant,
+            effective_context_limit, output_reserve, safety_reserve, model_policy_hash,
+            roadmap_revision, base_snapshot_hash, time_created, time_updated
+          ) VALUES (
+            'adt_existing', '/workspace', 'benchmark', 'running', 'existing task',
+            'openai-compatible', 'kimi-k2', 'default', 100, 10, 5,
+            ${`sha256:${"a".repeat(64)}`}, 0, 'git:existing', 1, 1
+          )
+        `)
+        yield* db.run(sql`
+          INSERT INTO adaptive_agent_process (
+            id, task_id, role, generation, state, owner, pid, lease_expires_at, time_created, time_updated
+          ) VALUES ('ada_existing', 'adt_existing', 'implementation', 1, 'running', 'controller', 1, 1000, 1, 1)
+        `)
+        yield* db.run(sql`
+          INSERT INTO adaptive_context_manifest (
+            id, task_id, agent_id, generation, purpose, system, messages, tools, components,
+            estimated_tokens, request_hash, time_created
+          ) VALUES (
+            'acm_existing', 'adt_existing', 'ada_existing', 1, 'existing', '[]', '[]', '[]', '[]',
+            10, 'sha256:manifest', 1
+          )
+        `)
+        yield* db.run(sql`
+          INSERT INTO adaptive_model_request (
+            id, task_id, agent_id, generation, manifest_id, retry_of, provider_id, model_id, variant,
+            effective_context_limit, output_reserve, safety_reserve, model_policy_hash,
+            status, input_tokens, output_tokens, failure, time_created, time_completed
+          ) VALUES (
+            'adr_a', 'adt_existing', 'ada_existing', 1, 'acm_existing', NULL,
+            'openai-compatible', 'kimi-k2', 'default', 100, 10, 5,
+            ${`sha256:${"a".repeat(64)}`}, 'failed', 8, 2, 'retryable', 1, 2
+          ), (
+            'adr_b', 'adt_existing', 'ada_existing', 1, 'acm_existing', 'adr_a',
+            'openai-compatible', 'kimi-k2', 'default', 100, 10, 5,
+            ${`sha256:${"a".repeat(64)}`}, 'succeeded', 9, 3, NULL, 3, 4
+          )
+        `)
+
+        yield* DatabaseMigration.applyOnly(db, migrations)
+
+        expect(
+          yield* db.all(sql`
+            SELECT
+              id,
+              retry_of,
+              provider_id,
+              model_id,
+              variant,
+              effective_context_limit,
+              model_policy_hash,
+              status,
+              input_tokens,
+              output_tokens,
+              failure,
+              time_created,
+              time_completed,
+              resolved_provider_id,
+              resolved_model_id,
+              resolved_variant,
+              resolved_effective_context_limit
+            FROM adaptive_model_request
+            ORDER BY id
+          `),
+        ).toEqual([
+          {
+            id: "adr_a",
+            retry_of: null,
+            provider_id: "openai-compatible",
+            model_id: "kimi-k2",
+            variant: "default",
+            effective_context_limit: 100,
+            model_policy_hash: `sha256:${"a".repeat(64)}`,
+            status: "failed",
+            input_tokens: 8,
+            output_tokens: 2,
+            failure: "retryable",
+            time_created: 1,
+            time_completed: 2,
+            resolved_provider_id: null,
+            resolved_model_id: null,
+            resolved_variant: null,
+            resolved_effective_context_limit: null,
+          },
+          {
+            id: "adr_b",
+            retry_of: "adr_a",
+            provider_id: "openai-compatible",
+            model_id: "kimi-k2",
+            variant: "default",
+            effective_context_limit: 100,
+            model_policy_hash: `sha256:${"a".repeat(64)}`,
+            status: "succeeded",
+            input_tokens: 9,
+            output_tokens: 3,
+            failure: null,
+            time_created: 3,
+            time_completed: 4,
+            resolved_provider_id: null,
+            resolved_model_id: null,
+            resolved_variant: null,
+            resolved_effective_context_limit: null,
+          },
+        ])
+        expect(yield* db.all(sql`PRAGMA foreign_key_check`)).toEqual([])
+        expect(
+          (yield* db.all<{ from: string; table: string }>(sql`PRAGMA foreign_key_list(adaptive_model_request)`)).find(
+            (foreignKey) => foreignKey.from === "retry_of",
+          ),
+        ).toMatchObject({ table: "adaptive_model_request" })
       }),
     )
   })

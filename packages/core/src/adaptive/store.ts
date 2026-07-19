@@ -111,11 +111,19 @@ export interface ModelRequestInput {
 
 export interface ModelRequestRecord extends ModelRequestInput {
   readonly status: AdaptiveModelRequestStatus
+  readonly resolved?: ResolvedModel
   readonly inputTokens?: number
   readonly outputTokens?: number
   readonly failure?: string
   readonly timeCreated: number
   readonly timeCompleted?: number
+}
+
+export interface ResolvedModel {
+  readonly providerID: Provider.ID
+  readonly modelID: Model.ID
+  readonly variant?: Model.VariantID
+  readonly effectiveContextLimit: number
 }
 
 export interface ModelRequestSettlement {
@@ -424,6 +432,18 @@ const requestRecord = (row: typeof AdaptiveModelRequestTable.$inferSelect): Mode
     hash: row.model_policy_hash,
   })
   AdaptiveModelPolicy.assertEqual(modelPolicy, modelPolicy)
+  const hasResolved =
+    row.resolved_provider_id !== null ||
+    row.resolved_model_id !== null ||
+    row.resolved_variant !== null ||
+    row.resolved_effective_context_limit !== null
+  if (
+    hasResolved &&
+    (row.resolved_provider_id === null ||
+      row.resolved_model_id === null ||
+      row.resolved_effective_context_limit === null)
+  )
+    throw new Error("Model Request has an incomplete resolved observation")
   return {
     id: row.id,
     taskID: row.task_id,
@@ -433,6 +453,16 @@ const requestRecord = (row: typeof AdaptiveModelRequestTable.$inferSelect): Mode
     ...(row.retry_of === null ? {} : { retryOf: row.retry_of }),
     modelPolicy,
     status: row.status,
+    ...(hasResolved
+      ? {
+          resolved: {
+            providerID: Provider.ID.make(row.resolved_provider_id!),
+            modelID: Model.ID.make(row.resolved_model_id!),
+            ...(row.resolved_variant === null ? {} : { variant: Model.VariantID.make(row.resolved_variant) }),
+            effectiveContextLimit: row.resolved_effective_context_limit!,
+          },
+        }
+      : {}),
     ...(row.input_tokens === null ? {} : { inputTokens: row.input_tokens }),
     ...(row.output_tokens === null ? {} : { outputTokens: row.output_tokens }),
     ...(row.failure === null ? {} : { failure: row.failure }),
