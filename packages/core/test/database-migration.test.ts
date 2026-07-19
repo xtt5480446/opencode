@@ -76,6 +76,46 @@ describe("DatabaseMigration", () => {
           yield* db.get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_context_epoch'`),
         ).toEqual({ name: "session_context_epoch" })
         expect(
+          yield* db.all(sql`
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN (
+                'adaptive_task',
+                'adaptive_agent_process',
+                'adaptive_context_manifest',
+                'adaptive_model_request'
+              )
+            ORDER BY name
+          `),
+        ).toEqual([
+          { name: "adaptive_agent_process" },
+          { name: "adaptive_context_manifest" },
+          { name: "adaptive_model_request" },
+          { name: "adaptive_task" },
+        ])
+        expect(
+          yield* db.all(sql`
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name IN (
+                'adaptive_task_directory_idx',
+                'adaptive_agent_task_state_idx',
+                'adaptive_manifest_agent_time_idx',
+                'adaptive_model_request_task_idx',
+                'adaptive_model_request_agent_idx'
+              )
+            ORDER BY name
+          `),
+        ).toEqual([
+          { name: "adaptive_agent_task_state_idx" },
+          { name: "adaptive_manifest_agent_time_idx" },
+          { name: "adaptive_model_request_agent_idx" },
+          { name: "adaptive_model_request_task_idx" },
+          { name: "adaptive_task_directory_idx" },
+        ])
+        expect(
           yield* db.get(
             sql`SELECT name FROM pragma_table_info('session_context_epoch') WHERE name IN ('agent', 'replacement_seq', 'revision')`,
           ),
