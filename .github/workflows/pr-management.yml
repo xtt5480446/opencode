@@ -6,7 +6,8 @@ on:
 
 jobs:
   check-duplicates:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: github.repository == 'anomalyco/opencode'
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: write

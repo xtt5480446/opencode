@@ -5,6 +5,7 @@ on:
     branches:
       - dev
   pull_request:
+    branches: ["stage-*"]
   workflow_dispatch:
 
 concurrency:
@@ -21,16 +22,42 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  adaptive:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Test Adaptive Task schema
+        working-directory: packages/schema
+        run: bun test ./test/adaptive-task.test.ts
+
+      - name: Test Adaptive Core foundation
+        working-directory: packages/core
+        run: bun test ./test/adaptive ./test/database-migration.test.ts
+
+      - name: Typecheck Adaptive Core foundation
+        working-directory: packages/core
+        run: bun run typecheck
+
   unit:
+    if: github.event_name != 'pull_request'
     name: unit (${{ matrix.settings.name }})
     strategy:
       fail-fast: false
       matrix:
         settings:
           - name: linux
-            host: blacksmith-4vcpu-ubuntu-2404
+            host: ubuntu-24.04
           - name: windows
-            host: blacksmith-4vcpu-windows-2025
+            host: windows-2025
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
@@ -80,15 +107,16 @@ jobs:
         run: bun run test:httpapi
 
   e2e:
+    if: github.event_name != 'pull_request'
     name: e2e (${{ matrix.settings.name }})
     strategy:
       fail-fast: false
       matrix:
         settings:
           - name: linux
-            host: blacksmith-4vcpu-ubuntu-2404
+            host: ubuntu-24.04
           - name: windows
-            host: blacksmith-4vcpu-windows-2025
+            host: windows-2025
     runs-on: ${{ matrix.settings.host }}
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
