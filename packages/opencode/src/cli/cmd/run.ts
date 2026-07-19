@@ -19,7 +19,7 @@ import { pathToFileURL } from "url"
 import { open } from "node:fs/promises"
 import { Effect } from "effect"
 import { UI } from "../ui"
-import { effectCmd } from "../effect-cmd"
+import { CliError, effectCmd } from "../effect-cmd"
 import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
 import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2"
@@ -144,6 +144,12 @@ export const RunCommand = effectCmd({
         describe: "the command to run, use message for args",
         type: "string",
       })
+      .option("runtime", {
+        type: "string",
+        choices: ["baseline", "adaptive"] as const,
+        default: "baseline" as const,
+        describe: "agent runtime",
+      })
       .option("continue", {
         alias: ["c"],
         describe: "continue the last session",
@@ -261,6 +267,41 @@ export const RunCommand = effectCmd({
         describe: "enable direct interactive demo slash commands; pass one as the message to run it immediately",
       }),
   handler: Effect.fn("Cli.run")(function* (args) {
+    if (args.runtime === "adaptive") {
+      const { AdaptiveController } = yield* Effect.promise(() => import("@/adaptive/controller"))
+      const controller = yield* AdaptiveController.Service
+      const incompatible = args.continue
+        ? "continue"
+        : args.session
+          ? "session"
+          : args.fork
+            ? "fork"
+            : args.command
+              ? "command"
+              : args.share
+                ? "share"
+                : args.attach
+                  ? "attach"
+                  : args.interactive || args.mini
+                    ? "interactive"
+                    : undefined
+      const result = yield* Effect.scoped(controller.start({
+        directory: process.cwd(),
+        requirement: [...args.message, ...(args["--"] || [])].join(" "),
+        mode: "normal",
+        requestedModel: (() => {
+          const value = args.model ?? ""
+          const [providerID, ...rest] = value.split("/")
+          return { providerID, modelID: rest.join("/"), ...(args.variant ? { variant: args.variant } : {}) }
+        })(),
+        ...(incompatible ? { incompatible } : {}),
+      })).pipe(Effect.catch(() => Effect.succeed({ taskID: "adt_unavailable", status: "planning" as const })))
+      const taskID = result.taskID
+      const event = { type: "adaptive.task.created", taskID, status: result.status }
+      if (args.format === "json") process.stdout.write(JSON.stringify(event) + EOL)
+      else process.stdout.write(`Adaptive Task ${taskID} (${result.status})${EOL}`)
+      return
+    }
     const { Agent } = yield* Effect.promise(() => import("@/agent/agent"))
     const { RuntimeFlags } = yield* Effect.promise(() => import("@/effect/runtime-flags"))
     const { InstanceRef } = yield* Effect.promise(() => import("@/effect/instance-ref"))
@@ -1007,5 +1048,6 @@ export async function runMini(input: MiniCommandInput) {
     "dangerously-skip-permissions": false,
     dangerouslySkipPermissions: false,
     demo: input.demo ?? false,
+    runtime: "baseline",
   })
 }

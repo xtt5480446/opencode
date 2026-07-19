@@ -58,6 +58,7 @@ import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
 import { AdaptiveModelAudit } from "@opencode-ai/core/adaptive/model-audit"
 import { AdaptiveModelGateway } from "@/adaptive/model-gateway"
 import { AdaptiveProcessSupervisor } from "@/adaptive/process/supervisor"
+import { AdaptiveController } from "@/adaptive/controller"
 
 export const AppLayer = AppNodeBuilderV1.build(
   LayerNode.group([
@@ -68,6 +69,7 @@ export const AppLayer = AppNodeBuilderV1.build(
     AdaptiveModelAudit.node,
     AdaptiveModelGateway.node,
     AdaptiveProcessSupervisor.node,
+    AdaptiveController.node,
     Auth.node,
     Account.node,
     Config.node,

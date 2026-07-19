@@ -30,6 +30,7 @@ import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
 import { AdaptiveAgentCommand, runAdaptiveAgent } from "./cli/cmd/adaptive-agent"
+import { AdaptiveCommand } from "./cli/cmd/adaptive"
 
 const args = hideBin(process.argv)
 
@@ -85,6 +86,7 @@ const cli = yargs(args)
   .usage("")
   .completion("completion", "generate shell completion script")
   .command(AdaptiveAgentCommand)
+  .command(AdaptiveCommand)
   .command(AcpCommand)
   .command(McpCommand)
   .command(TuiThreadCommand)

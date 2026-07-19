@@ -55,6 +55,7 @@ Tutorial 与实现位于同一个 Task、Issue 和 PR 中，是 Definition of Do
 | S01-T06 | [有界 Agent 进程协议](./s01-t06-bounded-process-protocol.md)                | LF-only NDJSON、严格 handshake、heartbeat 与有界 child RPC          | 已完成，随任务 PR 交付 |
 | S01-T07 | [凭据隔离的 Agent 进程监督](./s01-t07-process-supervision.md)               | 默认拒绝 child 环境、generation/lease 监督与 process-group cleanup  | 已完成，随任务 PR 交付 |
 | S01-T08 | [带审计的模型网关](./s01-t08-model-gateway.md)                              | 权威 Manifest 单轮 streaming、模型一致性与 terminal audit           | 已完成，随任务 PR 交付 |
+| S01-T09 | [Controller bootstrap 与 CLI runtime 隔离](./s01-t09-controller-bootstrap.md) | Adaptive 分支、管理命令与 Coordinator bootstrap 基础                  | 开发中 |
 
 后续教程会继续按依赖顺序加入本索引，而不是按文档创建时间排列。
 
