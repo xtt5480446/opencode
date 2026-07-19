@@ -34,8 +34,11 @@ export interface Clock {
 export interface RoleContext {
   readonly identity: Identity
   readonly shutdown: Promise<string>
-  readonly modelStream: (payload: unknown, onEvent?: (payload: unknown) => void) => Promise<unknown>
-  readonly complete: (payload: unknown) => Promise<unknown>
+  readonly modelStream: (
+    payload: AgentProcessProtocol.JsonValue,
+    onEvent?: (payload: AgentProcessProtocol.JsonValue) => void,
+  ) => Promise<unknown>
+  readonly complete: (payload: AgentProcessProtocol.JsonValue) => Promise<unknown>
 }
 
 export interface RunOptions {
@@ -57,20 +60,21 @@ export interface RpcClientOptions {
 }
 
 export interface RequestOptions {
-  readonly onEvent?: (payload: unknown) => void
+  readonly onEvent?: (payload: AgentProcessProtocol.JsonValue) => void
 }
 
 interface PendingCall {
   readonly method: "model.stream" | "process.complete"
   readonly resolve: (payload: unknown) => void
   readonly reject: (error: unknown) => void
-  readonly onEvent?: (payload: unknown) => void
+  readonly onEvent?: (payload: AgentProcessProtocol.JsonValue) => void
 }
 
 export class RpcClient {
   readonly #options: RpcClientOptions
   readonly #pending = new Map<string, PendingCall>()
   #completeAcknowledged = false
+  #closed = false
 
   constructor(options: RpcClientOptions) {
     this.#options = options
@@ -84,7 +88,17 @@ export class RpcClient {
     return this.#completeAcknowledged
   }
 
-  request(method: "model.stream" | "process.complete", payload: unknown, options: RequestOptions = {}) {
+  request(
+    method: "model.stream" | "process.complete",
+    payload: AgentProcessProtocol.JsonValue,
+    options: RequestOptions = {},
+  ) {
+    if (this.#closed) {
+      throw new AgentProcessProtocol.ProtocolError({
+        code: "INVALID_FRAME",
+        message: "Adaptive process RPC client is closed",
+      })
+    }
     if (this.#pending.size >= AgentProcessProtocol.MAX_OUTSTANDING_RPC_CALLS) {
       throw new AgentProcessProtocol.ProtocolError({
         code: "RPC_LIMIT",
@@ -130,6 +144,8 @@ export class RpcClient {
   }
 
   close(error: unknown) {
+    if (this.#closed) return
+    this.#closed = true
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
   }
@@ -168,7 +184,11 @@ export function parseArgv(argv: readonly string[]): Identity {
 export async function run(options: RunOptions): Promise<ExitCode> {
   let iterator: AsyncIterator<Uint8Array> | undefined
   let heartbeat: unknown
+  let heartbeatWrite: Promise<void> | undefined
   let rpc: RpcClient | undefined
+  let shutdown: ReturnType<typeof deferred<string>> | undefined
+  let stopping = false
+  let result: ExitCode
   try {
     const identity = parseArgv(options.argv)
     iterator = options.transport.input[Symbol.asyncIterator]()
@@ -182,36 +202,48 @@ export async function run(options: RunOptions): Promise<ExitCode> {
     const accepted = await waitForAccepted(reader, options.clock)
     await write(options.transport, { v: AgentProcessProtocol.VERSION, id: options.nextID(), type: "ready" })
 
-    const shutdown = deferred<string>()
+    const roleShutdown = deferred<string>()
+    shutdown = roleShutdown
     const internalFault = deferred<never>()
     rpc = makeRpcClient({
       nextID: options.nextID,
       send: (frame) => write(options.transport, frame),
     })
     heartbeat = options.clock.setInterval(() => {
-      void Promise.resolve()
-        .then(() =>
-          write(options.transport, {
-            v: AgentProcessProtocol.VERSION,
-            id: options.nextID(),
-            type: "heartbeat",
-          }),
-        )
-        .catch((error) => internalFault.reject(error))
+      if (stopping || heartbeatWrite) return
+      const current = Promise.resolve().then(() =>
+        stopping
+          ? undefined
+          : write(options.transport, {
+              v: AgentProcessProtocol.VERSION,
+              id: options.nextID(),
+              type: "heartbeat",
+            }),
+      )
+      heartbeatWrite = current
+      void current.then(
+        () => {
+          if (heartbeatWrite === current) heartbeatWrite = undefined
+        },
+        (error) => {
+          if (heartbeatWrite === current) heartbeatWrite = undefined
+          internalFault.reject(error)
+        },
+      )
     }, accepted.heartbeatMs)
 
-    const reading = readController(reader, rpc, shutdown)
+    const reading = readController(reader, rpc, roleShutdown)
     const role = Promise.resolve().then(() =>
       options.runRole({
         identity,
-        shutdown: shutdown.promise,
+        shutdown: roleShutdown.promise,
         modelStream: (payload, onEvent) => rpc!.request("model.stream", payload, { onEvent }),
         complete: (payload) => rpc!.request("process.complete", payload),
       }),
     )
-    const result = await Promise.race([
+    result = await Promise.race([
       role.then(
-        () => (rpc!.completeAcknowledged ? EXIT_OK : shutdown.settled ? EXIT_PROTOCOL : EXIT_INTERNAL),
+        () => (rpc!.completeAcknowledged ? EXIT_OK : roleShutdown.settled ? EXIT_PROTOCOL : EXIT_INTERNAL),
         () => EXIT_INTERNAL,
       ),
       reading.then(
@@ -223,14 +255,46 @@ export async function run(options: RunOptions): Promise<ExitCode> {
         () => EXIT_INTERNAL,
       ),
     ])
-    return result
   } catch (error) {
-    return error instanceof AgentProcessProtocol.ProtocolError ? EXIT_PROTOCOL : EXIT_INTERNAL
-  } finally {
-    if (heartbeat !== undefined) options.clock.clearInterval(heartbeat)
-    rpc?.close(new AgentProcessProtocol.ProtocolError({ code: "INVALID_FRAME", message: "Adaptive process stopped" }))
-    await options.transport.cancelInput()
-    await iterator?.return?.()
+    result = error instanceof AgentProcessProtocol.ProtocolError ? EXIT_PROTOCOL : EXIT_INTERNAL
+  }
+  stopping = true
+  const activeHeartbeat = heartbeatWrite
+  const rpcCloseFailed = closeRpc(rpc)
+  shutdown?.resolve("Adaptive process stopped")
+  const cleanupFailed = await cleanup(options, heartbeat, activeHeartbeat, iterator)
+  return result === EXIT_OK && (rpcCloseFailed || cleanupFailed) ? EXIT_INTERNAL : result
+}
+
+async function cleanup(
+  options: RunOptions,
+  heartbeat: unknown,
+  heartbeatWrite: Promise<void> | undefined,
+  iterator: AsyncIterator<Uint8Array> | undefined,
+) {
+  let failed = false
+  const attempt = async (run: () => unknown) => {
+    try {
+      await run()
+    } catch {
+      failed = true
+    }
+  }
+
+  if (heartbeat !== undefined) await attempt(() => options.clock.clearInterval(heartbeat))
+  if (heartbeatWrite) await attempt(() => heartbeatWrite)
+  await attempt(() => options.transport.cancelInput())
+  if (iterator?.return) await attempt(() => iterator.return!())
+  return failed
+}
+
+function closeRpc(rpc: RpcClient | undefined) {
+  if (!rpc) return false
+  try {
+    rpc.close(new AgentProcessProtocol.ProtocolError({ code: "INVALID_FRAME", message: "Adaptive process stopped" }))
+    return false
+  } catch {
+    return true
   }
 }
 

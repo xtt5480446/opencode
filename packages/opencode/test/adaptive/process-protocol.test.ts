@@ -174,18 +174,50 @@ describe("adaptive agent process protocol codec", () => {
     })
   })
 
-  test("rejects payload values that JSON cannot preserve", () => {
-    expectProtocolError(
-      () =>
-        AgentProcessProtocol.encode({
-          v: 1,
-          id: "request-1",
-          type: "rpc.request",
-          method: "model.stream",
-          payload: undefined,
-        }),
-      { code: "INVALID_FRAME", message: "Invalid adaptive process frame" },
-    )
+  test("rejects payload values that JSON would silently transform", () => {
+    const sparse = new Array(2)
+    sparse[1] = "present"
+    const invalid = [
+      {
+        v: 1,
+        id: "request-1",
+        type: "rpc.request",
+        method: "model.stream",
+        payload: { nested: undefined, secret: "nested-undefined-secret" },
+      },
+      {
+        v: 1,
+        id: "response-1",
+        type: "rpc.response",
+        requestID: "request-1",
+        payload: Number.NaN,
+      },
+      {
+        v: 1,
+        id: "event-1",
+        type: "rpc.event",
+        requestID: "request-1",
+        payload: sparse,
+      },
+      {
+        v: 1,
+        id: "request-2",
+        type: "rpc.request",
+        method: "model.stream",
+        payload: {
+          secret: "custom-serialization-secret",
+          toJSON: () => ({ changed: true }),
+        },
+      },
+    ]
+
+    for (const frame of invalid) {
+      expectProtocolError(() => AgentProcessProtocol.encode(frame as AgentProcessProtocol.Frame), {
+        code: "INVALID_FRAME",
+        message: "Invalid adaptive process frame",
+        absent: "secret",
+      })
+    }
   })
 })
 
@@ -247,6 +279,25 @@ describe("adaptive child RPC state", () => {
     await expect(failed).rejects.toEqual(
       expect.objectContaining({ _tag: "AdaptiveProcessRemoteRpcError", code: "MODEL_FAILED" }),
     )
+    expect(rpc.outstanding).toBe(0)
+  })
+
+  test("makes close terminal before request allocation or send", () => {
+    const sent: AgentProcessProtocol.ChildToController[] = []
+    let allocations = 0
+    const rpc = AgentEntry.makeRpcClient({
+      send: (frame) => sent.push(frame),
+      nextID: () => `request-${allocations++}`,
+    })
+
+    rpc.close(new Error("stopped"))
+
+    expectProtocolError(() => rpc.request("model.stream", { late: true }), {
+      code: "INVALID_FRAME",
+      message: "Adaptive process RPC client is closed",
+    })
+    expect(allocations).toBe(0)
+    expect(sent).toEqual([])
     expect(rpc.outstanding).toBe(0)
   })
 })
@@ -311,6 +362,80 @@ describe("adaptive child entry loop", () => {
     expect(settledWithoutTestCleanup).toBe(true)
     expect(cancelCalls).toBe(1)
     expect(input.returnCalled).toBe(true)
+  })
+
+  test("preserves protocol exit and returns the iterator when input cancellation rejects", async () => {
+    const harness = makeHarness()
+    const running = AgentEntry.run({
+      argv: validArgv(),
+      transport: {
+        ...harness.transport,
+        cancelInput: () => {
+          harness.input.close()
+          return Promise.reject(new Error("cancel failed"))
+        },
+      },
+      clock: harness.clock,
+      nextID: harness.nextID,
+      runRole: async () => undefined,
+    })
+    await harness.output.take()
+    harness.clock.advance(AgentEntry.ACCEPTED_TIMEOUT_MS)
+
+    expect(await resolvedOutcome(running)).toBe(64)
+    expect(harness.input.returnCalls).toBe(1)
+  })
+
+  test("preserves internal exit when input cancellation rejects", async () => {
+    const harness = makeHarness()
+    const running = AgentEntry.run({
+      argv: validArgv(),
+      transport: {
+        ...harness.transport,
+        cancelInput: () => {
+          harness.input.close()
+          return Promise.reject(new Error("cancel failed"))
+        },
+      },
+      clock: harness.clock,
+      nextID: harness.nextID,
+      runRole: async () => {
+        throw new Error("role failed")
+      },
+    })
+    await harness.output.take()
+    harness.send({ v: 1, id: "accepted-1", type: "accepted", heartbeatMs: 25 })
+    await harness.output.take()
+
+    expect(await resolvedOutcome(running)).toBe(70)
+    expect(harness.input.returnCalls).toBe(1)
+  })
+
+  test("maps iterator cleanup rejection after acknowledged completion to exit 70", async () => {
+    const harness = makeHarness({ returnError: new Error("iterator return failed") })
+    const running = AgentEntry.run({
+      argv: validArgv(),
+      transport: harness.transport,
+      clock: harness.clock,
+      nextID: harness.nextID,
+      runRole: async (context) => {
+        await context.complete({ status: "done" })
+      },
+    })
+    await harness.output.take()
+    harness.send({ v: 1, id: "accepted-1", type: "accepted", heartbeatMs: 25 })
+    await harness.output.take()
+    const completion = await harness.output.take()
+    harness.send({
+      v: 1,
+      id: "response-1",
+      type: "rpc.response",
+      requestID: completion.id,
+      payload: { acknowledged: true },
+    })
+
+    expect(await resolvedOutcome(running)).toBe(70)
+    expect(harness.input.returnCalls).toBe(1)
   })
 
   test("rejects invalid or expanded argv without sending hello", async () => {
@@ -466,6 +591,59 @@ describe("adaptive child entry loop", () => {
     expect(harness.input.returned).toBe(true)
   })
 
+  test("keeps one heartbeat write in flight and settles it before teardown completes", async () => {
+    const harness = makeHarness()
+    let settleHeartbeat!: () => void
+    const heartbeatWrite = new Promise<void>((resolve) => {
+      settleHeartbeat = resolve
+    })
+    let heartbeatWrites = 0
+    const running = AgentEntry.run({
+      argv: validArgv(),
+      transport: {
+        input: harness.input,
+        cancelInput: () => harness.input.close(),
+        write: (chunk) => {
+          const frame = AgentProcessProtocol.decode(chunk, "child-to-controller")
+          if (frame.type === "heartbeat") {
+            heartbeatWrites++
+            return heartbeatWrite
+          }
+          harness.output.push(frame)
+        },
+      },
+      clock: harness.clock,
+      nextID: harness.nextID,
+      runRole: async (context) => {
+        await context.shutdown
+      },
+    })
+    await harness.output.take()
+    harness.send({ v: 1, id: "accepted-1", type: "accepted", heartbeatMs: 25 })
+    await harness.output.take()
+    await flushMicrotasks()
+    harness.clock.advance(125)
+    await flushMicrotasks()
+    const writesWhilePending = heartbeatWrites
+    harness.send({
+      v: 1,
+      id: "response-1",
+      type: "rpc.response",
+      requestID: "missing",
+      payload: null,
+    })
+    await flushMicrotasks()
+    const settledBeforeHeartbeat = await isSettled(running)
+    settleHeartbeat()
+
+    expect(await running).toBe(64)
+    harness.clock.advance(100)
+    await flushMicrotasks()
+    expect(writesWhilePending).toBe(1)
+    expect(settledBeforeHeartbeat).toBe(false)
+    expect(heartbeatWrites).toBe(1)
+  })
+
   test("delivers shutdown to the role loop and exits nonzero before completion", async () => {
     const harness = makeHarness()
     let reason: string | undefined
@@ -487,6 +665,42 @@ describe("adaptive child entry loop", () => {
     expect(reason).toBe("controller stopped")
     expect(harness.clock.activeCount).toBe(0)
     expect(harness.input.returned).toBe(true)
+  })
+
+  test("signals and closes a losing role before it can send a delayed request", async () => {
+    const harness = makeHarness()
+    let shutdownReason: string | undefined
+    let delayedError: unknown
+    const running = AgentEntry.run({
+      argv: validArgv(),
+      transport: harness.transport,
+      clock: harness.clock,
+      nextID: harness.nextID,
+      runRole: async (context) => {
+        shutdownReason = await context.shutdown
+        try {
+          await context.modelStream({ late: true })
+        } catch (error) {
+          delayedError = error
+        }
+      },
+    })
+    await harness.output.take()
+    harness.send({ v: 1, id: "accepted-1", type: "accepted", heartbeatMs: 25 })
+    await harness.output.take()
+    harness.send({
+      v: 1,
+      id: "response-1",
+      type: "rpc.response",
+      requestID: "missing",
+      payload: null,
+    })
+
+    expect(await running).toBe(64)
+    await flushMicrotasks()
+    expect(shutdownReason).toBe("Adaptive process stopped")
+    expect(delayedError).toBeInstanceOf(AgentProcessProtocol.ProtocolError)
+    expect(harness.output.size).toBe(0)
   })
 })
 
@@ -528,7 +742,13 @@ class AsyncQueue<T> implements AsyncIterableIterator<T> {
   readonly #values: T[] = []
   readonly #waiters: Array<(result: IteratorResult<T>) => void> = []
   #closed = false
+  readonly #returnError: Error | undefined
   returned = false
+  returnCalls = 0
+
+  constructor(returnError?: Error) {
+    this.#returnError = returnError
+  }
 
   get size() {
     return this.#values.length
@@ -558,10 +778,16 @@ class AsyncQueue<T> implements AsyncIterableIterator<T> {
   }
 
   return(): Promise<IteratorResult<T>> {
+    this.returnCalls++
     this.returned = true
+    this.close()
+    if (this.#returnError) return Promise.reject(this.#returnError)
+    return Promise.resolve({ done: true, value: undefined })
+  }
+
+  close() {
     this.#closed = true
     for (const waiter of this.#waiters.splice(0)) waiter({ done: true, value: undefined })
-    return Promise.resolve({ done: true, value: undefined })
   }
 
   [Symbol.asyncIterator]() {
@@ -646,8 +872,8 @@ class FakeClock {
   }
 }
 
-function makeHarness() {
-  const input = new AsyncQueue<Uint8Array>()
+function makeHarness(options: { returnError?: Error } = {}) {
+  const input = new AsyncQueue<Uint8Array>(options.returnError)
   const output = new AsyncQueue<AgentProcessProtocol.ChildToController>()
   const clock = new FakeClock()
   let sequence = 0
@@ -658,7 +884,7 @@ function makeHarness() {
     nextID: () => `frame-${sequence++}`,
     transport: {
       input,
-      cancelInput: () => input.return(),
+      cancelInput: () => input.close(),
       write: (chunk: Uint8Array) => output.push(AgentProcessProtocol.decode(chunk, "child-to-controller")),
     },
     send: (frame: AgentProcessProtocol.ControllerToChild) => input.push(AgentProcessProtocol.encode(frame)),
@@ -672,4 +898,12 @@ async function flushMicrotasks() {
 async function isSettled(promise: Promise<unknown>) {
   const sentinel = Symbol("pending")
   return (await Promise.race([promise, Promise.resolve(sentinel)])) !== sentinel
+}
+
+async function resolvedOutcome(promise: Promise<unknown>) {
+  try {
+    return await promise
+  } catch (error) {
+    return error
+  }
 }

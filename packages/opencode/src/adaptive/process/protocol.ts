@@ -24,6 +24,14 @@ const FrameID = Schema.String
 const Version = Schema.Literal(VERSION)
 const Generation = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 const HeartbeatMs = Schema.Int.check(Schema.isGreaterThan(0))
+const jsonRuntimeValue = Schema.makeFilter<Schema.Json>((value) =>
+  isJsonRuntimeValue(value) ? undefined : "Expected a dense JSON runtime value without custom serialization",
+)
+
+export const JsonValue = Schema.Json.check(jsonRuntimeValue).annotate({
+  identifier: "AdaptiveProcessProtocol.JsonValue",
+})
+export type JsonValue = typeof JsonValue.Type
 
 const Hello = Schema.Struct({
   v: Version,
@@ -52,7 +60,7 @@ const RpcRequest = Schema.Struct({
   id: FrameID,
   type: Schema.Literal("rpc.request"),
   method: Schema.Literals(["model.stream", "process.complete"]),
-  payload: Schema.Unknown,
+  payload: JsonValue,
 })
 
 const RpcCancel = Schema.Struct({
@@ -74,7 +82,7 @@ const RpcResponse = Schema.Struct({
   id: FrameID,
   type: Schema.Literal("rpc.response"),
   requestID: Schema.String,
-  payload: Schema.Unknown,
+  payload: JsonValue,
 })
 
 const RpcEvent = Schema.Struct({
@@ -82,7 +90,7 @@ const RpcEvent = Schema.Struct({
   id: FrameID,
   type: Schema.Literal("rpc.event"),
   requestID: Schema.String,
-  payload: Schema.Unknown,
+  payload: JsonValue,
 })
 
 const RpcEnd = Schema.Struct({
@@ -142,7 +150,6 @@ export function encode(frame: Frame): Uint8Array {
   const validated = validate(frame, "any")
   const encoded = encodeJson(validated)
   if (encoded.byteLength > MAX_ENCODED_FRAME_BYTES) throw frameTooLarge()
-  parse(encoded.subarray(0, -1), "any")
   return encoded
 }
 
@@ -255,6 +262,30 @@ function validate(value: unknown, direction: Direction): Frame {
 
 function isUnsupportedVersion(value: unknown) {
   return typeof value === "object" && value !== null && "v" in value && value.v !== VERSION
+}
+
+function isJsonRuntimeValue(value: Schema.Json): boolean {
+  if (Array.isArray(value)) {
+    const keys = Reflect.ownKeys(value)
+    if (keys.length !== value.length + 1 || keys.at(-1) !== "length" || "toJSON" in value) return false
+    return keys.slice(0, -1).every((key, index) => {
+      if (key !== String(index)) return false
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      return !!descriptor?.enumerable && "value" in descriptor && isJsonRuntimeValue(descriptor.value)
+    })
+  }
+  if (value === null || typeof value !== "object") return typeof value !== "number" || Number.isFinite(value)
+  if (
+    (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
+    "toJSON" in value
+  ) {
+    return false
+  }
+  return Reflect.ownKeys(value).every((key) => {
+    if (typeof key !== "string") return false
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    return !!descriptor?.enumerable && "value" in descriptor && isJsonRuntimeValue(descriptor.value)
+  })
 }
 
 function invalidFrame() {
