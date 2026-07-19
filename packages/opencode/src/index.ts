@@ -29,9 +29,14 @@ import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
-import { AdaptiveAgentCommand } from "./cli/cmd/adaptive-agent"
+import { AdaptiveAgentCommand, runAdaptiveAgent } from "./cli/cmd/adaptive-agent"
 
 const args = hideBin(process.argv)
+
+if (args[0] === "__adaptive-agent") {
+  await runAdaptiveAgent(args.slice(1))
+  process.exit()
+}
 
 function show(out: string) {
   const text = out.trimStart()

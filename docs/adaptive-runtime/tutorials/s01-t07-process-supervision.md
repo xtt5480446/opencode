@@ -22,7 +22,7 @@ S01-T03 durable Agent generation and lease
 
 ## OpenCode baseline 与复用边界
 
-OpenCode Core 的 `cross-spawn-spawner.ts` 已经把 Effect `ChildProcessSpawner` 适配到 `cross-spawn`，并在 POSIX 默认创建 detached process group。T07 直接复用这个 handle、stdin Sink、stdout/stderr Stream 和 scope cleanup，没有新增 Bun.spawn/Node spawn 的 production wrapper。本任务同时修正了共享 `handle.kill({ forceKillAfter })` 的一个 process-group 语义缺口：发送 group SIGTERM 后，POSIX 现在等待整个 group 消失，而不是只等待 direct child exit；deadline 到达且 group 仍存在时才发送 group SIGKILL。group 已完全消失可以提前返回，Windows 继续使用原有 `taskkill /T /F` tree kill。
+OpenCode Core 的 `cross-spawn-spawner.ts` 已经把 Effect `ChildProcessSpawner` 适配到 `cross-spawn`，并在 POSIX 默认创建 detached process group。T07 直接复用这个 handle、stdin Sink、stdout/stderr Stream 和 scope cleanup，没有新增 Bun.spawn/Node spawn 的 production wrapper。本任务同时修正了共享 `handle.kill({ forceKillAfter })` 的终止语义：实际 `detached: false` 的 direct child 按单进程 exit signal 等待并升级，detached POSIX child 则持续观察整个 group；deadline 到达且 group 仍存在时才发送 group SIGKILL，随后再做最长三秒的有界观察。scope cleanup 复用同一条路径，group 已消失可以提前返回，最终仍存活会得到 typed `PlatformError`；Windows 继续使用原有 `taskkill /T /F` tree kill。
 
 baseline 没有 Adaptive identity、Store claim 或 credential scrub。普通 `extendEnv` 可以继承 Controller 的 provider key、auth content、proxy credential 和进程内 RPC state，因此不能直接用于独立 Agent。`command.ts` 新增的是 Adaptive 专属命令策略；`supervisor.ts` 新增的是协议与 durable ownership 的组合。Core 的修改只收紧共享 process-group force deadline，不包含 Adaptive 专属逻辑。
 
@@ -51,15 +51,17 @@ get durable Agent and Task
 
 spawn 成功后，Supervisor 会立即建立 startup cleanup ownership，再启动 stdin/stdout/stderr fiber 和 handshake。hello timeout、stdout EOF、decoder error、ready timeout、ready EOF，或任意 startup interruption 都必须先 kill process group、关闭 stdin，再把错误返回调用方；若 Store claim 已成功，同一 owner/generation 会先结算为 `failed` 并清空 owner、PID 和 lease。成功返回 `Handle` 后，cleanup ownership 才转交给调用方 scope 的 finalizer。
 
+terminal path 由单一不可中断 owner 执行：process-group kill、exit observation、pending RPC interruption、Store settlement 和 Queue/PubSub shutdown 都有独立 deadline。并发的 stop、lease watcher、stdout reader、process exit watcher 或 scope finalizer 只会等待同一个预创建 latch。Store settlement 最多尝试三次；即使 settlement 失败，内存资源和 child cleanup 仍继续，而 `stop()` 与 `Handle.exited` 会暴露 typed `TerminationError`，不会静默成功或永久挂起。Store 的 `exit_reason` 明确区分 lease expiry、protocol violation、stdout transport、Controller stop、signal 和具体非零 exit code。
+
 stdout 只有一个 decoder fiber，继续使用 S01-T06 的 1 MiB、LF-only decoder；Controller 输出通过一个带 end sentinel 的 Queue 顺序写入同一个 Core stdin Sink，正常结束 Queue 会给 stale child 一个真实 EOF。stale hello 在 claim 和 accepted 之前失败，exit `64`；测试 child 会在真正收到 `accepted` 时写 marker，因此不仅 router 调用数保持零，也能直接证明 stale child 没有被接受。成功 claim 后，Store 中的 generation、owner、PID 和 lease 与 handle identity 一致。
 
 每个匹配 heartbeat 先执行 `AdaptiveStore.heartbeat()` CAS；只有成功后才发布到 `Handle.events` 并重建 20 秒 deadline。deadline 到期会把同一 generation 结算为 `lost`，然后调用 Core group kill。`stop()` 发送 shutdown 后进入 terminal `finishing`，stdout Queue 被唤醒后会再次检查 terminal state，所以 stop 后的 late heartbeat 或 RPC 不会续租或触发 router。
 
-`StartInput.router(method, payload, boundIdentity)` 是唯一 child-originated RPC seam。JSON response 会编码为 `rpc.response`；Stream result 会编码为一组 `rpc.event` 和最终 `rpc.end`；typed `RpcError` 变成受控 `rpc.error`。`Handle.request()` 只是复用已经绑定 identity 的同一个 router，供 Controller/test 显式调用，不会新增反向 wire message。进程结束会中断 pending router fibers、关闭 stdin，并让 `exited` 得到稳定 number。
+`StartInput.router(method, payload, boundIdentity)` 是唯一 child-originated RPC seam。JSON response 会编码为 `rpc.response`；Stream result 会编码为一组 `rpc.event` 和最终 `rpc.end`；typed `RpcError` 变成受控 `rpc.error`。child request ID 在 router fiber 启动前原子注册，同一时间最多允许 32 个；cancel 只中断精确匹配的请求。`Handle.request()` 复用同一个 identity-bound router，但在 supervisor scope 内拥有自己的 fiber 和 typed result latch，不会把调用方 fiber 注册成 child work。terminal completion 会先中断所有 pending router work；退出后的新请求得到 `PROCESS_EXITED`，不会产生 late side effect。
 
-stderr 不进入协议 decoder，也不会无界累积。Supervisor 最多保留 64 KiB UTF-8 preview，并在暴露前遮蔽 credential assignment 和带 userinfo 的 URL；后续任务可以把完整日志放入 blob store，但本任务不伪造 blob reference。
+stderr 不进入协议 decoder，也不会无界累积。Supervisor 先对最多 64 KiB 原始字节做流式 UTF-8 解码，再遮蔽 credential assignment 和带 userinfo 的 URL，最后按 UTF-8 code point 截断；因此即使 `[REDACTED]` 比原值更长，最终 encoded preview 仍不超过 64 KiB。跨 chunk 的多字节字符保持完整，落在 retention boundary 的 secret 也不会泄漏。后续任务可以把完整日志放入 blob store，但本任务不伪造 blob reference。
 
-隐藏的 `__adaptive-agent` 使用 raw `cmd`。handler 从真实 `process.argv` 截取 command 后八个 identity token，先调用 `AgentEntry.parseArgv()` 做严格顺序和 Schema 校验，再动态 import 后调用 `runStdio()`。它不构建 AppRuntime、不读取 provider config、不加载 project plugins；当前 role 只 `await context.shutdown`。
+隐藏的 `__adaptive-agent` 保留 raw `cmd` 注册，同时在普通 yargs parser、全局 middleware 和 `Heap.start()` 之前有一条窄 dispatch。dispatch 从 command 后截取八个 identity token，动态加载 `AgentEntry`，先调用 `parseArgv()` 做严格顺序和 Schema 校验，再调用 `runStdio()`；缺参、非法 generation 和非法 role 都稳定 exit `64`，不会落入普通 yargs 的 exit `1`。它不构建 AppRuntime、不读取 provider config、不加载 project plugins；当前 role 只 `await context.shutdown`。
 
 ## 推荐代码阅读路线
 
@@ -85,14 +87,17 @@ stderr 不进入协议 decoder，也不会无界累积。Supervisor 最多保留
 
 ## 测试看护逻辑
 
-| 风险                            | 测试方法                                                                              | 关键断言                                                    | 证明范围                                                        |
-| ------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------- |
-| Controller secret 被 child 继承 | 纯检查最终 env map，并在 Linux 读取真实 hidden child `/proc/<pid>/environ`            | seeded names 和 values 都不存在，安全 flag 可保留           | allowlist、`extendEnv: false` 和真实 source hidden command 生效 |
-| startup handshake 失败          | 真实 child 分别制造 hello timeout/EOF、claim 后 ready timeout/EOF                       | start 返回前 child gone；claimed generation 为 `failed` 且 ownership 清空 | startup cleanup 不依赖外层 scope，failure 不遗留 starting lease |
-| stale child 被接受              | durable generation 先推进到 1，fixture hello 报 0，并在真正收到 accepted 时写 marker    | exit `64`、accepted marker 不存在、generation 不变、router 调用 0 | hello identity 和 claim-before-accepted gate 生效               |
-| heartbeat 更新错误 Agent        | ready 后用文件门闩触发一次 heartbeat                                                  | 只匹配 Agent/generation lease 增加，另一 Agent 完全不变     | heartbeat CAS 与 event ordering 生效                            |
-| heartbeat 消失留下进程树        | child ready 后启动真实 grandchild，不再 heartbeat，推进 20s lease 与 3s kill deadline | 两个 PID 都消失，同 generation 为 `lost`                    | watchdog、group cleanup 和 durable lost settlement 组合生效     |
-| direct child 先退出、grandchild 忽略 SIGTERM | parent 按 TERM 正常退出，grandchild 写 `.term` 后继续存活，再推进 2999ms/1ms | parent 已 gone；2999ms grandchild 仍活，3000ms 后 group gone，Store 为 `stopped` | Core escalation 以 process group 存活为准，不被 direct-child exit 提前解除 |
+| 风险                                         | 测试方法                                                                              | 关键断言                                                                                         | 证明范围                                                                   |
+| -------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| hidden argv 非法                             | 真实 source entry subprocess 分别缺参、传非法 generation 和非法 role                  | 三种情况都 exit `64`                                                                             | early hidden dispatch 绕过普通 yargs fail/middleware                       |
+| Controller secret 被 child 继承              | 纯检查最终 env map，并在 Linux 读取真实 hidden child `/proc/<pid>/environ`            | seeded names 和 values 都不存在，安全 flag 可保留                                                | allowlist、`extendEnv: false` 和真实 source hidden command 生效            |
+| startup handshake 失败                       | 真实 child 分别制造 hello timeout/EOF、claim 后 ready timeout/EOF                     | start 返回前 child gone；claimed generation 为 `failed` 且 ownership 清空                        | startup cleanup 不依赖外层 scope，failure 不遗留 starting lease            |
+| stale child 被接受                           | durable generation 先推进到 1，fixture hello 报 0，并在真正收到 accepted 时写 marker  | exit `64`、accepted marker 不存在、generation 不变、router 调用 0                                | hello identity 和 claim-before-accepted gate 生效                          |
+| heartbeat 更新错误 Agent                     | ready 后用文件门闩触发一次 heartbeat                                                  | 只匹配 Agent/generation lease 增加，另一 Agent 完全不变                                          | heartbeat CAS 与 event ordering 生效                                       |
+| heartbeat 消失留下进程树                     | child ready 后启动真实 grandchild，不再 heartbeat，推进 20s lease 与 3s kill deadline | 两个 PID 和原 PGID 都消失；Store reason 是 lease expiry                                          | watchdog、group cleanup 和 durable lost settlement 组合生效                |
+| direct child 先退出、grandchild 忽略 SIGTERM | parent 按 TERM 正常退出，grandchild 写 `.term` 后继续存活，再推进 2999ms/1ms          | parent 已 gone；2999ms grandchild 仍活，3000ms 后 PID/PGID gone，Store reason 是 Controller stop | Core escalation 以 process group 存活为准，不被 direct-child exit 提前解除 |
+| stderr redaction 扩张或跨边界                | 大量短 secret assignment、拆分 emoji bytes、retention boundary secret                 | 最终 encoded bytes 不超过 64 KiB；无 secret 或 replacement corruption                            | bounded capture、streaming decode、redact-then-limit 顺序生效              |
+| terminal 原因混淆                            | 分别触发 lease、duplicate RPC、stdout transport、stop 和 code 23 exit                 | Store state、code、reason 精确匹配来源                                                           | durable diagnostics 不把所有终止折叠为 generic failure                     |
 
 这些测试没有证明 provider/model 可用、ModelPolicy 得到审计执行、具体 role 能完成任务、packaged release binary 已跨平台 smoke，或完整 stderr 已持久化。它们证明的是 T07 的 command、hidden source entry、process ownership 和 kill lifecycle；gateway 属于 S01-T08，Controller/packaged integration 属于 S01-T09 及发布验证。
 
@@ -107,7 +112,7 @@ bun test test/adaptive/process-protocol.test.ts
 bun typecheck
 ```
 
-预期观察：focused supervisor 文件的十个 case 全部通过，四个 startup failure case 在返回前完成 cleanup，stale case 为 exit `64` 且没有 accepted marker，heartbeat case 只延长匹配 lease，silent/mixed-group case 结束后没有 fixture process。测试数量是当前实现的运行观测，未来增加 case 时应按实际输出更新。
+预期观察：focused supervisor 文件的 28 个 case 全部通过，四个 startup failure case 在返回前完成 cleanup，invalid hidden subprocess 都为 exit `64`，stale case 没有 accepted marker，heartbeat flood 被 coalesce，stderr preview 最终不超过 64 KiB，silent/mixed-group case 结束后 PID 与 PGID 都不存在。测试数量是当前实现的运行观测，未来增加 case 时应按实际输出更新。
 
 再验证被复用的 Core spawner、Store 和教程结构：
 

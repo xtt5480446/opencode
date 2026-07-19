@@ -8,13 +8,14 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Model } from "@opencode-ai/schema/model"
 import { Provider } from "@opencode-ai/schema/provider"
-import { Deferred, Duration, Effect, Fiber, Option, Stream } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Option, Stream } from "effect"
 import * as TestClock from "effect/testing/TestClock"
-import { ChildProcess } from "effect/unstable/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { existsSync } from "node:fs"
 import path from "path"
 import { AdaptiveProcessSupervisor } from "@/adaptive/process/supervisor"
 import { AdaptiveProcessCommand } from "@/adaptive/process/command"
+import { AgentProcessProtocol } from "@/adaptive/process/protocol"
 import { tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -64,6 +65,20 @@ function sourceCommand(input: AdaptiveProcessCommand.Input) {
   )
 }
 
+function sourceAgent(argv: readonly string[]) {
+  return ChildProcess.make(
+    process.execPath,
+    ["run", "--conditions=browser", sourceEntry, "__adaptive-agent", ...argv],
+    {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      detached: false,
+      forceKillAfter: 1_000,
+    },
+  )
+}
+
 function fixtureCommand(file: string) {
   return (input: AdaptiveProcessCommand.Input) =>
     Effect.succeed(
@@ -78,6 +93,16 @@ function fixtureCommand(file: string) {
 function processExists(pid: number) {
   try {
     process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
+function processGroupExists(pid: number) {
+  if (process.platform === "win32") return false
+  try {
+    process.kill(-pid, 0)
     return true
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM"
@@ -204,7 +229,188 @@ for await (const frame of lines()) {
 }
 `
 
+const terminalFixture = (mode: "complete" | "exit" | "malformed" | "transport") => `
+import { watch, writeFileSync } from "node:fs"
+
+const argv = process.argv.slice(2)
+const value = (name) => argv[argv.indexOf(name) + 1]
+let next = 0
+let completionID
+const send = (frame) => {
+  const id = String(++next)
+  process.stdout.write(JSON.stringify({ v: 1, id, ...frame }) + "\\n")
+  return id
+}
+const lines = async function* () {
+  let buffer = ""
+  for await (const chunk of process.stdin) {
+    buffer += chunk.toString("utf8")
+    const parts = buffer.split("\\n")
+    buffer = parts.pop()
+    for (const line of parts) if (line) yield JSON.parse(line)
+  }
+}
+
+writeFileSync(".spawned", String(process.pid))
+send({
+  type: "hello",
+  taskID: value("--task-id"),
+  agentID: value("--agent-id"),
+  generation: Number(value("--generation")),
+  role: value("--role"),
+})
+for await (const frame of lines()) {
+  if (frame.type === "accepted") {
+    if (${JSON.stringify(mode)} === "exit") {
+      process.stdout.write(
+        JSON.stringify({ v: 1, id: String(++next), type: "ready" }) + "\\n",
+        () => process.exit(23),
+      )
+      continue
+    }
+    send({ type: "ready" })
+    if (${JSON.stringify(mode)} === "malformed") {
+      const watcher = watch(process.cwd(), (_event, name) => {
+        if (name !== ".malformed") return
+        watcher.close()
+        process.stdout.write("not-json\\n")
+      })
+      writeFileSync(".armed", "received")
+      continue
+    }
+    if (${JSON.stringify(mode)} === "transport") {
+      const watcher = watch(process.cwd(), (_event, name) => {
+        if (name !== ".transport") return
+        watcher.close()
+        process.stdout.end(() => writeFileSync(".stdout-ended", "closed"))
+      })
+      writeFileSync(".armed", "received")
+      continue
+    }
+    completionID = send({ type: "rpc.request", method: "process.complete", payload: null })
+    continue
+  }
+  if (frame.type !== "rpc.response" || frame.requestID !== completionID) continue
+  const watcher = watch(process.cwd(), (_event, name) => {
+    if (name !== ".exit") return
+    watcher.close()
+    process.exit(0)
+  })
+  process.stdout.end(() => writeFileSync(".stdout-ended", "closed"))
+}
+`
+
+const stderrFixture = (chunks: readonly Uint8Array[]) => `
+const argv = process.argv.slice(2)
+const value = (name) => argv[argv.indexOf(name) + 1]
+let next = 0
+const send = (frame) => process.stdout.write(JSON.stringify({ v: 1, id: String(++next), ...frame }) + "\\n")
+const lines = async function* () {
+  let buffer = ""
+  for await (const chunk of process.stdin) {
+    buffer += chunk.toString("utf8")
+    const parts = buffer.split("\\n")
+    buffer = parts.pop()
+    for (const line of parts) if (line) yield JSON.parse(line)
+  }
+}
+
+send({
+  type: "hello",
+  taskID: value("--task-id"),
+  agentID: value("--agent-id"),
+  generation: Number(value("--generation")),
+  role: value("--role"),
+})
+for await (const frame of lines()) {
+  if (frame.type !== "accepted") continue
+  send({ type: "ready" })
+  for (const chunk of ${JSON.stringify(chunks.map((chunk) => Buffer.from(chunk).toString("base64")))}) {
+    await new Promise((resolve, reject) =>
+      process.stderr.write(Buffer.from(chunk, "base64"), (error) => error ? reject(error) : resolve()),
+    )
+  }
+  process.exit(0)
+}
+`
+
+const controlFixture = (mode: "duplicate" | "limit" | "immediate" | "cancel" | "heartbeat") => `
+import { watch, writeFileSync } from "node:fs"
+
+const argv = process.argv.slice(2)
+const value = (name) => argv[argv.indexOf(name) + 1]
+let next = 0
+const send = (frame) => process.stdout.write(JSON.stringify({ v: 1, id: String(++next), ...frame }) + "\\n")
+const request = (id, name) =>
+  process.stdout.write(JSON.stringify({ v: 1, id, type: "rpc.request", method: "process.complete", payload: { name } }) + "\\n")
+const lines = async function* () {
+  let buffer = ""
+  for await (const chunk of process.stdin) {
+    buffer += chunk.toString("utf8")
+    const parts = buffer.split("\\n")
+    buffer = parts.pop()
+    for (const line of parts) if (line) yield JSON.parse(line)
+  }
+}
+
+writeFileSync(".spawned", String(process.pid))
+send({
+  type: "hello",
+  taskID: value("--task-id"),
+  agentID: value("--agent-id"),
+  generation: Number(value("--generation")),
+  role: value("--role"),
+})
+for await (const frame of lines()) {
+  if (frame.type !== "accepted") continue
+  send({ type: "ready" })
+  const watcher = watch(process.cwd(), (_event, name) => {
+    if (name === ".send") {
+      if (${JSON.stringify(mode)} === "duplicate") {
+        request("duplicate", "first")
+        request("duplicate", "second")
+      }
+      if (${JSON.stringify(mode)} === "limit") {
+        for (let index = 0; index < 33; index += 1) request("pending-" + index, String(index))
+      }
+      if (${JSON.stringify(mode)} === "immediate") {
+        for (let index = 0; index < 32; index += 1) request("immediate-" + index, String(index))
+      }
+      if (${JSON.stringify(mode)} === "cancel") {
+        request("cancel-a", "a")
+        request("cancel-b", "b")
+      }
+      if (${JSON.stringify(mode)} === "heartbeat") {
+        for (let index = 0; index < 100; index += 1) send({ type: "heartbeat" })
+        request("heartbeat-barrier-1", "wave1")
+      }
+      writeFileSync(".sent", "first")
+    }
+    if (name === ".cancel" && ${JSON.stringify(mode)} === "cancel")
+      send({ type: "rpc.cancel", requestID: "cancel-a" })
+    if (name === ".wave2" && ${JSON.stringify(mode)} === "immediate") request("immediate-32", "32")
+    if (name === ".send2" && ${JSON.stringify(mode)} === "heartbeat") {
+      send({ type: "heartbeat" })
+      request("heartbeat-barrier-2", "wave2")
+    }
+  })
+  writeFileSync(".armed", "received")
+}
+`
+
 describe("AdaptiveProcessCommand", () => {
+  it.live("returns protocol exit 64 for invalid hidden command arguments", () =>
+    Effect.gen(function* () {
+      const taskID = AdaptiveTask.ID.create()
+      const agentID = AdaptiveTask.AgentID.create()
+      const valid = ["--task-id", taskID, "--agent-id", agentID, "--generation", "0", "--role", "implementation"]
+      for (const argv of [[], valid.with(5, "invalid"), valid.with(7, "invalid-role")]) {
+        const handle = yield* sourceAgent(argv)
+        expect(Number(yield* handle.exitCode)).toBe(64)
+      }
+    }),
+  )
+
   it.effect("builds a default-deny child environment without secret names or values", () =>
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
@@ -283,10 +489,71 @@ describe("AdaptiveProcessCommand", () => {
 })
 
 describe("AdaptiveProcessSupervisor", () => {
+  it.effect("keeps sanitized stderr within the encoded preview byte limit", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "stderr-expansion.ts")
+      const input = new TextEncoder().encode(
+        "token=x\n".repeat(Math.ceil(AdaptiveProcessSupervisor.STDERR_PREVIEW_BYTES / 8)),
+      )
+      yield* Effect.promise(() => Bun.write(file, stderrFixture([input])))
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({ agentID: seeded.agent.id, router: () => Effect.succeed(null) })
+
+      yield* handle.exited
+      const preview = yield* handle.stderrPreview
+      expect(new TextEncoder().encode(preview).byteLength).toBeLessThanOrEqual(
+        AdaptiveProcessSupervisor.STDERR_PREVIEW_BYTES,
+      )
+      expect(preview).not.toContain("token=x")
+    }),
+  )
+
+  it.effect("redacts stderr secrets across multibyte and retained-byte boundaries", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "stderr-boundaries.ts")
+      const encoder = new TextEncoder()
+      const split = encoder.encode("prefix🙂 token=split-secret suffix\n")
+      const emoji = split.findIndex((byte) => byte === 0xf0)
+      const prefix = "x".repeat(AdaptiveProcessSupervisor.STDERR_PREVIEW_BYTES - split.byteLength - 15)
+      yield* Effect.promise(() =>
+        Bun.write(
+          file,
+          stderrFixture([
+            split.subarray(0, emoji + 2),
+            split.subarray(emoji + 2),
+            encoder.encode(prefix + "token=boundary-"),
+            encoder.encode("secret"),
+          ]),
+        ),
+      )
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({ agentID: seeded.agent.id, router: () => Effect.succeed(null) })
+
+      yield* handle.exited
+      const preview = yield* handle.stderrPreview
+      expect(new TextEncoder().encode(preview).byteLength).toBeLessThanOrEqual(
+        AdaptiveProcessSupervisor.STDERR_PREVIEW_BYTES,
+      )
+      expect(preview).toContain("prefix🙂 token=[REDACTED] suffix")
+      expect(preview).not.toContain("split-secret")
+      expect(preview).not.toContain("boundary-")
+      expect(preview).not.toContain("�")
+    }),
+  )
+
   for (const scenario of [
     { name: "kills a child when hello times out", phase: "hello", end: "timeout", claimed: false },
     { name: "observes a gone child when hello ends at EOF", phase: "hello", end: "eof", claimed: false },
-    { name: "settles and kills a claimed generation when ready times out", phase: "ready", end: "timeout", claimed: true },
+    {
+      name: "settles and kills a claimed generation when ready times out",
+      phase: "ready",
+      end: "timeout",
+      claimed: true,
+    },
     { name: "settles a claimed generation when ready ends at EOF", phase: "ready", end: "eof", claimed: true },
   ] as const) {
     it.effect(scenario.name, () =>
@@ -327,6 +594,504 @@ describe("AdaptiveProcessSupervisor", () => {
       }),
     )
   }
+
+  it.effect("keeps one terminal owner when the initiating stop is interrupted", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(20_000)
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "interrupted-stop.ts")
+      yield* Effect.promise(() => Bun.write(file, fixture({ stubborn: true })))
+      const grandchild = yield* Deferred.make<number>()
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({
+        agentID: seeded.agent.id,
+        router: (_method, payload) =>
+          Deferred.succeed(grandchild, (payload as { grandchildPID: number }).grandchildPID).pipe(Effect.as(null)),
+      })
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (process.platform === "win32") return
+          try {
+            process.kill(-handle.pid, "SIGKILL")
+          } catch {
+            // The group may already have completed through terminal cleanup.
+          }
+        }),
+      )
+      yield* Deferred.await(grandchild)
+      const term = yield* waitExists(path.join(directory, ".term")).pipe(Effect.forkChild({ startImmediately: true }))
+      const owner = yield* supervisor
+        .stop({ agentID: handle.agentID, generation: handle.generation })
+        .pipe(Effect.forkChild({ startImmediately: true }))
+      yield* Fiber.join(term)
+      const waiterDone = yield* Deferred.make<void>()
+      const waiter = yield* supervisor
+        .stop({ agentID: handle.agentID, generation: handle.generation })
+        .pipe(Effect.ensuring(Deferred.succeed(waiterDone, undefined)), Effect.forkChild({ startImmediately: true }))
+      const interrupting = yield* Fiber.interrupt(owner).pipe(Effect.forkChild({ startImmediately: true }))
+
+      yield* TestClock.adjust(4_000)
+      yield* Fiber.join(interrupting)
+      const done = yield* Deferred.isDone(waiterDone)
+      if (!done) yield* Fiber.interrupt(waiter)
+      expect(done).toBe(true)
+      if (done) yield* Fiber.join(waiter)
+      expect((yield* seeded.store.getAgent(handle.agentID)).state).toBe("stopped")
+    }),
+  )
+
+  it.effect("bounds kill defects and a process whose exit code never settles", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(30_000)
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "broken-kill.ts")
+      yield* Effect.promise(() => Bun.write(file, fixture({ heartbeatGate: true })))
+      const real = yield* ChildProcessSpawner.ChildProcessSpawner
+      const broken = ChildProcessSpawner.make((command) =>
+        real.spawn(command).pipe(
+          Effect.map((handle) =>
+            ChildProcessSpawner.makeHandle({
+              pid: handle.pid,
+              stdin: handle.stdin,
+              stdout: handle.stdout,
+              stderr: handle.stderr,
+              all: handle.all,
+              getInputFd: handle.getInputFd,
+              getOutputFd: handle.getOutputFd,
+              isRunning: Effect.succeed(true),
+              exitCode: Effect.never,
+              kill: () => Effect.die("injected kill defect"),
+              unref: handle.unref,
+            }),
+          ),
+        ),
+      )
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, broken),
+      )
+      const handle = yield* supervisor.start({ agentID: seeded.agent.id, router: () => Effect.succeed(null) })
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          try {
+            process.kill(process.platform === "win32" ? handle.pid : -handle.pid, "SIGKILL")
+          } catch {
+            // The injected handle cannot clean up the real fixture process.
+          }
+        }),
+      )
+      const stopped = yield* supervisor
+        .stop({ agentID: handle.agentID, generation: handle.generation })
+        .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }))
+      const observed = yield* handle.exited.pipe(
+        Effect.exit,
+        Effect.timeoutOption("5 seconds"),
+        Effect.forkChild({ startImmediately: true }),
+      )
+      yield* TestClock.adjust(5_000)
+
+      const stopExit = yield* Fiber.join(stopped)
+      expect(Exit.isFailure(stopExit)).toBe(true)
+      if (Exit.isFailure(stopExit))
+        expect(Cause.squash(stopExit.cause)).toMatchObject({
+          _tag: "AdaptiveProcessSupervisor.TerminationError",
+          stage: "kill",
+        })
+      const exit = yield* Fiber.join(observed)
+      expect(Option.isSome(exit)).toBe(true)
+      if (Option.isSome(exit) && Exit.isFailure(exit.value))
+        expect(Cause.squash(exit.value.cause)).toMatchObject({ _tag: "AdaptiveProcessSupervisor.TerminationError" })
+    }),
+  )
+
+  it.effect("retries durable settlement and exposes repeated failure to stop and exited", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "settle-failure.ts")
+      yield* Effect.promise(() => Bun.write(file, fixture({ heartbeatGate: true })))
+      const attempts = { count: 0 }
+      const failing = AdaptiveStore.Service.of({
+        ...seeded.store,
+        settleAgent: (input) =>
+          Effect.sync(() => {
+            attempts.count += 1
+          }).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new AdaptiveStore.AgentOwnershipConflictError({
+                  agentID: input.agentID,
+                  generation: input.generation,
+                  owner: input.owner,
+                }),
+              ),
+            ),
+          ),
+      })
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) }).pipe(
+        Effect.provideService(AdaptiveStore.Service, failing),
+      )
+      const handle = yield* supervisor.start({ agentID: seeded.agent.id, router: () => Effect.succeed(null) })
+
+      const stopExit = yield* supervisor
+        .stop({ agentID: handle.agentID, generation: handle.generation })
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(stopExit)).toBe(true)
+      if (Exit.isFailure(stopExit))
+        expect(Cause.squash(stopExit.cause)).toMatchObject({
+          _tag: "AdaptiveProcessSupervisor.TerminationError",
+          stage: "settle",
+        })
+      const exited = yield* handle.exited.pipe(Effect.exit)
+      expect(Exit.isFailure(exited)).toBe(true)
+      if (Exit.isFailure(exited))
+        expect(Cause.squash(exited.cause)).toMatchObject({ _tag: "AdaptiveProcessSupervisor.TerminationError" })
+      expect(attempts.count).toBe(3)
+    }),
+  )
+
+  it.effect("settles a clean process.complete exit as stopped with its real code", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "complete.ts")
+      yield* Effect.promise(() => Bun.write(file, terminalFixture("complete")))
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({ agentID: seeded.agent.id, router: () => Effect.succeed(null) })
+      yield* waitExists(path.join(directory, ".stdout-ended"))
+      yield* Effect.yieldNow
+      expect(processExists(handle.pid)).toBe(true)
+      expect(["starting", "running"]).toContain((yield* seeded.store.getAgent(handle.agentID)).state)
+      yield* Effect.promise(() => Bun.write(path.join(directory, ".exit"), "go"))
+
+      expect(yield* handle.exited).toBe(0)
+      const record = yield* seeded.store.getAgent(handle.agentID)
+      expect(record.state).toBe("stopped")
+      expect(record.exitCode).toBe(0)
+      expect(record.exitReason).toBe("Adaptive agent exited normally (code 0)")
+      expect(processExists(handle.pid)).toBe(false)
+    }),
+  )
+
+  it.effect("persists a nonzero process exit code as a distinct failure reason", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "exit-code.ts")
+      yield* Effect.promise(() => Bun.write(file, terminalFixture("exit")))
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({ agentID: seeded.agent.id, router: () => Effect.succeed(null) })
+
+      expect(yield* handle.exited).toBe(23)
+      const record = yield* seeded.store.getAgent(handle.agentID)
+      expect(record.state).toBe("failed")
+      expect(record.exitCode).toBe(23)
+      expect(record.exitReason).toBe("Adaptive agent exited with code 23")
+    }),
+  )
+
+  it.effect("ends event subscribers when terminal cleanup completes", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(40_000)
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "events-end.ts")
+      yield* Effect.promise(() => Bun.write(file, fixture({ heartbeatGate: true })))
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({ agentID: seeded.agent.id, router: () => Effect.succeed(null) })
+      const events = yield* Stream.runCollect(handle.events).pipe(Effect.forkChild({ startImmediately: true }))
+      yield* supervisor.stop({ agentID: handle.agentID, generation: handle.generation })
+      const ended = yield* Fiber.join(events).pipe(
+        Effect.timeoutOption("1 second"),
+        Effect.forkChild({ startImmediately: true }),
+      )
+      yield* TestClock.adjust(1_000)
+      expect(Option.isSome(yield* Fiber.join(ended))).toBe(true)
+    }),
+  )
+
+  it.effect("persists a specific failure reason for malformed stdout", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "malformed.ts")
+      yield* Effect.promise(() => Bun.write(file, terminalFixture("malformed")))
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({ agentID: seeded.agent.id, router: () => Effect.succeed(null) })
+      yield* waitExists(path.join(directory, ".armed"))
+      yield* Effect.promise(() => Bun.write(path.join(directory, ".malformed"), "go"))
+      yield* handle.exited
+
+      const record = yield* seeded.store.getAgent(handle.agentID)
+      expect(record.state).toBe("failed")
+      expect(record.exitReason).toBe("Adaptive agent stdout protocol decode failed")
+    }),
+  )
+
+  it.effect("persists a specific failure reason for stdout transport defects", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "transport.ts")
+      yield* Effect.promise(() => Bun.write(file, terminalFixture("transport")))
+      const real = yield* ChildProcessSpawner.ChildProcessSpawner
+      const failing = ChildProcessSpawner.make((command) =>
+        real.spawn(command).pipe(
+          Effect.map((handle) => {
+            const failed = Stream.fromEffect(waitExists(path.join(directory, ".stdout-ended")).pipe(Effect.orDie)).pipe(
+              Stream.drain,
+              Stream.concat(Stream.die("injected stdout transport defect")),
+            )
+            return ChildProcessSpawner.makeHandle({
+              pid: handle.pid,
+              stdin: handle.stdin,
+              stdout: Stream.merge(handle.stdout, failed),
+              stderr: handle.stderr,
+              all: handle.all,
+              getInputFd: handle.getInputFd,
+              getOutputFd: handle.getOutputFd,
+              isRunning: handle.isRunning,
+              exitCode: handle.exitCode,
+              kill: handle.kill,
+              unref: handle.unref,
+            })
+          }),
+        ),
+      )
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, failing),
+      )
+      const handle = yield* supervisor.start({ agentID: seeded.agent.id, router: () => Effect.succeed(null) })
+      yield* waitExists(path.join(directory, ".armed"))
+      yield* Effect.promise(() => Bun.write(path.join(directory, ".transport"), "go"))
+      yield* handle.exited
+
+      const record = yield* seeded.store.getAgent(handle.agentID)
+      expect(record.state).toBe("failed")
+      expect(record.exitReason).toBe("Adaptive agent stdout transport failed")
+    }),
+  )
+
+  it.effect("treats a duplicate active child RPC id as a protocol failure", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(50_000)
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "rpc-duplicate.ts")
+      yield* Effect.promise(() => Bun.write(file, controlFixture("duplicate")))
+      const routed: Array<string> = []
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({
+        agentID: seeded.agent.id,
+        router: (_method, payload) =>
+          Effect.sync(() => routed.push((payload as { name: string }).name)).pipe(Effect.andThen(Effect.never)),
+      })
+      yield* waitExists(path.join(directory, ".armed"))
+      yield* Effect.promise(() => Bun.write(path.join(directory, ".send"), "go"))
+      yield* waitExists(path.join(directory, ".sent"))
+      yield* handle.exited
+
+      expect(routed.length).toBeLessThanOrEqual(1)
+      const record = yield* seeded.store.getAgent(handle.agentID)
+      expect(record.state).toBe("failed")
+      expect(record.exitReason).toBe("Adaptive agent RPC protocol violation: duplicate request id duplicate")
+    }),
+  )
+
+  it.effect("rejects the 33rd pending child RPC as a protocol failure", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(80_000)
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "rpc-limit.ts")
+      yield* Effect.promise(() => Bun.write(file, controlFixture("limit")))
+      const routed: Array<string> = []
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({
+        agentID: seeded.agent.id,
+        router: (_method, payload) =>
+          Effect.sync(() => routed.push((payload as { name: string }).name)).pipe(Effect.andThen(Effect.never)),
+      })
+      yield* waitExists(path.join(directory, ".armed"))
+      yield* Effect.promise(() => Bun.write(path.join(directory, ".send"), "go"))
+      yield* waitExists(path.join(directory, ".sent"))
+      yield* handle.exited
+
+      expect(routed).not.toContain("32")
+      expect(routed.length).toBeLessThanOrEqual(AgentProcessProtocol.MAX_OUTSTANDING_RPC_CALLS)
+      const record = yield* seeded.store.getAgent(handle.agentID)
+      expect(record.state).toBe("failed")
+      expect(record.exitReason).toBe("Adaptive agent RPC protocol violation: more than 32 outstanding requests")
+    }),
+  )
+
+  it.effect("removes immediate child RPC completions before admitting the next request", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "rpc-immediate.ts")
+      yield* Effect.promise(() => Bun.write(file, controlFixture("immediate")))
+      const first = yield* Deferred.make<void>()
+      const second = yield* Deferred.make<void>()
+      const routed = { count: 0 }
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({
+        agentID: seeded.agent.id,
+        router: () =>
+          Effect.gen(function* () {
+            routed.count += 1
+            if (routed.count === 32) yield* Deferred.succeed(first, undefined)
+            if (routed.count === 33) yield* Deferred.succeed(second, undefined)
+            return null
+          }),
+      })
+      yield* waitExists(path.join(directory, ".armed"))
+      yield* Effect.promise(() => Bun.write(path.join(directory, ".send"), "go"))
+      yield* Deferred.await(first).pipe(Effect.timeout("5 seconds"))
+      yield* Effect.promise(() => Bun.write(path.join(directory, ".wave2"), "go"))
+      yield* Deferred.await(second).pipe(Effect.timeout("5 seconds"))
+
+      expect(routed.count).toBe(33)
+      yield* supervisor.stop({ agentID: handle.agentID, generation: handle.generation })
+    }),
+  )
+
+  it.effect("cancels only the exact registered child RPC", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "rpc-cancel.ts")
+      yield* Effect.promise(() => Bun.write(file, controlFixture("cancel")))
+      const interruptedA = yield* Deferred.make<void>()
+      const interruptedB = yield* Deferred.make<void>()
+      const startedA = yield* Deferred.make<void>()
+      const startedB = yield* Deferred.make<void>()
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({
+        agentID: seeded.agent.id,
+        router: (_method, payload) => {
+          const first = (payload as { name: string }).name === "a"
+          return Deferred.succeed(first ? startedA : startedB, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.onInterrupt(() => Deferred.succeed(first ? interruptedA : interruptedB, undefined)),
+          )
+        },
+      })
+      yield* waitExists(path.join(directory, ".armed"))
+      yield* Effect.promise(() => Bun.write(path.join(directory, ".send"), "go"))
+      yield* Effect.all([Deferred.await(startedA), Deferred.await(startedB)], { concurrency: 2 })
+      yield* Effect.promise(() => Bun.write(path.join(directory, ".cancel"), "go"))
+      yield* Deferred.await(interruptedA).pipe(Effect.timeout("5 seconds"))
+      expect(yield* Deferred.isDone(interruptedB)).toBe(false)
+
+      yield* supervisor.stop({ agentID: handle.agentID, generation: handle.generation })
+      expect(yield* Deferred.isDone(interruptedB)).toBe(true)
+    }),
+  )
+
+  it.effect("rejects Handle.request after exit without invoking the router", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "request-after-exit.ts")
+      yield* Effect.promise(() => Bun.write(file, fixture({ heartbeatGate: true })))
+      const routed = { count: 0 }
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({
+        agentID: seeded.agent.id,
+        router: () =>
+          Effect.sync(() => {
+            routed.count += 1
+            return null
+          }),
+      })
+      yield* supervisor.stop({ agentID: handle.agentID, generation: handle.generation })
+
+      const requested = yield* handle.request("process.complete", null).pipe(Effect.exit)
+      expect(Exit.isFailure(requested)).toBe(true)
+      if (Exit.isFailure(requested))
+        expect(Cause.squash(requested.cause)).toMatchObject({
+          _tag: "AdaptiveProcessSupervisor.RpcError",
+          code: "PROCESS_EXITED",
+        })
+      expect(routed.count).toBe(0)
+    }),
+  )
+
+  it.effect("interrupts an in-flight Handle.request before terminal completion", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "request-race.ts")
+      yield* Effect.promise(() => Bun.write(file, fixture({ heartbeatGate: true })))
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const sideEffects = { count: 0 }
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+      const handle = yield* supervisor.start({
+        agentID: seeded.agent.id,
+        router: () =>
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(
+              Effect.sync(() => {
+                sideEffects.count += 1
+                return null
+              }),
+            ),
+          ),
+      })
+      const requested = yield* handle
+        .request("process.complete", null)
+        .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }))
+      yield* Deferred.await(started)
+      yield* supervisor.stop({ agentID: handle.agentID, generation: handle.generation })
+      yield* Deferred.succeed(release, undefined)
+
+      expect(Exit.isFailure(yield* Fiber.join(requested))).toBe(true)
+      expect(sideEffects.count).toBe(0)
+    }),
+  )
+
+  it.effect("coalesces heartbeat floods while accepting the normal five-second cadence", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(100_000)
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const file = path.join(directory, "heartbeat-flood.ts")
+      yield* Effect.promise(() => Bun.write(file, controlFixture("heartbeat")))
+      const heartbeats = { count: 0 }
+      const counted = AdaptiveStore.Service.of({
+        ...seeded.store,
+        heartbeat: (input) =>
+          Effect.sync(() => {
+            heartbeats.count += 1
+          }).pipe(Effect.andThen(seeded.store.heartbeat(input))),
+      })
+      const first = yield* Deferred.make<void>()
+      const second = yield* Deferred.make<void>()
+      const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) }).pipe(
+        Effect.provideService(AdaptiveStore.Service, counted),
+      )
+      const handle = yield* supervisor.start({
+        agentID: seeded.agent.id,
+        router: (_method, payload) => {
+          const name = (payload as { name: string }).name
+          return Deferred.succeed(name === "wave1" ? first : second, undefined).pipe(Effect.as(null))
+        },
+      })
+      yield* waitExists(path.join(directory, ".armed"))
+      yield* Effect.promise(() => Bun.write(path.join(directory, ".send"), "go"))
+      yield* Deferred.await(first).pipe(Effect.timeout("5 seconds"))
+      yield* TestClock.adjust(5_000)
+      yield* Effect.promise(() => Bun.write(path.join(directory, ".send2"), "go"))
+      yield* Deferred.await(second).pipe(Effect.timeout("5 seconds"))
+
+      expect(heartbeats.count).toBe(2)
+      yield* supervisor.stop({ agentID: handle.agentID, generation: handle.generation })
+    }),
+  )
 
   it.effect("rejects a stale hello before accepted, claim, or RPC routing", () =>
     Effect.gen(function* () {
@@ -431,6 +1196,8 @@ describe("AdaptiveProcessSupervisor", () => {
       const lost = yield* seeded.store.getAgent(handle.agentID)
       expect(lost.generation).toBe(handle.generation)
       expect(lost.state).toBe("lost")
+      expect(lost.exitReason).toBe("Adaptive agent heartbeat lease expired")
+      expect(processGroupExists(handle.pid)).toBe(false)
     }),
   )
 
@@ -479,8 +1246,11 @@ describe("AdaptiveProcessSupervisor", () => {
       yield* Fiber.join(stopping)
       expect(processExists(handle.pid)).toBe(false)
       expect(processExists(grandchildPID)).toBe(false)
+      expect(processGroupExists(handle.pid)).toBe(false)
       expect(routed.count).toBe(1)
-      expect((yield* seeded.store.getAgent(handle.agentID)).state).toBe("stopped")
+      const record = yield* seeded.store.getAgent(handle.agentID)
+      expect(record.state).toBe("stopped")
+      expect(record.exitReason).toBe("Adaptive agent stopped by Controller")
     }),
   )
 })

@@ -2,14 +2,35 @@ import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
-import { Context, Deferred, Effect, Exit, Fiber, Layer, Option, PubSub, Queue, Schema, Scope, Stream } from "effect"
+import {
+  Cause,
+  Clock,
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  PubSub,
+  Queue,
+  Schema,
+  Scope,
+  Stream,
+} from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { AgentProcessProtocol } from "./protocol"
 import { AdaptiveProcessCommand } from "./command"
 
 export const HEARTBEAT_MS = 5_000
 export const LEASE_DURATION_MS = 20_000
+export const HEARTBEAT_MIN_INTERVAL_MS = 2_500
 export const STDERR_PREVIEW_BYTES = 64 * 1024
+const KILL_TIMEOUT_MS = 5_000
+const EXIT_TIMEOUT_MS = 1_000
+const RPC_INTERRUPT_TIMEOUT_MS = 1_000
+const SETTLE_TIMEOUT_MS = 500
+const SETTLE_RETRIES = 2
 
 export class StartError extends Schema.TaggedErrorClass<StartError>()("AdaptiveProcessSupervisor.StartError", {
   reason: Schema.String,
@@ -20,6 +41,15 @@ export class RpcError extends Schema.TaggedErrorClass<RpcError>()("AdaptiveProce
   code: Schema.String,
   message: Schema.String,
 }) {}
+
+export class TerminationError extends Schema.TaggedErrorClass<TerminationError>()(
+  "AdaptiveProcessSupervisor.TerminationError",
+  {
+    stage: Schema.Literals(["kill", "exit", "rpc", "settle", "cleanup"]),
+    reason: Schema.String,
+    exitCode: Schema.Number,
+  },
+) {}
 
 export type Method = "model.stream" | "process.complete"
 export type RouteResult = AgentProcessProtocol.JsonValue | Stream.Stream<AgentProcessProtocol.JsonValue, RpcError>
@@ -53,14 +83,14 @@ export interface Handle {
   readonly pid: number
   readonly request: (method: Method, payload: AgentProcessProtocol.JsonValue) => Effect.Effect<RouteResult, RpcError>
   readonly events: Stream.Stream<AgentProcessProtocol.ChildToController>
-  readonly exited: Effect.Effect<number>
+  readonly exited: Effect.Effect<number, TerminationError>
   readonly stderrPreview: Effect.Effect<string>
 }
 
 export interface Interface {
   readonly start: (input: StartInput) => Effect.Effect<Handle, StartError, Scope.Scope>
-  readonly stop: (input: StopInput) => Effect.Effect<void>
-  readonly restart: (input: RestartInput) => Effect.Effect<Handle, StartError, Scope.Scope>
+  readonly stop: (input: StopInput) => Effect.Effect<void, TerminationError>
+  readonly restart: (input: RestartInput) => Effect.Effect<Handle, StartError | TerminationError, Scope.Scope>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/AdaptiveProcessSupervisor") {}
@@ -73,8 +103,21 @@ export interface MakeOptions {
 
 type Envelope =
   | { readonly type: "frame"; readonly frame: AgentProcessProtocol.ChildToController }
-  | { readonly type: "error" }
+  | { readonly type: "error"; readonly reason: string }
   | { readonly type: "end" }
+
+interface Termination {
+  readonly state: "stopped" | "lost" | "failed"
+  readonly reason: string
+  readonly kill: boolean
+  readonly knownCode?: number
+}
+
+interface RpcRegistration {
+  readonly origin: "child" | "handle"
+  fiber?: Fiber.Fiber<unknown, unknown>
+  cancelled: boolean
+}
 
 interface Active {
   readonly identity: BoundIdentity
@@ -84,11 +127,14 @@ interface Active {
   readonly frames: Queue.Queue<Envelope>
   readonly heartbeats: Queue.Queue<void>
   readonly events: PubSub.PubSub<AgentProcessProtocol.ChildToController>
-  readonly exited: Deferred.Deferred<number>
+  readonly exited: Deferred.Deferred<number, TerminationError>
+  readonly finished: Deferred.Deferred<void, TerminationError>
   readonly stderrDone: Deferred.Deferred<void>
-  readonly rpc: Map<string, Fiber.Fiber<void, never>>
+  readonly rpc: Map<string, RpcRegistration>
   readonly preview: { text: string; bytes: number }
-  finishing?: Deferred.Deferred<void>
+  claimed: boolean
+  finishStarted: boolean
+  lastHeartbeatAt?: number
 }
 
 export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (options: MakeOptions = {}) {
@@ -101,49 +147,141 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
     yield* Queue.offer(state.input, AgentProcessProtocol.encode(frame))
   })
 
-  const settle = Effect.fnUntraced(function* (state: Active, desired: "stopped" | "lost" | "failed", exitCode: number) {
-    yield* store
-      .settleAgent({
-        agentID: state.identity.agentID,
-        generation: state.identity.generation,
-        owner: state.owner,
-        state: desired,
-        exitCode,
-        exitReason: desired === "lost" ? "Adaptive agent heartbeat lease expired" : undefined,
-      })
-      .pipe(Effect.ignore)
+  const bounded = <A, E, R>(effect: Effect.Effect<A, E, R>, duration: number) =>
+    Effect.gen(function* () {
+      const result = yield* Deferred.make<Exit.Exit<A, E> | "timeout">()
+      const worker = yield* effect.pipe(
+        Effect.interruptible,
+        Effect.exit,
+        Effect.flatMap((exit) => Deferred.succeed(result, exit)),
+        Effect.forkChild({ startImmediately: true }),
+      )
+      const deadline = yield* Effect.sleep(duration).pipe(
+        Effect.andThen(Deferred.succeed(result, "timeout")),
+        Effect.forkChild({ startImmediately: true }),
+      )
+      const outcome = yield* Deferred.await(result)
+      yield* Fiber.interrupt(worker).pipe(Effect.forkDetach({ startImmediately: true }))
+      yield* Fiber.interrupt(deadline).pipe(Effect.forkDetach({ startImmediately: true }))
+      return outcome
+    })
+
+  const shutdown = Effect.fnUntraced(function* (state: Active) {
+    yield* Queue.shutdown(state.input).pipe(Effect.exit)
+    yield* Queue.shutdown(state.frames).pipe(Effect.exit)
+    yield* Queue.shutdown(state.heartbeats).pipe(Effect.exit)
+    yield* PubSub.shutdown(state.events).pipe(Effect.exit)
+    yield* Deferred.succeed(state.stderrDone, undefined).pipe(Effect.exit)
+    yield* Effect.sync(() => {
+      if (active.get(state.identity.agentID) === state) active.delete(state.identity.agentID)
+    })
   })
 
-  const finish = Effect.fnUntraced(function* (
-    state: Active,
-    desired: "stopped" | "lost" | "failed",
-    kill: boolean,
-    knownCode?: number,
-  ) {
-    if (state.finishing) return yield* Deferred.await(state.finishing)
-    const finishing = yield* Deferred.make<void>()
-    state.finishing = finishing
+  const finish = Effect.fnUntraced(function* (state: Active, terminal: Termination) {
+    return yield* Effect.uninterruptible(
+      Effect.gen(function* () {
+        const owner = yield* Effect.sync(() => {
+          if (state.finishStarted) return false
+          state.finishStarted = true
+          return true
+        })
+        if (!owner) return yield* Deferred.await(state.finished)
 
-    if (kill) yield* state.process.kill({ forceKillAfter: 3_000 }).pipe(Effect.ignore)
-    yield* Queue.offer(state.input, null).pipe(Effect.ignore)
-    const code =
-      knownCode ??
-      (yield* state.process.exitCode.pipe(
-        Effect.map(Number),
-        Effect.catch(() => Effect.succeed(128)),
-      ))
-    yield* Effect.forEach(state.rpc.values(), Fiber.interrupt, { discard: true })
-    state.rpc.clear()
-    yield* settle(state, desired, code)
-    active.delete(state.identity.agentID)
-    yield* Deferred.succeed(state.exited, code).pipe(Effect.ignore)
-    yield* Deferred.succeed(finishing, undefined).pipe(Effect.ignore)
+        let code = terminal.knownCode ?? 128
+        let problem: TerminationError | undefined
+        const record = (stage: TerminationError["stage"], reason: string) => {
+          problem ??= new TerminationError({ stage, reason, exitCode: code })
+        }
+        const cleanup = Effect.gen(function* () {
+          if (terminal.kill) {
+            const killed = yield* bounded(state.process.kill({ forceKillAfter: 3_000 }), KILL_TIMEOUT_MS)
+            if (killed === "timeout") record("kill", "Adaptive agent process-group kill timed out")
+            else if (Exit.isFailure(killed)) record("kill", "Adaptive agent process-group kill failed")
+          }
+          yield* Queue.shutdown(state.input).pipe(Effect.exit)
+
+          if (terminal.knownCode === undefined) {
+            const observed = yield* bounded(
+              state.process.exitCode.pipe(
+                Effect.map(Number),
+                Effect.catch(() => Effect.succeed(128)),
+              ),
+              EXIT_TIMEOUT_MS,
+            )
+            if (observed === "timeout") record("exit", "Adaptive agent exit code did not settle")
+            else if (Exit.isFailure(observed)) record("exit", "Adaptive agent exit observation failed")
+            else code = observed.value
+          }
+
+          const registrations = Array.from(state.rpc.values())
+          registrations.forEach((registration) => {
+            registration.cancelled = true
+          })
+          const interrupted = yield* bounded(
+            Effect.forEach(
+              registrations,
+              (registration) => (registration.fiber ? Fiber.interrupt(registration.fiber) : Effect.void),
+              { discard: true },
+            ),
+            RPC_INTERRUPT_TIMEOUT_MS,
+          )
+          if (interrupted === "timeout") record("rpc", "Adaptive agent RPC interruption timed out")
+          else if (Exit.isFailure(interrupted)) record("rpc", "Adaptive agent RPC interruption failed")
+          state.rpc.clear()
+
+          if (state.claimed) {
+            let settled = false
+            for (let attempt = 0; attempt <= SETTLE_RETRIES; attempt += 1) {
+              const result = yield* bounded(
+                store.settleAgent({
+                  agentID: state.identity.agentID,
+                  generation: state.identity.generation,
+                  owner: state.owner,
+                  state: terminal.state,
+                  exitCode: code,
+                  exitReason: terminal.reason,
+                }),
+                SETTLE_TIMEOUT_MS,
+              )
+              if (result === "timeout" || Exit.isFailure(result)) continue
+              settled = true
+              break
+            }
+            if (!settled) record("settle", "Adaptive agent durable settlement failed")
+          }
+
+          return { code, problem }
+        }).pipe(
+          Effect.ensuring(shutdown(state)),
+          Effect.catchCause(() =>
+            Effect.succeed({
+              code,
+              problem:
+                problem ??
+                new TerminationError({
+                  stage: "cleanup",
+                  reason: "Adaptive agent terminal cleanup failed",
+                  exitCode: code,
+                }),
+            }),
+          ),
+        )
+        const result = yield* cleanup
+        yield* Effect.sync(() => {
+          Deferred.doneUnsafe(state.exited, result.problem ? Effect.fail(result.problem) : Effect.succeed(result.code))
+          Deferred.doneUnsafe(state.finished, result.problem ? Effect.fail(result.problem) : Effect.void)
+        })
+        if (result.problem) return yield* result.problem
+      }),
+    )
   })
 
   const route = (
     state: Active,
     input: StartInput,
     frame: Extract<AgentProcessProtocol.ChildToController, { type: "rpc.request" }>,
+    key: string,
+    registration: RpcRegistration,
   ) =>
     Effect.gen(function* () {
       const result = yield* input.router(frame.method, frame.payload, state.identity)
@@ -183,18 +321,31 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
           message: error.message,
         }).pipe(Effect.ignore),
       ),
-      Effect.ensuring(Effect.sync(() => state.rpc.delete(frame.id))),
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (state.rpc.get(key) === registration) state.rpc.delete(key)
+        }),
+      ),
     )
 
   const runFrames = (state: Active, input: StartInput, scope: Scope.Scope) =>
     Effect.gen(function* () {
-      while (!state.finishing) {
+      while (!state.finishStarted) {
         const envelope = yield* Queue.take(state.frames)
-        if (state.finishing) return
-        if (envelope.type !== "frame") return yield* finish(state, "lost", true)
+        if (state.finishStarted) return
+        if (envelope.type === "end") return
+        if (envelope.type === "error")
+          return yield* finish(state, { state: "failed", reason: envelope.reason, kill: true })
         const frame = envelope.frame
-        if (frame.type === "hello" || frame.type === "ready") return yield* finish(state, "lost", true)
+        if (frame.type === "hello" || frame.type === "ready")
+          return yield* finish(state, {
+            state: "failed",
+            reason: `Adaptive agent sent unexpected ${frame.type} after readiness`,
+            kill: true,
+          })
         if (frame.type === "heartbeat") {
+          const now = yield* Clock.currentTimeMillis
+          if (state.lastHeartbeatAt !== undefined && now - state.lastHeartbeatAt < HEARTBEAT_MIN_INTERVAL_MS) continue
           const heartbeat = yield* store
             .heartbeat({
               agentID: state.identity.agentID,
@@ -203,29 +354,66 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
               leaseDurationMs: LEASE_DURATION_MS,
             })
             .pipe(Effect.option)
-          if (Option.isNone(heartbeat)) return yield* finish(state, "lost", true)
+          if (Option.isNone(heartbeat))
+            return yield* finish(state, {
+              state: "lost",
+              reason: "Adaptive agent heartbeat ownership was rejected",
+              kill: true,
+            })
+          state.lastHeartbeatAt = now
           yield* Queue.offer(state.heartbeats, undefined)
           yield* PubSub.publish(state.events, frame)
           continue
         }
-        yield* PubSub.publish(state.events, frame)
         if (frame.type === "rpc.cancel") {
-          const fiber = state.rpc.get(frame.requestID)
-          if (fiber) yield* Fiber.interrupt(fiber)
+          yield* PubSub.publish(state.events, frame)
+          const registration = state.rpc.get(`child:${frame.requestID}`)
+          if (!registration) continue
+          registration.cancelled = true
+          if (registration.fiber) yield* Fiber.interrupt(registration.fiber)
           continue
         }
-        const fiber = yield* route(state, input, frame).pipe(Effect.forkIn(scope, { startImmediately: true }))
-        state.rpc.set(frame.id, fiber)
+        const key = `child:${frame.id}`
+        if (state.rpc.has(key))
+          return yield* finish(state, {
+            state: "failed",
+            reason: `Adaptive agent RPC protocol violation: duplicate request id ${frame.id}`,
+            kill: true,
+          })
+        const outstanding = Array.from(state.rpc.values()).filter(
+          (registration) => registration.origin === "child",
+        ).length
+        if (outstanding >= AgentProcessProtocol.MAX_OUTSTANDING_RPC_CALLS)
+          return yield* finish(state, {
+            state: "failed",
+            reason: `Adaptive agent RPC protocol violation: more than ${AgentProcessProtocol.MAX_OUTSTANDING_RPC_CALLS} outstanding requests`,
+            kill: true,
+          })
+        const registration: RpcRegistration = { origin: "child", cancelled: false }
+        state.rpc.set(key, registration)
+        yield* PubSub.publish(state.events, frame)
+        const fiber = yield* route(state, input, frame, key, registration).pipe(
+          Effect.forkIn(scope, { startImmediately: false }),
+        )
+        registration.fiber = fiber
+        if (registration.cancelled)
+          yield* Fiber.interrupt(fiber).pipe(Effect.forkDetach({ startImmediately: true }), Effect.asVoid)
       }
     }).pipe(
-      Effect.catchCause(() => (state.finishing ? Effect.void : finish(state, "lost", true))),
+      Effect.catchCause(() =>
+        state.finishStarted
+          ? Effect.void
+          : finish(state, { state: "failed", reason: "Adaptive agent frame loop failed", kill: true }).pipe(
+              Effect.ignore,
+            ),
+      ),
       Effect.asVoid,
     )
 
   const watchLease = (state: Active, ready: Deferred.Deferred<void>) =>
     Effect.gen(function* () {
       let armed = false
-      while (!state.finishing) {
+      while (!state.finishStarted) {
         const deadline = yield* Effect.sleep(LEASE_DURATION_MS).pipe(
           Effect.as("expired" as const),
           Effect.forkChild({ startImmediately: true }),
@@ -239,11 +427,84 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
           Fiber.join(deadline),
         )
         yield* Fiber.interrupt(deadline)
-        if (next === "expired") return yield* finish(state, "lost", true)
+        if (next === "expired")
+          return yield* finish(state, {
+            state: "lost",
+            reason: "Adaptive agent heartbeat lease expired",
+            kill: true,
+          })
       }
     }).pipe(
       Effect.catchCause(() => Effect.void),
       Effect.asVoid,
+    )
+
+  const request = (
+    state: Active,
+    input: StartInput,
+    scope: Scope.Scope,
+    method: Method,
+    payload: AgentProcessProtocol.JsonValue,
+  ) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const key = `handle:${crypto.randomUUID()}`
+        const result = yield* Deferred.make<RouteResult, RpcError>()
+        const registration = yield* Effect.sync(() => {
+          if (state.finishStarted || active.get(state.identity.agentID) !== state) return undefined
+          const value: RpcRegistration = { origin: "handle", cancelled: false }
+          state.rpc.set(key, value)
+          return value
+        })
+        if (!registration)
+          return yield* new RpcError({
+            code: "PROCESS_EXITED",
+            message: "Adaptive agent process is no longer active",
+          })
+        const fiber = yield* input.router(method, payload, state.identity).pipe(
+          Effect.interruptible,
+          Effect.onExit((exit) => {
+            if (Exit.isSuccess(exit)) return Deferred.succeed(result, exit.value).pipe(Effect.asVoid)
+            const error = Cause.squash(exit.cause)
+            return Deferred.fail(
+              result,
+              error instanceof RpcError
+                ? error
+                : new RpcError({
+                    code: state.finishStarted ? "PROCESS_EXITED" : "ROUTER_FAILED",
+                    message: state.finishStarted
+                      ? "Adaptive agent process terminated during the request"
+                      : "Adaptive agent request router failed",
+                  }),
+            ).pipe(Effect.asVoid)
+          }),
+          Effect.asVoid,
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (state.rpc.get(key) === registration) state.rpc.delete(key)
+            }),
+          ),
+          Effect.forkIn(scope, { startImmediately: false }),
+        )
+        registration.fiber = fiber
+        if (registration.cancelled) yield* Fiber.interrupt(fiber)
+        return yield* restore(Deferred.await(result)).pipe(
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              registration.cancelled = true
+            }).pipe(
+              Effect.andThen(
+                registration.fiber
+                  ? Fiber.interrupt(registration.fiber).pipe(
+                      Effect.forkDetach({ startImmediately: true }),
+                      Effect.asVoid,
+                    )
+                  : Effect.void,
+              ),
+            ),
+          ),
+        )
+      }),
     )
 
   const start = Effect.fn("AdaptiveProcessSupervisor.start")(function* (input: StartInput) {
@@ -266,9 +527,10 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
     const child = yield* command({ directory: task.directory, ...identity })
     const inputQueue = yield* Queue.unbounded<Uint8Array | null>()
     const frames = yield* Queue.unbounded<Envelope>()
-    const heartbeats = yield* Queue.unbounded<void>()
+    const heartbeats = yield* Queue.dropping<void>(1)
     const events = yield* PubSub.unbounded<AgentProcessProtocol.ChildToController>()
-    const exited = yield* Deferred.make<number>()
+    const exited = yield* Deferred.make<number, TerminationError>()
+    const finished = yield* Deferred.make<void, TerminationError>()
     const stderrDone = yield* Deferred.make<void>()
     const process = yield* spawner
       .spawn(child)
@@ -282,9 +544,12 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
       heartbeats,
       events,
       exited,
+      finished,
       stderrDone,
       rpc: new Map(),
       preview: { text: "", bytes: 0 },
+      claimed: false,
+      finishStarted: false,
     }
 
     return yield* Effect.gen(function* () {
@@ -316,6 +581,7 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
         .pipe(Effect.option)
       if (Option.isNone(claim) || claim.value.generation !== identity.generation)
         return yield* new StartError({ reason: "Adaptive agent durable generation claim failed", exitCode: 64 })
+      state.claimed = true
 
       yield* send(state, {
         v: AgentProcessProtocol.VERSION,
@@ -334,25 +600,51 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
       yield* watchLease(state, leaseReady).pipe(Effect.forkIn(scope, { startImmediately: true }))
       yield* Deferred.await(leaseReady)
       yield* process.exitCode.pipe(
-        Effect.map(Number),
-        Effect.catch(() => Effect.succeed(128)),
-        Effect.flatMap((code) => finish(state, code === 0 ? "stopped" : "failed", false, code)),
+        Effect.map((code) => ({ code: Number(code), signaled: false })),
+        Effect.catch(() => Effect.succeed({ code: 128, signaled: true })),
+        Effect.flatMap(({ code, signaled }) =>
+          finish(state, {
+            state: code === 0 ? "stopped" : "failed",
+            reason: signaled
+              ? "Adaptive agent exited after receiving a signal"
+              : code === 0
+                ? "Adaptive agent exited normally (code 0)"
+                : `Adaptive agent exited with code ${code}`,
+            kill: false,
+            knownCode: code,
+          }),
+        ),
+        Effect.ignore,
         Effect.forkIn(scope, { startImmediately: true }),
       )
       yield* Effect.addFinalizer(() =>
-        state.finishing ? Deferred.await(state.finishing) : finish(state, "lost", true),
+        (state.finishStarted
+          ? Deferred.await(state.finished)
+          : finish(state, {
+              state: "lost",
+              reason: "Adaptive agent supervisor scope closed",
+              kill: true,
+            })
+        ).pipe(Effect.tapError(Effect.logError), Effect.ignore),
       )
 
       return {
         agentID: identity.agentID,
         generation: identity.generation,
         pid: Number(process.pid),
-        request: (method: Method, payload: AgentProcessProtocol.JsonValue) => input.router(method, payload, identity),
+        request: (method: Method, payload: AgentProcessProtocol.JsonValue) =>
+          request(state, input, scope, method, payload),
         events: Stream.fromPubSub(state.events),
         exited: Deferred.await(state.exited),
         stderrPreview: Deferred.await(state.stderrDone).pipe(Effect.map(() => state.preview.text)),
       }
-    }).pipe(Effect.onExit((exit) => (Exit.isFailure(exit) ? finish(state, "failed", true) : Effect.void)))
+    }).pipe(
+      Effect.onExit((exit) =>
+        Exit.isFailure(exit)
+          ? finish(state, { state: "failed", reason: "Adaptive agent startup failed", kill: true }).pipe(Effect.ignore)
+          : Effect.void,
+      ),
+    )
   })
 
   const stop = Effect.fn("AdaptiveProcessSupervisor.stop")(function* (input: StopInput) {
@@ -364,7 +656,11 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
       type: "shutdown",
       reason: "Adaptive agent stopped by Controller",
     }).pipe(Effect.ignore)
-    yield* finish(state, "stopped", true)
+    yield* finish(state, {
+      state: "stopped",
+      reason: "Adaptive agent stopped by Controller",
+      kill: true,
+    })
   })
 
   const restart = Effect.fn("AdaptiveProcessSupervisor.restart")(function* (input: RestartInput) {
@@ -387,7 +683,11 @@ function readFrames(state: Active) {
       }
     }).pipe(
       Effect.flatMap((decoded) => {
-        if (decoded === undefined) return Queue.offer(state.frames, { type: "error" }).pipe(Effect.asVoid)
+        if (decoded === undefined)
+          return Queue.offer(state.frames, {
+            type: "error",
+            reason: "Adaptive agent stdout protocol decode failed",
+          }).pipe(Effect.asVoid)
         return Queue.offerAll(
           state.frames,
           decoded.map((frame) => ({ type: "frame" as const, frame })),
@@ -404,11 +704,23 @@ function readFrames(state: Active) {
           return "error" as const
         }
       }).pipe(
-        Effect.flatMap((type) => Queue.offer(state.frames, { type })),
+        Effect.flatMap((type) =>
+          type === "end"
+            ? Queue.offer(state.frames, { type })
+            : Queue.offer(state.frames, {
+                type,
+                reason: "Adaptive agent stdout ended with an incomplete protocol frame",
+              }),
+        ),
         Effect.asVoid,
       ),
     ),
-    Effect.catchCause(() => Queue.offer(state.frames, { type: "error" }).pipe(Effect.asVoid)),
+    Effect.catchCause(() =>
+      Queue.offer(state.frames, {
+        type: "error",
+        reason: "Adaptive agent stdout transport failed",
+      }).pipe(Effect.asVoid),
+    ),
     Effect.asVoid,
   )
 }
@@ -425,7 +737,8 @@ function readStderr(state: Active) {
   ).pipe(
     Effect.ensuring(
       Effect.sync(() => {
-        state.preview.text = sanitizePreview(state.preview.text + decoder.decode())
+        const tail = state.preview.bytes < STDERR_PREVIEW_BYTES ? decoder.decode() : ""
+        state.preview.text = limitPreviewBytes(sanitizePreview(state.preview.text + tail))
       }).pipe(Effect.andThen(Deferred.succeed(state.stderrDone, undefined)), Effect.ignore),
     ),
     Effect.ignore,
@@ -448,6 +761,12 @@ function sanitizePreview(input: string) {
   return input
     .replace(/((?:key|token|secret|password|auth|credential|cookie)\s*[=:]\s*)\S+/gi, "$1[REDACTED]")
     .replace(/:\/\/[^/@\s]+@/g, "://[REDACTED]@")
+}
+
+function limitPreviewBytes(input: string) {
+  const encoded = new TextEncoder().encode(input)
+  if (encoded.byteLength <= STDERR_PREVIEW_BYTES) return input
+  return new TextDecoder().decode(encoded.subarray(0, STDERR_PREVIEW_BYTES), { stream: true })
 }
 
 const layer = Layer.effect(Service, make())
