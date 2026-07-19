@@ -67,8 +67,7 @@ describe("opencode run (non-interactive subprocess)", () => {
   // makes the SDK call surface an error promptly so the process exits nonzero.
   // We assert nonzero exit AND wall-clock under the harness timeout — a hang
   // would expire the timeout and produce a different (signal-killed) failure.
-  // Keep the wall-clock oracle isolated from concurrent subprocess startup.
-  cliIt.live(
+  cliIt.concurrent(
     "exits nonzero promptly when the model is unknown (regression for #27371)",
     ({ opencode }) =>
       Effect.gen(function* () {
