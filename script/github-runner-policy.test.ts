@@ -11,6 +11,12 @@ describe("fork GitHub runner policy", () => {
     expect(workflow.match(/host: windows-2025/g)).toHaveLength(2)
   })
 
+  test("unit tests serialize package execution on standard runners", async () => {
+    const workflow = await Bun.file(new URL("test.yml", workflows)).text()
+
+    expect(workflow).toContain("timeout-minutes: 30\n        run: GITHUB_ACTIONS=false bun turbo test --concurrency=1")
+  })
+
   test("duplicate detection skips forks that do not own the upstream model secret", async () => {
     const workflow = await Bun.file(new URL("pr-management.yml", workflows)).text()
 
