@@ -176,7 +176,10 @@ export const AdaptiveModelRequestTable = sqliteTable(
       sql`${table.output_reserve} + ${table.safety_reserve} < ${table.effective_context_limit}`,
     ),
     check("adaptive_model_request_policy_hash_check", hashCheck(table.model_policy_hash)),
-    check("adaptive_model_request_input_tokens_check", sql`${table.input_tokens} IS NULL OR ${table.input_tokens} >= 0`),
+    check(
+      "adaptive_model_request_input_tokens_check",
+      sql`${table.input_tokens} IS NULL OR ${table.input_tokens} >= 0`,
+    ),
     check(
       "adaptive_model_request_output_tokens_check",
       sql`${table.output_tokens} IS NULL OR ${table.output_tokens} >= 0`,
