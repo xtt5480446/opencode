@@ -269,6 +269,68 @@ describe("AdaptiveStore Agent ownership", () => {
     }),
   )
 
+  it.effect("quarantines uncertain cleanup without releasing or expiring ownership", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(1_000)
+      const store = yield* AdaptiveStore.Service
+      const createdTask = yield* store.createTask(task())
+      const agent = yield* store.createAgent({
+        id: AdaptiveTask.AgentID.create(),
+        taskID: createdTask.id,
+        role: "implementation",
+      })
+      yield* store.claimAgent({
+        agentID: agent.id,
+        expectedGeneration: 0,
+        owner: "controller-a",
+        pid: 404,
+        leaseDurationMs: 100,
+      })
+      const quarantine = Reflect.get(store, "quarantineAgent") as
+        | ((input: {
+            agentID: AdaptiveTask.AgentID
+            generation: number
+            owner: string
+            exitCode?: number
+            exitReason: string
+          }) => Effect.Effect<AdaptiveStore.AgentRecord, unknown>)
+        | undefined
+
+      expect(typeof quarantine).toBe("function")
+      if (!quarantine) return
+      const quarantined = yield* quarantine({
+        agentID: agent.id,
+        generation: 1,
+        owner: "controller-a",
+        exitCode: 128,
+        exitReason: "process-group cleanup uncertain",
+      })
+      expect(quarantined).toMatchObject({
+        generation: 1,
+        state: "failed",
+        owner: "controller-a",
+        pid: 404,
+        exitCode: 128,
+        exitReason: "process-group cleanup uncertain",
+      })
+      expect(quarantined.leaseExpiresAt).toBeUndefined()
+
+      yield* TestClock.setTime(1_000_000)
+      expect(
+        (yield* store
+          .claimAgent({
+            agentID: agent.id,
+            expectedGeneration: 1,
+            owner: "controller-b",
+            pid: 405,
+            leaseDurationMs: 100,
+          })
+          .pipe(Effect.flip))._tag,
+      ).toBe("AdaptiveStore.AgentClaimConflict")
+      expect((yield* store.getAgent(agent.id)).generation).toBe(1)
+    }),
+  )
+
   it.effect("allows exactly one concurrent claim for one expected generation", () =>
     Effect.gen(function* () {
       const store = yield* AdaptiveStore.Service

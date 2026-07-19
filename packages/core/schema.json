@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "bb426b9f-d268-434b-9ac6-8392eab94960",
+  "id": "e1b9ba87-d504-44f0-a855-2fc83718a016",
   "prevIds": [
-    "8d180005-95ca-440e-aae7-608144fb569a"
+    "bb426b9f-d268-434b-9ac6-8392eab94960"
   ],
   "ddl": [
     {
@@ -3053,13 +3053,13 @@
       "table": "adaptive_agent_process"
     },
     {
-      "value": "(\"owner\" IS NULL AND \"pid\" IS NULL AND \"lease_expires_at\" IS NULL) OR (\"owner\" IS NOT NULL AND length(\"owner\") > 0 AND \"pid\" > 0 AND \"lease_expires_at\" > 0)",
+      "value": "(\"owner\" IS NULL AND \"pid\" IS NULL AND \"lease_expires_at\" IS NULL) OR (\"owner\" IS NOT NULL AND length(\"owner\") > 0 AND \"pid\" > 0 AND ((\"state\" IN ('starting', 'running') AND \"lease_expires_at\" > 0) OR (\"state\" = 'failed' AND \"lease_expires_at\" IS NULL)))",
       "name": "adaptive_agent_owner_tuple_check",
       "entityType": "checks",
       "table": "adaptive_agent_process"
     },
     {
-      "value": "(\"state\" IN ('starting', 'running') AND \"owner\" IS NOT NULL) OR (\"state\" IN ('idle', 'stopped', 'lost', 'failed') AND \"owner\" IS NULL)",
+      "value": "(\"state\" IN ('starting', 'running') AND \"owner\" IS NOT NULL) OR (\"state\" IN ('idle', 'stopped', 'lost') AND \"owner\" IS NULL) OR \"state\" = 'failed'",
       "name": "adaptive_agent_state_owner_check",
       "entityType": "checks",
       "table": "adaptive_agent_process"

@@ -502,6 +502,83 @@ describe("cross-spawn spawner", () => {
       }),
     )
 
+    for (const detached of [true, false]) {
+      probeFx.live(
+        `treats ESRCH after the liveness probe as an already-gone ${detached ? "group" : "direct child"}`,
+        Effect.gen(function* () {
+          if (process.platform === "win32") return
+
+          const delivered: Array<{ pid: number; detached: boolean; signal: NodeJS.Signals }> = []
+          const spawner = yield* CrossSpawnSpawner.makeWithOptions({
+            groupAlive: () => true,
+            signal: (pid: number, signal: NodeJS.Signals, grouped: boolean) => {
+              delivered.push({ pid, signal, detached: grouped })
+              const error = new Error("process exited before signal delivery") as NodeJS.ErrnoException
+              error.code = "ESRCH"
+              throw error
+            },
+          } as CrossSpawnSpawner.MakeOptions & {
+            signal: (pid: number, signal: NodeJS.Signals, detached: boolean) => boolean
+          })
+          const handle = yield* spawner.spawn(
+            js('process.on("SIGTERM", () => {}); process.stdout.write("ready\\n"); setInterval(() => {}, 10_000)', {
+              detached,
+            }),
+          )
+          yield* Stream.runHead(handle.stdout)
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              try {
+                process.kill(detached ? -Number(handle.pid) : Number(handle.pid), "SIGKILL")
+              } catch {
+                // The fixture may have completed if signal injection was not active.
+              }
+            }),
+          )
+
+          expect(Exit.isSuccess(yield* handle.kill({ forceKillAfter: 100 }).pipe(Effect.exit))).toBe(true)
+          expect(delivered).toEqual([{ pid: Number(handle.pid), detached, signal: "SIGTERM" }])
+        }),
+      )
+    }
+
+    probeFx.live(
+      "keeps non-ESRCH signal delivery failures typed",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        const spawner = yield* CrossSpawnSpawner.makeWithOptions({
+          groupAlive: () => true,
+          signal: () => {
+            const error = new Error("signal permission denied") as NodeJS.ErrnoException
+            error.code = "EPERM"
+            throw error
+          },
+        } as CrossSpawnSpawner.MakeOptions & {
+          signal: (pid: number, signal: NodeJS.Signals, detached: boolean) => boolean
+        })
+        const handle = yield* spawner.spawn(js('process.stdout.write("ready\\n"); setInterval(() => {}, 10_000)'))
+        yield* Stream.runHead(handle.stdout)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              process.kill(-Number(handle.pid), "SIGKILL")
+            } catch {
+              // The group may already be gone.
+            }
+          }),
+        )
+
+        const exit = yield* handle.kill().pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit))
+          expect(Cause.squash(exit.cause)).toMatchObject({
+            _tag: "PlatformError",
+            reason: { _tag: "PermissionDenied", method: "kill" },
+          })
+      }),
+    )
+
     fx.effect(
       "isRunning reflects process state",
       Effect.gen(function* () {

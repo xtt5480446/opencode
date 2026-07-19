@@ -74,8 +74,8 @@ export default {
           CONSTRAINT "adaptive_agent_role_check" CHECK("role" IN ('coordinator', 'roadmap-reviewer', 'discovery', 'implementation', 'validator', 'integration')),
           CONSTRAINT "adaptive_agent_state_check" CHECK("state" IN ('idle', 'starting', 'running', 'stopped', 'lost', 'failed')),
           CONSTRAINT "adaptive_agent_generation_check" CHECK("generation" >= 0),
-          CONSTRAINT "adaptive_agent_owner_tuple_check" CHECK(("owner" IS NULL AND "pid" IS NULL AND "lease_expires_at" IS NULL) OR ("owner" IS NOT NULL AND length("owner") > 0 AND "pid" > 0 AND "lease_expires_at" > 0)),
-          CONSTRAINT "adaptive_agent_state_owner_check" CHECK(("state" IN ('starting', 'running') AND "owner" IS NOT NULL) OR ("state" IN ('idle', 'stopped', 'lost', 'failed') AND "owner" IS NULL))
+          CONSTRAINT "adaptive_agent_owner_tuple_check" CHECK(("owner" IS NULL AND "pid" IS NULL AND "lease_expires_at" IS NULL) OR ("owner" IS NOT NULL AND length("owner") > 0 AND "pid" > 0 AND (("state" IN ('starting', 'running') AND "lease_expires_at" > 0) OR ("state" = 'failed' AND "lease_expires_at" IS NULL)))),
+          CONSTRAINT "adaptive_agent_state_owner_check" CHECK(("state" IN ('starting', 'running') AND "owner" IS NOT NULL) OR ("state" IN ('idle', 'stopped', 'lost') AND "owner" IS NULL) OR "state" = 'failed')
         );
       `)
       yield* tx.run(`

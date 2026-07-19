@@ -22,7 +22,7 @@ S01-T03 durable Agent generation and lease
 
 ## OpenCode baseline 与复用边界
 
-OpenCode Core 的 `cross-spawn-spawner.ts` 已经把 Effect `ChildProcessSpawner` 适配到 `cross-spawn`，并在 POSIX 默认创建 detached process group。T07 直接复用这个 handle、stdin Sink、stdout/stderr Stream 和 scope cleanup，没有新增 Bun.spawn/Node spawn 的 production wrapper。本任务同时修正了共享 `handle.kill({ forceKillAfter })` 的终止语义：实际 `detached: false` 的 direct child 按单进程 exit signal 等待并升级，detached POSIX child 则持续观察整个 group；deadline 到达且 group 仍存在时才发送 group SIGKILL，随后再做最长三秒的有界观察。scope cleanup 复用同一条路径，group 已消失可以提前返回，最终仍存活会得到 typed `PlatformError`；Windows 继续使用原有 `taskkill /T /F` tree kill。
+OpenCode Core 的 `cross-spawn-spawner.ts` 已经把 Effect `ChildProcessSpawner` 适配到 `cross-spawn`，并在 POSIX 默认创建 detached process group。T07 直接复用这个 handle、stdin Sink、stdout/stderr Stream 和 scope cleanup，没有新增 Bun.spawn/Node spawn 的 production wrapper。本任务同时修正了共享 `handle.kill({ forceKillAfter })` 的终止语义：实际 `detached: false` 的 direct child 按单进程 exit signal 等待并升级，detached POSIX child 则持续观察整个 group；deadline 到达且 group 仍存在时才发送 group SIGKILL，随后再做最长三秒的有界观察。scope cleanup 复用同一条路径，group 已消失可以提前返回，最终仍存活会得到 typed `PlatformError`。liveness probe 与 signal 之间发生退出时，POSIX `ESRCH` 现在按“已经消失”处理，`EPERM` 和其他错误仍作为 typed failure 返回；Windows 继续使用原有 `taskkill /T /F` tree kill。
 
 baseline 没有 Adaptive identity、Store claim 或 credential scrub。普通 `extendEnv` 可以继承 Controller 的 provider key、auth content、proxy credential 和进程内 RPC state，因此不能直接用于独立 Agent。`command.ts` 新增的是 Adaptive 专属命令策略；`supervisor.ts` 新增的是协议与 durable ownership 的组合。Core 的修改只收紧共享 process-group force deadline，不包含 Adaptive 专属逻辑。
 
@@ -44,22 +44,23 @@ get durable Agent and Task
   → AdaptiveStore.claimAgent(expected generation, owner, PID, 20s lease)
   → send accepted(heartbeatMs = 5s)
   → require ready
-  → arm lease deadline before start returns
+  → renew the exact durable lease for a full 20s
+  → arm the matching local deadline before start returns
   → route heartbeat / rpc.request / rpc.cancel
   → settle stopped, lost, or failed and close stdin on exit
 ```
 
 spawn 成功后，Supervisor 会立即建立 startup cleanup ownership，再启动 stdin/stdout/stderr fiber 和 handshake。hello timeout、stdout EOF、decoder error、ready timeout、ready EOF，或任意 startup interruption 都必须先 kill process group、关闭 stdin，再把错误返回调用方；若 Store claim 已成功，同一 owner/generation 会先结算为 `failed` 并清空 owner、PID 和 lease。成功返回 `Handle` 后，cleanup ownership 才转交给调用方 scope 的 finalizer。
 
-terminal path 由单一不可中断 owner 执行：process-group kill、exit observation、pending RPC interruption、Store settlement 和 Queue/PubSub shutdown 都有独立 deadline。并发的 stop、lease watcher、stdout reader、process exit watcher 或 scope finalizer 只会等待同一个预创建 latch。Store settlement 最多尝试三次；即使 settlement 失败，内存资源和 child cleanup 仍继续，而 `stop()` 与 `Handle.exited` 会暴露 typed `TerminationError`，不会静默成功或永久挂起。Store 的 `exit_reason` 明确区分 lease expiry、protocol violation、stdout transport、Controller stop、signal 和具体非零 exit code。
+terminal path 由单一不可中断 owner 执行：process-group kill、exit observation、pending RPC interruption、stderr reader、Store settlement 和 Queue/PubSub shutdown 都有独立 deadline。并发的 stop、lease watcher、stdout reader、process exit watcher 或 scope finalizer 只会等待同一个预创建 latch。只有 kill/group observation 和 RPC interruption 都被确认后，`settleAgent()` 才会清空 owner/PID；任一项失败或超时都会改走 exact `quarantineAgent()` CAS，把 Agent 记为 `failed`、保留 owner/PID、把 lease 置空并持久化 cleanup diagnostic。这个 tuple 不可过期也不可 claim，fresh supervisor 会在 spawn 前拒绝；当前 supervisor 同时保留 active tombstone。quarantine 自身失败也会保留 tombstone 并暴露 `TerminationError`，不会伪装成功。普通 Store settlement 与 quarantine 都最多尝试三次，scope cleanup 仍然有界。
 
-stdout 只有一个 decoder fiber，继续使用 S01-T06 的 1 MiB、LF-only decoder；Controller 输出通过一个带 end sentinel 的 Queue 顺序写入同一个 Core stdin Sink，正常结束 Queue 会给 stale child 一个真实 EOF。stale hello 在 claim 和 accepted 之前失败，exit `64`；测试 child 会在真正收到 `accepted` 时写 marker，因此不仅 router 调用数保持零，也能直接证明 stale child 没有被接受。成功 claim 后，Store 中的 generation、owner、PID 和 lease 与 handle identity 一致。
+stdout 只有一个 decoder fiber，继续使用 S01-T06 的 1 MiB、LF-only decoder；decoded frame Queue 固定容量 64，Controller input Queue 固定容量 8，两端都通过 backpressure 限制内存。`stop()` 对 shutdown frame 只做有界 best effort，随后直接进入 terminal kill，因此 child 不读 stdin 或 frame flood 都不能卡住清理。正常 Queue 结束仍会给 stale child 一个真实 EOF。stale hello 在 claim 和 accepted 之前失败，exit `64`；测试 child 会在真正收到 `accepted` 时写 marker，因此不仅 router 调用数保持零，也能直接证明 stale child 没有被接受。
 
-每个匹配 heartbeat 先执行 `AdaptiveStore.heartbeat()` CAS；只有成功后才发布到 `Handle.events` 并重建 20 秒 deadline。deadline 到期会把同一 generation 结算为 `lost`，然后调用 Core group kill。`stop()` 发送 shutdown 后进入 terminal `finishing`，stdout Queue 被唤醒后会再次检查 terminal state，所以 stop 后的 late heartbeat 或 RPC 不会续租或触发 router。
+收到 `ready` 后，Supervisor 会先执行一次 exact `AdaptiveStore.heartbeat()` CAS，把 claim 阶段已经消耗的时间归零并取得完整 20 秒 durable lease；只有成功后才激活 routing 和本地 watcher。之后每个匹配 heartbeat 也先执行同一 CAS，成功后才发布到 `Handle.events` 并重建 20 秒 deadline。ready renewal 被拒绝会作为 startup failure 清理，避免 Store lease 先于本地 watchdog 到期。deadline 到期会把同一 generation 结算为 `lost`，然后调用 Core group kill。
 
-`StartInput.router(method, payload, boundIdentity)` 是唯一 child-originated RPC seam。JSON response 会编码为 `rpc.response`；Stream result 会编码为一组 `rpc.event` 和最终 `rpc.end`；typed `RpcError` 变成受控 `rpc.error`。child request ID 在 router fiber 启动前原子注册，同一时间最多允许 32 个；cancel 只中断精确匹配的请求。`Handle.request()` 复用同一个 identity-bound router，但在 supervisor scope 内拥有自己的 fiber 和 typed result latch，不会把调用方 fiber 注册成 child work。terminal completion 会先中断所有 pending router work；退出后的新请求得到 `PROCESS_EXITED`，不会产生 late side effect。
+`StartInput.router(method, payload, boundIdentity)` 是唯一 child-originated RPC seam。JSON response 会编码为 `rpc.response`；Stream result 会编码为一组 `rpc.event` 和最终 `rpc.end`；typed `RpcError` 变成受控 `rpc.error`。child request ID 在 router fiber 启动前原子注册，同一时间最多允许 32 个；已经完成的 ID 在整个 connection lifetime 也不能重放，每个 generation 最多保留 256 个 ID。`Handle.request()` 复用同一个 identity-bound router，但返回值收窄为 `JsonValue`；router 若返回 lazy Stream，会在已注册的 terminal-owned fiber 内完整消费并返回 JSON array。terminal completion 会中断实际 Stream consumption；退出后的新请求得到 `PROCESS_EXITED`，不会启动 router 或产生 late side effect。无法中断的 fiber 被 quarantine tombstone 保留，但不再让调用方 scope 永久挂起。
 
-stderr 不进入协议 decoder，也不会无界累积。Supervisor 先对最多 64 KiB 原始字节做流式 UTF-8 解码，再遮蔽 credential assignment 和带 userinfo 的 URL，最后按 UTF-8 code point 截断；因此即使 `[REDACTED]` 比原值更长，最终 encoded preview 仍不超过 64 KiB。跨 chunk 的多字节字符保持完整，落在 retention boundary 的 secret 也不会泄漏。后续任务可以把完整日志放入 blob store，但本任务不伪造 blob reference。
+stderr 不进入协议 decoder，也不会无界累积。Supervisor 先对最多 64 KiB 原始字节做流式 UTF-8 解码，再遮蔽 credential assignment 和带 userinfo 的 URL，最后按 UTF-8 code point 截断；因此即使 `[REDACTED]` 比原值更长，最终 encoded preview 仍不超过 64 KiB。terminal owner 会有界等待 stderr reader；超时后请求中断，并由幂等 finalizer 立即 flush、sanitize、limit 和 freeze。generic shutdown 不再提前完成 `stderrDone`，迟到 chunk 也不能修改已经暴露的 preview。
 
 隐藏的 `__adaptive-agent` 保留 raw `cmd` 注册，同时在普通 yargs parser、全局 middleware 和 `Heap.start()` 之前有一条窄 dispatch。dispatch 从 command 后截取八个 identity token，动态加载 `AgentEntry`，先调用 `parseArgv()` 做严格顺序和 Schema 校验，再调用 `runStdio()`；缺参、非法 generation 和非法 role 都稳定 exit `64`，不会落入普通 yargs 的 exit `1`。它不构建 AppRuntime、不读取 provider config、不加载 project plugins；当前 role 只 `await context.shutdown`。
 
@@ -81,7 +82,7 @@ stderr 不进入协议 decoder，也不会无界累积。Supervisor 先对最多
 
 **CAS generation claim** 表示“只有 durable generation 仍等于我读到的旧值时，才能原子增加一代并取得 owner lease”。这里 child hello 必须报告 claim 后的新 generation，但 `accepted` 只能在 Store CAS 成功后发送。
 
-**Lease** 是有期限的进程所有权。heartbeat 不是普通日志事件；它必须同时匹配 Agent ID、generation、owner、合法 state 且旧 lease 尚未过期，才可以把 `lease_expires_at` 延长 20 秒。
+**Lease** 是有期限的进程所有权。heartbeat 不是普通日志事件；它必须同时匹配 Agent ID、generation、owner、合法 state 且旧 lease 尚未过期，才可以把 `lease_expires_at` 延长 20 秒。quarantine 的 owner/PID 仍存在但 lease 为 null，它表示 cleanup 未被证实，不属于可过期 lease。
 
 **Out-of-band readiness marker** 是测试用 OS 文件事件证明 child 已到达某个状态，而不是等待固定毫秒数再猜。force-kill 测试让 SIGTERM handler 写 `.term`，测试观察文件存在后才推进明确的三秒产品 deadline。
 
@@ -98,6 +99,11 @@ stderr 不进入协议 decoder，也不会无界累积。Supervisor 先对最多
 | direct child 先退出、grandchild 忽略 SIGTERM | parent 按 TERM 正常退出，grandchild 写 `.term` 后继续存活，再推进 2999ms/1ms          | parent 已 gone；2999ms grandchild 仍活，3000ms 后 PID/PGID gone，Store reason 是 Controller stop | Core escalation 以 process group 存活为准，不被 direct-child exit 提前解除 |
 | stderr redaction 扩张或跨边界                | 大量短 secret assignment、拆分 emoji bytes、retention boundary secret                 | 最终 encoded bytes 不超过 64 KiB；无 secret 或 replacement corruption                            | bounded capture、streaming decode、redact-then-limit 顺序生效              |
 | terminal 原因混淆                            | 分别触发 lease、duplicate RPC、stdout transport、stop 和 code 23 exit                 | Store state、code、reason 精确匹配来源                                                           | durable diagnostics 不把所有终止折叠为 generic failure                     |
+| cleanup 不确定却释放 ownership               | 注入 kill defect、RPC interruption timeout 和 quarantine CAS failure                  | owner/PID 保留、lease null、generation 不变；same/fresh supervisor 都不能重启                    | uncertain cleanup fail closed，scope cleanup 仍有界                        |
+| ready 消耗旧 lease                           | accepted 后延迟 ready 9 秒，再观察原 claim expiry 与新 deadline                       | start 返回前 Store 已是 running，lease 从 ready 时刻重新获得完整 20 秒                           | durable lease 与 local watchdog 对齐                                       |
+| RPC replay 或 lifetime memory 增长           | completed ID replay、连续 257 个 sequential request ID                                | replay 在 barrier 前终止；第 257 个 ID 被拒绝                                                    | connection-lifetime uniqueness 与每 generation 256 上限                    |
+| stdin/stdout flood                           | 阻塞 heartbeat consumer 注入 1000 frame；child 停读 stdin 后返回大 response           | upstream pull 停在 frame capacity 附近；input queue 满时 stop 仍完成                             | 两条 Queue 有界且 terminal path 不排在满 Queue 后面                        |
+| signal race                                  | probe 返回 alive 后让 group/direct signal 注入 `ESRCH`，另注入 `EPERM`                | ESRCH 成功返回 already gone；EPERM 保持 PermissionDenied                                         | probe-to-signal race 不误报 cleanup failure                                |
 
 这些测试没有证明 provider/model 可用、ModelPolicy 得到审计执行、具体 role 能完成任务、packaged release binary 已跨平台 smoke，或完整 stderr 已持久化。它们证明的是 T07 的 command、hidden source entry、process ownership 和 kill lifecycle；gateway 属于 S01-T08，Controller/packaged integration 属于 S01-T09 及发布验证。
 
@@ -112,7 +118,7 @@ bun test test/adaptive/process-protocol.test.ts
 bun typecheck
 ```
 
-预期观察：focused supervisor 文件的 28 个 case 全部通过，四个 startup failure case 在返回前完成 cleanup，invalid hidden subprocess 都为 exit `64`，stale case 没有 accepted marker，heartbeat flood 被 coalesce，stderr preview 最终不超过 64 KiB，silent/mixed-group case 结束后 PID 与 PGID 都不存在。测试数量是当前实现的运行观测，未来增加 case 时应按实际输出更新。
+预期观察：focused supervisor 文件的 39 个 case 全部通过，四个 startup failure case 在返回前完成 cleanup，invalid hidden subprocess 都为 exit `64`，uncertain cleanup 保持 quarantine ownership，ready renewal 与 watcher deadline 对齐，RPC replay/flood 被有界拒绝，stderr preview 在 terminal completion 前冻结，silent/mixed-group case 结束后 PID 与 PGID 都不存在。测试数量是当前实现的运行观测，未来增加 case 时应按实际输出更新。
 
 再验证被复用的 Core spawner、Store 和教程结构：
 

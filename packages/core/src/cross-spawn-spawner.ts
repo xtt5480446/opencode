@@ -34,6 +34,7 @@ const toTag = (err: NodeJS.ErrnoException): PlatformError.SystemErrorTag => {
     case "ENOENT":
       return "NotFound"
     case "EACCES":
+    case "EPERM":
       return "PermissionDenied"
     case "EEXIST":
       return "AlreadyExists"
@@ -101,6 +102,7 @@ type ExitSignal = Deferred.Deferred<readonly [code: number | null, signal: NodeJ
 export interface MakeOptions {
   readonly groupAlive?: (pid: number) => boolean
   readonly forceKillObservationMs?: number
+  readonly signal?: (pid: number, signal: NodeJS.Signals, detached: boolean) => boolean
 }
 
 function* makeGenerator(options: MakeOptions) {
@@ -303,19 +305,27 @@ function* makeGenerator(options: MakeOptions) {
     signal: NodeJS.Signals,
   ) => {
     if (globalThis.process.platform === "win32") {
-      return Effect.callback<void, PlatformError.PlatformError>((resume) => {
+      return Effect.callback<"sent", PlatformError.PlatformError>((resume) => {
         NodeChildProcess.exec(`taskkill /pid ${proc.pid} /T /F`, { windowsHide: true }, (err) => {
           if (err) return resume(Effect.fail(toPlatformError("kill", toError(err), command)))
-          resume(Effect.void)
+          resume(Effect.succeed("sent"))
         })
       })
     }
 
-    return Effect.try({
-      try: () => {
-        globalThis.process.kill(-proc.pid!, signal)
-      },
-      catch: (err) => toPlatformError("kill", toError(err), command),
+    return Effect.suspend(() => {
+      try {
+        const delivered = options.signal
+          ? options.signal(proc.pid!, signal, true)
+          : globalThis.process.kill(-proc.pid!, signal)
+        if (!delivered)
+          return Effect.fail(toPlatformError("kill", new Error("Failed to kill child process group"), command))
+        return Effect.succeed("sent" as const)
+      } catch (cause) {
+        const error = toError(cause) as NodeJS.ErrnoException
+        if (error.code === "ESRCH") return Effect.succeed("gone" as const)
+        return Effect.fail(toPlatformError("kill", error, command))
+      }
     })
   }
 
@@ -325,8 +335,15 @@ function* makeGenerator(options: MakeOptions) {
     signal: NodeJS.Signals,
   ) =>
     Effect.suspend(() => {
-      if (proc.kill(signal)) return Effect.void
-      return Effect.fail(toPlatformError("kill", new Error("Failed to kill child process"), command))
+      try {
+        const delivered = options.signal ? options.signal(proc.pid!, signal, false) : proc.kill(signal)
+        if (delivered) return Effect.succeed("sent" as const)
+        return Effect.fail(toPlatformError("kill", new Error("Failed to kill child process"), command))
+      } catch (cause) {
+        const error = toError(cause) as NodeJS.ErrnoException
+        if (error.code === "ESRCH") return Effect.succeed("gone" as const)
+        return Effect.fail(toPlatformError("kill", error, command))
+      }
     })
 
   const observationTimeout = (command: ChildProcess.StandardCommand, target: "process" | "process group") => {
@@ -404,13 +421,13 @@ function* makeGenerator(options: MakeOptions) {
     if (globalThis.process.platform !== "win32" && detached) {
       return Effect.gen(function* () {
         if (!(yield* observeGroup(command, proc))) return
-        yield* killGroup(command, proc, initial)
+        if ((yield* killGroup(command, proc, initial)) === "gone") return
         if (Predicate.isUndefined(forceKillAfter)) return yield* waitForGroupExit(command, proc)
         return yield* Effect.raceFirst(
           waitForGroupExit(command, proc),
           Effect.sleep(forceKillAfter).pipe(
-            Effect.andThen(killGroup(command, proc, "SIGKILL")),
-            Effect.andThen(waitForGroupExitBounded(command, proc)),
+            Effect.flatMap(() => killGroup(command, proc, "SIGKILL")),
+            Effect.flatMap((result) => (result === "gone" ? Effect.void : waitForGroupExitBounded(command, proc))),
           ),
         )
       })
@@ -418,11 +435,16 @@ function* makeGenerator(options: MakeOptions) {
 
     const send = (next: NodeJS.Signals) =>
       globalThis.process.platform === "win32" ? killGroup(command, proc, next) : killOne(command, proc, next)
-    const attempt = send(initial).pipe(Effect.andThen(Deferred.await(signal)), Effect.asVoid)
+    const wait = (result: "sent" | "gone") =>
+      result === "gone" ? Effect.void : Deferred.await(signal).pipe(Effect.asVoid)
+    const attempt = send(initial).pipe(Effect.flatMap(wait))
     if (Predicate.isUndefined(forceKillAfter)) return attempt
     return Effect.timeoutOrElse(attempt, {
       duration: forceKillAfter,
-      orElse: () => send("SIGKILL").pipe(Effect.andThen(waitForExitBounded(command, signal))),
+      orElse: () =>
+        send("SIGKILL").pipe(
+          Effect.flatMap((result) => (result === "gone" ? Effect.void : waitForExitBounded(command, signal))),
+        ),
     })
   }
 

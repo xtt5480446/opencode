@@ -75,6 +75,14 @@ export interface SettleAgentInput {
   readonly exitReason?: string
 }
 
+export interface QuarantineAgentInput {
+  readonly agentID: AdaptiveTask.AgentID
+  readonly generation: number
+  readonly owner: string
+  readonly exitCode?: number
+  readonly exitReason: string
+}
+
 export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue }
 
 export interface PutManifestInput {
@@ -247,6 +255,9 @@ export interface Interface {
   ) => Effect.Effect<AgentRecord, InvalidLeaseError | AgentNotFoundError | AgentOwnershipConflictError>
   readonly settleAgent: (
     input: SettleAgentInput,
+  ) => Effect.Effect<AgentRecord, AgentNotFoundError | AgentOwnershipConflictError>
+  readonly quarantineAgent: (
+    input: QuarantineAgentInput,
   ) => Effect.Effect<AgentRecord, AgentNotFoundError | AgentOwnershipConflictError>
   readonly putManifest: (
     input: PutManifestInput,
@@ -698,6 +709,32 @@ const layer = Layer.effect(
       return agentRecord(row)
     })
 
+    const quarantineAgent = Effect.fn("AdaptiveStore.quarantineAgent")(function* (input: QuarantineAgentInput) {
+      const now = yield* Clock.currentTimeMillis
+      const row = yield* db
+        .update(AdaptiveAgentProcessTable)
+        .set({
+          state: "failed",
+          lease_expires_at: null,
+          exit_code: input.exitCode ?? null,
+          exit_reason: input.exitReason,
+          time_updated: now,
+        })
+        .where(
+          and(
+            eq(AdaptiveAgentProcessTable.id, input.agentID),
+            eq(AdaptiveAgentProcessTable.generation, input.generation),
+            eq(AdaptiveAgentProcessTable.owner, input.owner),
+            inArray(AdaptiveAgentProcessTable.state, ["starting", "running"]),
+          ),
+        )
+        .returning()
+        .get()
+        .pipe(Effect.orDie)
+      if (!row) return yield* ownershipConflict(input)
+      return agentRecord(row)
+    })
+
     const getManifest = Effect.fn("AdaptiveStore.getManifest")(function* (id: AdaptiveTask.ContextManifestID) {
       const row = yield* db
         .select({
@@ -938,6 +975,7 @@ const layer = Layer.effect(
       claimAgent,
       heartbeat,
       settleAgent,
+      quarantineAgent,
       putManifest,
       getManifest,
       insertModelRequest,
