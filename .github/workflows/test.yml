@@ -35,13 +35,17 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
-      - name: Test Adaptive Runtime foundation
-        run: |
-          bun --cwd packages/schema test ./test/adaptive-task.test.ts
-          bun --cwd packages/core test ./test/adaptive ./test/database-migration.test.ts
+      - name: Test Adaptive Task schema
+        working-directory: packages/schema
+        run: bun test ./test/adaptive-task.test.ts
 
-      - name: Typecheck Adaptive Runtime foundation
-        run: bun --cwd packages/core typecheck
+      - name: Test Adaptive Core foundation
+        working-directory: packages/core
+        run: bun test ./test/adaptive ./test/database-migration.test.ts
+
+      - name: Typecheck Adaptive Core foundation
+        working-directory: packages/core
+        run: bun run typecheck
 
   unit:
     if: github.event_name != 'pull_request'
