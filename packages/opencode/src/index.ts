@@ -29,8 +29,14 @@ import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
+import { AdaptiveAgentCommand, runAdaptiveAgent } from "./cli/cmd/adaptive-agent"
 
 const args = hideBin(process.argv)
+
+if (args[0] === "__adaptive-agent") {
+  await runAdaptiveAgent(args.slice(1))
+  process.exit()
+}
 
 function show(out: string) {
   const text = out.trimStart()
@@ -78,6 +84,7 @@ const cli = yargs(args)
   })
   .usage("")
   .completion("completion", "generate shell completion script")
+  .command(AdaptiveAgentCommand)
   .command(AcpCommand)
   .command(McpCommand)
   .command(TuiThreadCommand)

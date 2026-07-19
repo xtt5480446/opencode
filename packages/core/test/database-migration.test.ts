@@ -4,7 +4,7 @@ import { fileURLToPath } from "url"
 import path from "path"
 import { SqliteClient } from "@effect/sql-sqlite-bun"
 import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import { eq, inArray, sql } from "drizzle-orm"
 import { DatabaseMigration } from "@opencode-ai/core/database/migration"
 import { migrations } from "@opencode-ai/core/database/migration.gen"
@@ -37,6 +37,7 @@ const run = <A, E>(effect: Effect.Effect<A, E, SqlClientService>) =>
   )
 
 const makeDb = EffectDrizzleSqlite.makeWithDefaults()
+const adaptiveAgentQuarantineMigrationID = "20260719162735_adaptive_agent_quarantine"
 
 describe("DatabaseMigration", () => {
   test("serializes concurrent embedded initialization for one database path", async () => {
@@ -241,6 +242,52 @@ describe("DatabaseMigration", () => {
         expect(
           yield* db.all(sql`
             SELECT
+              id, task_id, role, generation, state, owner, pid, lease_expires_at,
+              exit_code, exit_reason, time_created, time_updated
+            FROM adaptive_agent_process
+          `),
+        ).toEqual([
+          {
+            id: "ada_existing",
+            task_id: "adt_existing",
+            role: "implementation",
+            generation: 1,
+            state: "running",
+            owner: "controller",
+            pid: 1,
+            lease_expires_at: 1000,
+            exit_code: null,
+            exit_reason: null,
+            time_created: 1,
+            time_updated: 1,
+          },
+        ])
+        expect(
+          yield* db.all(sql`
+            SELECT
+              id, task_id, agent_id, generation, purpose, system, messages, tools, components,
+              estimated_tokens, request_hash, time_created
+            FROM adaptive_context_manifest
+          `),
+        ).toEqual([
+          {
+            id: "acm_existing",
+            task_id: "adt_existing",
+            agent_id: "ada_existing",
+            generation: 1,
+            purpose: "existing",
+            system: "[]",
+            messages: "[]",
+            tools: "[]",
+            components: "[]",
+            estimated_tokens: 10,
+            request_hash: "sha256:manifest",
+            time_created: 1,
+          },
+        ])
+        expect(
+          yield* db.all(sql`
+            SELECT
               id,
               retry_of,
               provider_id,
@@ -302,11 +349,58 @@ describe("DatabaseMigration", () => {
           },
         ])
         expect(yield* db.all(sql`PRAGMA foreign_key_check`)).toEqual([])
+        expect(yield* db.get(sql`PRAGMA foreign_keys`)).toEqual({ foreign_keys: 1 })
         expect(
           (yield* db.all<{ from: string; table: string }>(sql`PRAGMA foreign_key_list(adaptive_model_request)`)).find(
             (foreignKey) => foreignKey.from === "retry_of",
           ),
         ).toMatchObject({ table: "adaptive_model_request" })
+        expect(
+          (yield* db.all<{ from: string; table: string }>(sql`PRAGMA foreign_key_list(adaptive_model_request)`)).find(
+            (foreignKey) => foreignKey.from === "agent_id",
+          ),
+        ).toMatchObject({ table: "adaptive_agent_process" })
+        expect(
+          (yield* db.all<{ from: string; table: string }>(
+            sql`PRAGMA foreign_key_list(adaptive_context_manifest)`,
+          )).find((foreignKey) => foreignKey.from === "agent_id"),
+        ).toMatchObject({ table: "adaptive_agent_process" })
+        expect(
+          yield* db.get(sql`SELECT count(*) AS count FROM migration WHERE id = ${adaptiveAgentQuarantineMigrationID}`),
+        ).toEqual({ count: 1 })
+      }),
+    )
+  })
+
+  test("rolls back an invalid foreign-key-disabled migration and restores enforcement", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`PRAGMA foreign_keys = ON`)
+        yield* db.run(sql`CREATE TABLE parent (id text PRIMARY KEY)`)
+        yield* db.run(sql`CREATE TABLE child (id text PRIMARY KEY, parent_id text NOT NULL REFERENCES parent(id))`)
+        let foreignKeysInsideMigration = -1
+        const invalidMigration = {
+          id: "test_foreign_key_check_rollback",
+          foreignKeys: "disabled",
+          up(tx) {
+            return Effect.gen(function* () {
+              foreignKeysInsideMigration =
+                (yield* tx.get<{ foreign_keys: number }>(sql`PRAGMA foreign_keys`))?.foreign_keys ?? -1
+              yield* tx.run(sql`INSERT INTO child (id, parent_id) VALUES ('dangling', 'missing')`)
+            })
+          },
+        } as const satisfies DatabaseMigration.Migration
+
+        const exit = yield* DatabaseMigration.applyOnly(db, [invalidMigration]).pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit))
+          expect(String(Cause.squash(exit.cause))).toContain("Database migration foreign key check failed")
+        expect(foreignKeysInsideMigration).toBe(0)
+        expect(yield* db.all(sql`SELECT * FROM child`)).toEqual([])
+        expect(yield* db.all(sql`SELECT id FROM migration WHERE id = ${invalidMigration.id}`)).toEqual([])
+        expect(yield* db.get(sql`PRAGMA foreign_keys`)).toEqual({ foreign_keys: 1 })
       }),
     )
   })

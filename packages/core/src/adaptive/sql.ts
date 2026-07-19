@@ -81,11 +81,11 @@ export const AdaptiveAgentProcessTable = sqliteTable(
     check("adaptive_agent_generation_check", sql`${table.generation} >= 0`),
     check(
       "adaptive_agent_owner_tuple_check",
-      sql`(${table.owner} IS NULL AND ${table.pid} IS NULL AND ${table.lease_expires_at} IS NULL) OR (${table.owner} IS NOT NULL AND length(${table.owner}) > 0 AND ${table.pid} > 0 AND ${table.lease_expires_at} > 0)`,
+      sql`(${table.owner} IS NULL AND ${table.pid} IS NULL AND ${table.lease_expires_at} IS NULL) OR (${table.owner} IS NOT NULL AND length(${table.owner}) > 0 AND ${table.pid} > 0 AND ((${table.state} IN ('starting', 'running') AND ${table.lease_expires_at} > 0) OR (${table.state} = 'failed' AND ${table.lease_expires_at} IS NULL)))`,
     ),
     check(
       "adaptive_agent_state_owner_check",
-      sql`(${table.state} IN ('starting', 'running') AND ${table.owner} IS NOT NULL) OR (${table.state} IN ('idle', 'stopped', 'lost', 'failed') AND ${table.owner} IS NULL)`,
+      sql`(${table.state} IN ('starting', 'running') AND ${table.owner} IS NOT NULL) OR (${table.state} IN ('idle', 'stopped', 'lost') AND ${table.owner} IS NULL) OR ${table.state} = 'failed'`,
     ),
   ],
 )

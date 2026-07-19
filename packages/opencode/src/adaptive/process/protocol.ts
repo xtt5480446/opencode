@@ -4,6 +4,7 @@ import { Schema } from "effect"
 export const VERSION = 1 as const
 export const MAX_ENCODED_FRAME_BYTES = 1_048_576
 export const MAX_OUTSTANDING_RPC_CALLS = 32
+export const MAX_RPC_REQUEST_IDS_PER_GENERATION = 256
 
 export const ErrorCode = Schema.Literals([
   "INVALID_FRAME",
