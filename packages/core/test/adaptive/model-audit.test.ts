@@ -4,7 +4,7 @@ import { Effect } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { AdaptiveModelAudit } from "@opencode-ai/core/adaptive/model-audit"
 import { AdaptiveModelPolicy } from "@opencode-ai/core/adaptive/model-policy"
-import { AdaptiveModelRequestTable } from "@opencode-ai/core/adaptive/sql"
+import { AdaptiveModelRequestTable, AdaptiveTaskTable } from "@opencode-ai/core/adaptive/sql"
 import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -402,9 +402,94 @@ it.effect("rejects zero requests, context limit drift, and multiple policy hashe
       .pipe(Effect.orDie)
     expect(yield* audit.verify(state.task.id)).toMatchObject({
       reasons: [
+        `CORRUPT_REQUEST_POLICY:${second.requestID}`,
         `MULTIPLE_POLICY_HASHES:${[state.task.modelPolicy.hash, `sha256:${"b".repeat(64)}`].toSorted().join(",")}`,
         `CONTEXT_LIMIT_EXCEEDS_TASK_POLICY:${overLimit.requestID}:262145>262144`,
       ],
+    })
+  }),
+)
+
+it.effect("invalidates a Request whose immutable policy fields do not match its hash", () =>
+  Effect.gen(function* () {
+    const audit = yield* AdaptiveModelAudit.Service
+    const state = yield* setup()
+    const input = admission(state)
+    yield* audit.admit(input)
+    yield* audit.settle(settlement(input.requestID))
+    const { db } = yield* Database.Service
+    yield* db
+      .update(AdaptiveModelRequestTable)
+      .set({ output_reserve: state.task.modelPolicy.outputReserve + 1 })
+      .where(eq(AdaptiveModelRequestTable.id, input.requestID))
+      .run()
+      .pipe(Effect.orDie)
+
+    expect(yield* audit.verify(state.task.id)).toEqual({
+      valid: false,
+      code: "INVALID_MODEL_MIXING",
+      reasons: [`CORRUPT_REQUEST_POLICY:${input.requestID}`],
+      requests: 1,
+    })
+  }),
+)
+
+it.effect("invalidates a canonical Request policy that differs from the complete Task policy", () =>
+  Effect.gen(function* () {
+    const audit = yield* AdaptiveModelAudit.Service
+    const state = yield* setup()
+    const input = admission(state)
+    yield* audit.admit(input)
+    yield* audit.settle(settlement(input.requestID))
+    const other = policy({ modelID: "qwen3" })
+    const { db } = yield* Database.Service
+    yield* db
+      .update(AdaptiveModelRequestTable)
+      .set({
+        provider_id: other.providerID,
+        model_id: other.modelID,
+        variant: other.variant,
+        effective_context_limit: other.effectiveContextLimit,
+        output_reserve: other.outputReserve,
+        safety_reserve: other.safetyReserve,
+        model_policy_hash: other.hash,
+      })
+      .where(eq(AdaptiveModelRequestTable.id, input.requestID))
+      .run()
+      .pipe(Effect.orDie)
+
+    expect(yield* audit.verify(state.task.id)).toEqual({
+      valid: false,
+      code: "INVALID_MODEL_MIXING",
+      reasons: [
+        `REQUEST_POLICY_MISMATCH:${input.requestID}`,
+        `POLICY_HASH_MISMATCH:${other.hash}!=${state.task.modelPolicy.hash}`,
+      ],
+      requests: 1,
+    })
+  }),
+)
+
+it.effect("invalidates a Task whose immutable policy fields do not match its hash", () =>
+  Effect.gen(function* () {
+    const audit = yield* AdaptiveModelAudit.Service
+    const state = yield* setup()
+    const input = admission(state)
+    yield* audit.admit(input)
+    yield* audit.settle(settlement(input.requestID))
+    const { db } = yield* Database.Service
+    yield* db
+      .update(AdaptiveTaskTable)
+      .set({ output_reserve: state.task.modelPolicy.outputReserve + 1 })
+      .where(eq(AdaptiveTaskTable.id, state.task.id))
+      .run()
+      .pipe(Effect.orDie)
+
+    expect(yield* audit.verify(state.task.id)).toEqual({
+      valid: false,
+      code: "INVALID_MODEL_MIXING",
+      reasons: [`CORRUPT_TASK_POLICY:${state.task.id}`],
+      requests: 1,
     })
   }),
 )

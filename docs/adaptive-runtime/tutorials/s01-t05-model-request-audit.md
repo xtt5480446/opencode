@@ -32,7 +32,9 @@ S01-T03 durable store + S01-T04 exact model resolution
 
 `streaming` 只接受 `admitted`，`settle` 只接受 `admitted|streaming`，后者在同一 CAS update 中写 `resolved_*`、usage、failure summary 和 completion time，绝不修改 admission policy columns。`AdaptiveStore.ModelRequestRecord.modelPolicy` 因而始终可重建并通过 canonical hash 检查；当 observation 存在时，独立的可选 `resolved` record 返回实际 provider/model/variant/limit。通用 `AdaptiveStore.settleModelRequest` 保持 source-compatible，不伪造解析结果，因此它结算的 row 没有 `resolved`。缺失 Request 与非法重复 transition 分别返回 `RequestNotFoundError` 和 `InvalidTransitionError`，无效 token/limit 返回 `InvalidSettlementError`。
 
-`verify` 按 Request ID 排序证据，并按固定类别生成 reasons。零请求、`admitted|streaming`、terminal row 缺少 resolved observation、多个 provider/model identity、单一 identity 偏离 Task、resolved variant 偏离 Task、多个或错误 policy hash、resolved effective context limit 高于 Task policy 都会返回 `{ valid: false, code: "INVALID_MODEL_MIXING" }`。只有至少一条请求、全部 terminal 且都有 observation、一个正确 identity/variant/hash 并且没有超限 context 时，才返回 exact provider/model/policy/count 的 valid proof。
+`verify` 按 Request ID 排序证据，并按固定类别生成 reasons。它先从 admission columns 分别重建 Task 与每条 Request 的完整 ModelPolicy，对每个 snapshot 执行 canonical self-check，再用 `AdaptiveModelPolicy.assertEqual` 比较每条 canonical Request 与 Task。检查失败不会从 `verify` 抛出：Task 或 Request 的 fields/hash preimage 不自洽时生成 `CORRUPT_TASK_POLICY:<TaskID>` 或 `CORRUPT_REQUEST_POLICY:<RequestID>`；自洽但完整 policy 与 Task 不同则生成 `REQUEST_POLICY_MISMATCH:<RequestID>`。
+
+零请求、`admitted|streaming`、terminal row 缺少 resolved observation、多个 provider/model identity、单一 identity 偏离 Task、resolved variant 偏离 Task、多个 policy hash、resolved effective context limit 高于 Task policy 同样会返回 `{ valid: false, code: "INVALID_MODEL_MIXING" }`。只有 Task 与全部 Request policy canonical 且完全相等、至少一条请求、全部 terminal 且都有 observation、一个正确 identity/variant/hash 并且没有超限 context 时，才返回 exact provider/model/policy/count 的 valid proof。
 
 ```text
 AdmissionInput
@@ -40,7 +42,8 @@ AdmissionInput
   → insert admitted row with immutable policy snapshot
   → CAS streaming
   → CAS terminal + separate resolved_* observation/usage
-  → deterministic verify(TaskID) → ValidityProof
+  → canonical Task/Request policies + deterministic resolved verification
+  → ValidityProof
 ```
 
 ## 推荐代码阅读路线
@@ -63,19 +66,21 @@ AdmissionInput
 
 ## 测试看护逻辑
 
-| 风险                                  | 测试方法                               | 关键断言                                                                     | 证明范围                               |
-| ------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------- |
-| rejected admission 留下 row           | wrong generation/Manifest/policy cases | 每次 typed error 后 count 仍为 `0`                                           | 校验与 insert 同一事务                 |
-| retry 偷换 Task 或 policy             | exact retry lineage test               | B 指向 A；cross Task/policy count 不变                                       | parent 同 Task/Agent/hash              |
-| provider/model 混用却有效             | two resolved identities test           | stable sorted `MULTIPLE_MODEL_IDENTITIES`                                    | settled observation 可离线比较         |
-| invalid observation 破坏 Store 可读性 | immutable policy beside resolved test  | 原 `modelPolicy` 完整返回且 `resolved` 独立返回漂移值                        | policy snapshot 与事实观测可组合读取   |
-| 未结算请求被遗漏                      | admitted and streaming test            | reason 含 `UNSETTLED_MODEL_REQUEST:<RequestID>`                              | 两种 nonterminal 状态均 fail closed    |
-| terminal row 缺失事实观测             | missing resolved observation test      | reason 含 `MISSING_RESOLVED_MODEL_OBSERVATION:<RequestID>`                   | generic settlement 不能伪装 audit 完整 |
-| reasoning variant 漂移                | resolved variant test                  | `MODEL_VARIANT_MISMATCH` 含 Request ID 与两侧 variant                        | 同 model 的 variant 仍受 policy 约束   |
-| policy/context 漂移                   | zero/context/hash test                 | `NO_MODEL_REQUEST`、超限和 multiple hash reasons                             | verifier 不只统计 model ID             |
-| transition 被重复覆盖                 | three terminal paths test              | durable status/time/usage；missing/terminal/repeated streaming typed failure | 三条 Task 8 finalizer 路径都有 CAS     |
-| 正常 retry 被误杀                     | one-model lineage test                 | exact provider/model/hash/count 的 valid proof                               | terminal 成败不影响模型一致性          |
-| T03 升级丢失 request                  | existing T03 migration test            | 原 policy/status/usage 保留，四个 `resolved_*` 为 `NULL`                     | forward migration 无损兼容旧库         |
+| 风险                                  | 测试方法                               | 关键断言                                                                     | 证明范围                                     |
+| ------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------- |
+| rejected admission 留下 row           | wrong generation/Manifest/policy cases | 每次 typed error 后 count 仍为 `0`                                           | 校验与 insert 同一事务                       |
+| retry 偷换 Task 或 policy             | exact retry lineage test               | B 指向 A；cross Task/policy count 不变                                       | parent 同 Task/Agent/hash                    |
+| provider/model 混用却有效             | two resolved identities test           | stable sorted `MULTIPLE_MODEL_IDENTITIES`                                    | settled observation 可离线比较               |
+| invalid observation 破坏 Store 可读性 | immutable policy beside resolved test  | 原 `modelPolicy` 完整返回且 `resolved` 独立返回漂移值                        | policy snapshot 与事实观测可组合读取         |
+| 未结算请求被遗漏                      | admitted and streaming test            | reason 含 `UNSETTLED_MODEL_REQUEST:<RequestID>`                              | 两种 nonterminal 状态均 fail closed          |
+| terminal row 缺失事实观测             | missing resolved observation test      | reason 含 `MISSING_RESOLVED_MODEL_OBSERVATION:<RequestID>`                   | generic settlement 不能伪装 audit 完整       |
+| reasoning variant 漂移                | resolved variant test                  | `MODEL_VARIANT_MISMATCH` 含 Request ID 与两侧 variant                        | 同 model 的 variant 仍受 policy 约束         |
+| policy/context 漂移                   | zero/context/hash test                 | `NO_MODEL_REQUEST`、超限和 multiple hash reasons                             | verifier 不只统计 model ID                   |
+| corrupt policy 被错误认证             | corrupt Task/Request policy tests      | `CORRUPT_*_POLICY`，且不会返回 valid 或抛出                                  | hash 必须是全部执行字段的 canonical preimage |
+| 自洽 Request policy 偷换 Task policy  | complete Request policy mismatch test  | `REQUEST_POLICY_MISMATCH:<RequestID>`                                        | 不只比较 hash，完整执行策略必须相等          |
+| transition 被重复覆盖                 | three terminal paths test              | durable status/time/usage；missing/terminal/repeated streaming typed failure | 三条 Task 8 finalizer 路径都有 CAS           |
+| 正常 retry 被误杀                     | one-model lineage test                 | exact provider/model/hash/count 的 valid proof                               | terminal 成败不影响模型一致性                |
+| T03 升级丢失 request                  | existing T03 migration test            | 原 policy/status/usage 保留，四个 `resolved_*` 为 `NULL`                     | forward migration 无损兼容旧库               |
 
 这些测试使用真实 in-memory SQLite 和现有 Store，不模拟 SQL transaction。它们没有证明 provider 网络可达、resolver 返回真实 route、failure 已经做 secret redaction、进程中断一定执行 finalizer，或 S01-T08 已经把每次模型调用接到 audit；这些属于 Gateway、process supervision 与后续安全测试。
 
@@ -91,7 +96,7 @@ bun typecheck
 bun script/migration.ts --check
 ```
 
-预期观察：所有 test 退出码为 `0`，focused audit 文件包含 10 个通过用例且没有 failure；migration test 同时覆盖 fresh schema 与已存在 T03 row 的升级，typecheck 和 migration check 同样退出 `0`。若 admission case 失败，先检查 TestClock 下 lease 是否仍有效；若 valid proof 多出 reason，直接按 reason 中的 Request ID 分别查询 immutable policy columns 和 `resolved_*` observation columns。
+预期观察：所有 test 退出码为 `0`，focused audit 文件包含 13 个通过用例且没有 failure；migration test 同时覆盖 fresh schema 与已存在 T03 row 的升级，typecheck 和 migration check 同样退出 `0`。若 admission case 失败，先检查 TestClock 下 lease 是否仍有效；若 valid proof 多出 reason，直接按 reason 中的 Request ID 分别查询 immutable policy columns 和 `resolved_*` observation columns。`CORRUPT_*_POLICY` 表示 fields 与 hash 不再 canonical 自洽，`REQUEST_POLICY_MISMATCH` 表示 row 本身自洽但不再等于 Task policy。
 
 再从 repository script package 验证教程结构：
 
@@ -100,10 +105,10 @@ cd script
 bun test adaptive-tutorial-check.test.ts
 ```
 
-预期观察：模板章节、索引链接、中文正文和残留 marker 检查全部通过。这里的 10 个 focused case 是当前本地运行事实，不是历史 PR 的统计数字。
+预期观察：模板章节、索引链接、中文正文和残留 marker 检查全部通过。这里的 13 个 focused case 是当前本地运行事实，不是历史 PR 的统计数字。
 
 ## 当前边界与下一步
 
-本任务只负责 durable admission、状态与 validity proof，不负责构造 `LLM.request`、连接 provider、累计 stream event、自动 retry 或将 Task 标为 `invalid`。`SettlementInput.failure` 是已经由上游收敛的摘要；本层不接收 header、credential 或 prompt body，也不承担通用 secret scanner。
+本任务只负责 durable admission、状态与 validity proof，不负责构造 `LLM.request`、连接 provider、累计 stream event、自动 retry 或将 Task 标为 `invalid`。`verify` 会把 corrupt policy 变成稳定 invalid reason，但 `AdaptiveStore.getModelRequest` 仍沿用 T03 的 `CorruptModelPolicyError` taxonomy；本任务不扩张该错误分类。`SettlementInput.failure` 是已经由上游收敛的摘要；本层不接收 header、credential 或 prompt body，也不承担通用 secret scanner。
 
 S01-T08 会让 Model Gateway 严格执行 `admit → resolve → streaming → one provider stream → terminal settle`，并在不可中断 finalizer 中覆盖 `succeeded|failed|interrupted`。后续 benchmark completion 再消费 `verify`。如果调用方绕过 audit service、Gateway 没有 settlement，或只通过 generic Store terminal settlement 而没有 resolved observation，verifier 会分别以零请求、`UNSETTLED_MODEL_REQUEST` 或 `MISSING_RESOLVED_MODEL_OBSERVATION` fail closed，结果不能进入有效 benchmark 比较。

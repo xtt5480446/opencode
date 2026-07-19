@@ -166,7 +166,17 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/AdaptiveModelAudit") {}
 
-const storedPolicy = (row: typeof AdaptiveTaskTable.$inferSelect) =>
+interface PolicyRow {
+  readonly provider_id: string
+  readonly model_id: string
+  readonly variant: string | null
+  readonly effective_context_limit: number
+  readonly output_reserve: number
+  readonly safety_reserve: number
+  readonly model_policy_hash: string
+}
+
+const storedPolicy = (row: PolicyRow) =>
   AdaptiveTask.ModelPolicy.make({
     providerID: Provider.ID.make(row.provider_id),
     modelID: Model.ID.make(row.model_id),
@@ -176,6 +186,25 @@ const storedPolicy = (row: typeof AdaptiveTaskTable.$inferSelect) =>
     safetyReserve: row.safety_reserve,
     hash: row.model_policy_hash,
   })
+
+const canonicalPolicy = (row: PolicyRow) => {
+  try {
+    const policy = storedPolicy(row)
+    AdaptiveModelPolicy.assertEqual(policy, policy)
+    return policy
+  } catch {
+    return undefined
+  }
+}
+
+const samePolicy = (expected: AdaptiveTask.ModelPolicy, actual: AdaptiveTask.ModelPolicy) => {
+  try {
+    AdaptiveModelPolicy.assertEqual(expected, actual)
+    return true
+  } catch {
+    return false
+  }
+}
 
 const transitionFailure = Effect.fnUntraced(function* (
   requestID: AdaptiveTask.RequestID,
@@ -415,6 +444,23 @@ const layer = Layer.effect(
       const reasons: string[] = []
       if (!task) reasons.push(`TASK_NOT_FOUND:${taskID}`)
       if (ordered.length === 0 && task) reasons.push("NO_MODEL_REQUEST")
+
+      const taskPolicy = task ? canonicalPolicy(task) : undefined
+      if (task && !taskPolicy) reasons.push(`CORRUPT_TASK_POLICY:${taskID}`)
+      const requestPolicies = ordered.map((request) => ({ request, policy: canonicalPolicy(request) }))
+      reasons.push(
+        ...requestPolicies
+          .filter((entry) => !entry.policy)
+          .map((entry) => `CORRUPT_REQUEST_POLICY:${entry.request.id}`),
+      )
+      if (taskPolicy)
+        reasons.push(
+          ...requestPolicies
+            .filter((entry): entry is typeof entry & { readonly policy: AdaptiveTask.ModelPolicy } => !!entry.policy)
+            .filter((entry) => !samePolicy(taskPolicy, entry.policy))
+            .map((entry) => `REQUEST_POLICY_MISMATCH:${entry.request.id}`),
+        )
+
       reasons.push(
         ...ordered
           .filter((request) => request.status === "admitted" || request.status === "streaming")
@@ -485,7 +531,7 @@ const layer = Layer.effect(
         valid: true as const,
         providerID: observed[0]!.resolved_provider_id!,
         modelID: observed[0]!.resolved_model_id!,
-        policyHash: hashes[0]!,
+        policyHash: taskPolicy!.hash,
         requests: ordered.length,
       }
     })
