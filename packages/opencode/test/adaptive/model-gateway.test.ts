@@ -26,7 +26,7 @@ import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Model } from "@opencode-ai/schema/model"
 import { Provider } from "@opencode-ai/schema/provider"
 import { eq, sql } from "drizzle-orm"
-import { Deferred, Effect, Fiber, Layer, LayerMap, Stream } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Stream } from "effect"
 import { AdaptiveModelGateway } from "@/adaptive/model-gateway"
 import { testEffect } from "../lib/effect"
 
@@ -36,6 +36,8 @@ let responses: Array<Stream.Stream<LLMEvent, LLMError>> = []
 let resolverFailure: "authorization" | "defect" | "none" = "none"
 let admitPause: Deferred.Deferred<void> | undefined
 let admitReturned: Deferred.Deferred<void> | undefined
+let settleFailure: "defect" | "none" = "none"
+let streamConstructionFailure = false
 
 const resolvedModel = () =>
   LLMModel.make({
@@ -79,6 +81,7 @@ const client = Layer.succeed(
     prepare: () => Effect.die("unused"),
     stream: ((request: LLMRequest) => {
       requests.push(request)
+      if (streamConstructionFailure) throw new Error("llm-stream-secret")
       return responses.shift() ?? Stream.empty
     }) as LLMClientShape["stream"],
     generate: () => Effect.die("unused"),
@@ -104,6 +107,7 @@ const wrappedAudit = Layer.effect(
                 : Deferred.succeed(admitReturned, undefined).pipe(Effect.andThen(Deferred.await(admitPause))),
             ),
           ),
+      settle: (input) => (settleFailure === "defect" ? Effect.die(new Error("settlement-secret")) : base.settle(input)),
     })
   }),
 ).pipe(Layer.provide(realAudit))
@@ -204,6 +208,8 @@ beforeEach(() => {
   resolverFailure = "none"
   admitPause = undefined
   admitReturned = undefined
+  settleFailure = "none"
+  streamConstructionFailure = false
 })
 
 describe("AdaptiveModelGateway", () => {
@@ -223,7 +229,8 @@ describe("AdaptiveModelGateway", () => {
       const events = Array.from(yield* Stream.runCollect(gateway.stream(untrusted)))
 
       expect(events).toHaveLength(1)
-      expect(events[0]).toBe(terminal)
+      expect(events[0]).not.toBe(terminal)
+      expect(events[0]).toEqual(terminal)
       expect(requests).toHaveLength(1)
       expect(refs).toHaveLength(1)
       expect(refs[0]?.directory).toBe("/workspace/authoritative")
@@ -370,7 +377,12 @@ describe("AdaptiveModelGateway", () => {
 
       const events = Array.from(yield* Stream.runCollect((yield* AdaptiveModelGateway.Service).stream(request)))
 
-      expect(events[0]).toBe(providerError)
+      expect(events[0]).not.toBe(providerError)
+      expect(events[0]).toMatchObject({
+        type: "provider-error",
+        message: "Provider returned an error",
+        retryable: false,
+      })
       expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({
         status: "failed",
         failure: "Provider returned an error event",
@@ -582,6 +594,156 @@ describe("AdaptiveModelGateway", () => {
 
       const row = yield* state.store.getModelRequest(request.requestID)
       expect(row).toMatchObject({ status: "interrupted", timeCompleted: expect.any(Number) })
+    }),
+  )
+
+  it.live("does not succeed when a downstream consumer stops after one nonterminal event", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      const request = input(state)
+      responses.push(
+        Stream.make(LLMEvent.textDelta({ id: "partial", text: "partial" }), LLMEvent.finish({ reason: "stop" })),
+      )
+
+      yield* Stream.runHead((yield* AdaptiveModelGateway.Service).stream(request))
+
+      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({
+        status: "failed",
+        failure: "Provider stream ended before finish",
+        timeCompleted: expect.any(Number),
+      })
+    }),
+  )
+
+  it.live("does not succeed when the provider reaches natural EOF without finish", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      const request = input(state)
+      responses.push(Stream.make(LLMEvent.textDelta({ id: "partial", text: "partial" })))
+
+      yield* Stream.runDrain((yield* AdaptiveModelGateway.Service).stream(request))
+
+      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({
+        status: "failed",
+        failure: "Provider stream ended before finish",
+        timeCompleted: expect.any(Number),
+      })
+    }),
+  )
+
+  it.live("sanitizes provider, tool, and usage metadata without changing normalized facts", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      const request = input(state)
+      responses.push(
+        Stream.make(
+          LLMEvent.stepFinish({
+            index: 0,
+            reason: "stop",
+            usage: {
+              inputTokens: 21,
+              outputTokens: 8,
+              providerMetadata: { test: { secret: "usage-secret" } },
+            },
+            providerMetadata: { test: { secret: "step-secret" } },
+          }),
+          LLMEvent.toolError({
+            id: "call-safe",
+            name: "inspect",
+            message: "tool-secret",
+            error: new Error("tool-defect-secret"),
+            providerMetadata: { test: { secret: "tool-metadata-secret" } },
+          }),
+          LLMEvent.providerError({
+            message: "provider-secret",
+            classification: "context-overflow",
+            retryable: true,
+            providerMetadata: { test: { secret: "provider-metadata-secret" } },
+          }),
+        ),
+      )
+
+      const events = Array.from(yield* Stream.runCollect((yield* AdaptiveModelGateway.Service).stream(request)))
+      const json = JSON.stringify(events)
+
+      expect(json).not.toContain("secret")
+      expect(events).toMatchObject([
+        {
+          type: "step-finish",
+          index: 0,
+          reason: "stop",
+          usage: { inputTokens: 21, outputTokens: 8 },
+        },
+        {
+          type: "tool-error",
+          id: "call-safe",
+          name: "inspect",
+          message: "Tool execution failed",
+        },
+        {
+          type: "provider-error",
+          message: "Provider returned an error",
+          classification: "context-overflow",
+          retryable: true,
+        },
+      ])
+      expect(events[0]).not.toHaveProperty("providerMetadata")
+      expect("usage" in events[0] ? events[0].usage : undefined).not.toHaveProperty("providerMetadata")
+      expect(events[1]).not.toHaveProperty("providerMetadata")
+      expect(events[1]).not.toHaveProperty("error")
+      expect(events[2]).not.toHaveProperty("providerMetadata")
+      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({
+        status: "failed",
+        inputTokens: 21,
+        outputTokens: 8,
+      })
+    }),
+  )
+
+  it.live("fails the caller when terminal audit settlement fails", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      const request = input(state)
+      settleFailure = "defect"
+      responses.push(Stream.make(LLMEvent.finish({ reason: "stop" })))
+
+      const exit = yield* Stream.runDrain((yield* AdaptiveModelGateway.Service).stream(request)).pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      const failure = Cause.squash(Exit.isFailure(exit) ? exit.cause : yield* Effect.die("expected settlement failure"))
+      expect(failure).toMatchObject({
+        _tag: "AdaptiveModelGateway.Settlement",
+        requestID: request.requestID,
+        reason: "Model request settlement failed",
+      })
+      expect(JSON.stringify(failure)).not.toContain("settlement-secret")
+      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({ status: "streaming" })
+      expect(yield* (yield* AdaptiveModelAudit.Service).verify(state.task.id)).toMatchObject({
+        valid: false,
+        reasons: [`UNSETTLED_MODEL_REQUEST:${request.requestID}`],
+      })
+    }),
+  )
+
+  it.live("sanitizes synchronous defects while constructing the provider stream", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      const request = input(state)
+      streamConstructionFailure = true
+
+      const failure = yield* Stream.runDrain((yield* AdaptiveModelGateway.Service).stream(request)).pipe(Effect.flip)
+
+      expect(failure).toMatchObject({
+        _tag: "AdaptiveModelGateway.ProviderStream",
+        requestID: request.requestID,
+        reason: "Provider stream failed",
+      })
+      expect(JSON.stringify(failure)).not.toContain("llm-stream-secret")
+      expect(requests).toHaveLength(1)
+      expect(yield* state.store.getModelRequest(request.requestID)).toMatchObject({
+        status: "failed",
+        timeCompleted: expect.any(Number),
+      })
     }),
   )
 })

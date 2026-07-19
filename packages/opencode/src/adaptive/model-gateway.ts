@@ -11,7 +11,16 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Provider } from "@opencode-ai/schema/provider"
-import { LLM, LLMClient, LLMEvent, Message, Model as ResolvedModel, SystemPart, ToolDefinition } from "@opencode-ai/llm"
+import {
+  LLM,
+  LLMClient,
+  LLMEvent,
+  Message,
+  Model as ResolvedModel,
+  SystemPart,
+  ToolDefinition,
+  type Usage,
+} from "@opencode-ai/llm"
 import { Cause, Context, Effect, Exit, Layer, Schema, Scope, Stream } from "effect"
 
 export interface StreamInput {
@@ -62,6 +71,11 @@ export class ProviderStreamError extends Schema.TaggedErrorClass<ProviderStreamE
   },
 ) {}
 
+export class SettlementError extends Schema.TaggedErrorClass<SettlementError>()("AdaptiveModelGateway.Settlement", {
+  requestID: AdaptiveTask.RequestID,
+  reason: Schema.Literal("Model request settlement failed"),
+}) {}
+
 export type Error =
   | AdaptiveStore.TaskNotFoundError
   | AdaptiveModelAudit.AdmissionError
@@ -87,12 +101,13 @@ interface RequestState {
   outputTokens?: number
   providerStarted: boolean
   providerError: boolean
+  finished: boolean
 }
 
 const validTokenCount = (value: number | undefined) =>
   value !== undefined && value >= 0 && Number.isSafeInteger(value) ? value : undefined
 
-const updateUsage = (state: RequestState, event: LLMEvent) => {
+const observeRawEvent = (state: RequestState, event: LLMEvent) => {
   if ("usage" in event && event.usage !== undefined) {
     const inputTokens = validTokenCount(event.usage.inputTokens)
     const outputTokens = validTokenCount(event.usage.outputTokens)
@@ -100,25 +115,94 @@ const updateUsage = (state: RequestState, event: LLMEvent) => {
     if (outputTokens !== undefined) state.outputTokens = outputTokens
   }
   if (LLMEvent.is.providerError(event)) state.providerError = true
+  if (LLMEvent.is.finish(event)) state.finished = true
+}
+
+const sanitizeUsage = (usage: Usage | undefined) =>
+  usage === undefined
+    ? undefined
+    : {
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        nonCachedInputTokens: usage.nonCachedInputTokens,
+        cacheReadInputTokens: usage.cacheReadInputTokens,
+        cacheWriteInputTokens: usage.cacheWriteInputTokens,
+        reasoningTokens: usage.reasoningTokens,
+        totalTokens: usage.totalTokens,
+      }
+
+const sanitizeEvent = (event: LLMEvent): LLMEvent => {
+  switch (event.type) {
+    case "step-start":
+      return LLMEvent.stepStart({ index: event.index })
+    case "text-start":
+      return LLMEvent.textStart({ id: event.id })
+    case "text-delta":
+      return LLMEvent.textDelta({ id: event.id, text: event.text })
+    case "text-end":
+      return LLMEvent.textEnd({ id: event.id })
+    case "reasoning-start":
+      return LLMEvent.reasoningStart({ id: event.id })
+    case "reasoning-delta":
+      return LLMEvent.reasoningDelta({ id: event.id, text: event.text })
+    case "reasoning-end":
+      return LLMEvent.reasoningEnd({ id: event.id })
+    case "tool-input-start":
+      return LLMEvent.toolInputStart({ id: event.id, name: event.name })
+    case "tool-input-delta":
+      return LLMEvent.toolInputDelta({ id: event.id, name: event.name, text: event.text })
+    case "tool-input-end":
+      return LLMEvent.toolInputEnd({ id: event.id, name: event.name })
+    case "tool-call":
+      return LLMEvent.toolCall({
+        id: event.id,
+        name: event.name,
+        input: event.input,
+        providerExecuted: event.providerExecuted,
+      })
+    case "tool-result":
+      return LLMEvent.toolResult({
+        id: event.id,
+        name: event.name,
+        result: event.result,
+        output: event.output,
+        providerExecuted: event.providerExecuted,
+      })
+    case "tool-error":
+      return LLMEvent.toolError({ id: event.id, name: event.name, message: "Tool execution failed" })
+    case "step-finish":
+      return LLMEvent.stepFinish({ index: event.index, reason: event.reason, usage: sanitizeUsage(event.usage) })
+    case "finish":
+      return LLMEvent.finish({ reason: event.reason, usage: sanitizeUsage(event.usage) })
+    case "provider-error":
+      return LLMEvent.providerError({
+        message: "Provider returned an error",
+        classification: event.classification,
+        retryable: event.retryable,
+      })
+  }
+  throw new Error("Unsupported canonical LLM event")
 }
 
 const settlement = (state: RequestState, input: StreamInput, exit: Exit.Exit<unknown, unknown>) => {
   const interrupted = Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)
   const status = state.providerError
     ? "failed"
-    : Exit.isSuccess(exit)
-      ? "succeeded"
-      : interrupted
-        ? "interrupted"
+    : interrupted
+      ? "interrupted"
+      : Exit.isSuccess(exit) && state.finished
+        ? "succeeded"
         : "failed"
   const failure =
     status !== "failed"
       ? undefined
       : state.providerError
         ? "Provider returned an error event"
-        : state.providerStarted
-          ? "Provider stream failed"
-          : "Model gateway rejected request before provider execution"
+        : Exit.isSuccess(exit) && state.providerStarted && !state.finished
+          ? "Provider stream ended before finish"
+          : state.providerStarted
+            ? "Provider stream failed"
+            : "Model gateway rejected request before provider execution"
   return {
     requestID: input.requestID,
     status,
@@ -183,11 +267,17 @@ const layer = Layer.effect(
               effectiveContextLimit: task.modelPolicy.effectiveContextLimit,
               providerStarted: false,
               providerError: false,
+              finished: false,
             }
             yield* Scope.addFinalizerExit(scope, (exit) =>
               audit.settle(settlement(state, input, exit)).pipe(
                 Effect.catchCause(() =>
-                  Effect.logError("Adaptive model request settlement failed", { requestID: input.requestID }),
+                  Effect.die(
+                    new SettlementError({
+                      requestID: input.requestID,
+                      reason: "Model request settlement failed",
+                    }),
+                  ),
                 ),
                 Effect.uninterruptible,
               ),
@@ -273,8 +363,13 @@ const layer = Layer.effect(
 
         yield* safeDefects(audit.streaming(input.requestID), taskStateError(input))
         state.providerStarted = true
-        return llm.stream(request).pipe(
-          Stream.tap((event) => Effect.sync(() => updateUsage(state, event))),
+        const providerStream = yield* Effect.try({
+          try: () => llm.stream(request),
+          catch: () => publicStreamError(input.requestID),
+        })
+        return providerStream.pipe(
+          Stream.tap((event) => Effect.sync(() => observeRawEvent(state, event))),
+          Stream.map(sanitizeEvent),
           Stream.catchCause(() => Stream.fail(publicStreamError(input.requestID))),
         )
       })
