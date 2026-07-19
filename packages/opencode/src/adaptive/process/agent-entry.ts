@@ -21,6 +21,7 @@ export type Identity = typeof IdentitySchema.Type
 export interface Transport {
   readonly input: AsyncIterable<Uint8Array>
   readonly write: (chunk: Uint8Array) => unknown
+  readonly cancelInput: () => unknown
 }
 
 export interface Clock {
@@ -228,6 +229,7 @@ export async function run(options: RunOptions): Promise<ExitCode> {
   } finally {
     if (heartbeat !== undefined) options.clock.clearInterval(heartbeat)
     rpc?.close(new AgentProcessProtocol.ProtocolError({ code: "INVALID_FRAME", message: "Adaptive process stopped" }))
+    await options.transport.cancelInput()
     await iterator?.return?.()
   }
 }
@@ -352,9 +354,26 @@ export const systemClock: Clock = {
 }
 
 export function stdioTransport(): Transport {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   return {
-    input: stdinChunks(),
+    input: {
+      async *[Symbol.asyncIterator]() {
+        const active = Bun.stdin.stream().getReader()
+        reader = active
+        try {
+          while (true) {
+            const chunk = await active.read()
+            if (chunk.done) return
+            yield chunk.value
+          }
+        } finally {
+          if (reader === active) reader = undefined
+          active.releaseLock()
+        }
+      },
+    },
     write: (chunk) => Bun.stdout.write(chunk),
+    cancelInput: () => reader?.cancel(),
   }
 }
 
@@ -371,20 +390,6 @@ export async function runStdio(
   })
   process.exitCode = code
   return code
-}
-
-async function* stdinChunks() {
-  const reader = Bun.stdin.stream().getReader()
-  try {
-    while (true) {
-      const chunk = await reader.read()
-      if (chunk.done) return
-      yield chunk.value
-    }
-  } finally {
-    await reader.cancel()
-    reader.releaseLock()
-  }
 }
 
 export * as AgentEntry from "./agent-entry"

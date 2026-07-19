@@ -33,7 +33,7 @@ S01-T01 strict Adaptive IDs and roles
 
 `encode()` 先校验对象，再用 UTF-8 编码 `JSON.stringify(frame) + "\n"`。`MAX_ENCODED_FRAME_BYTES` 包含最后一个 LF，因此 JSON body 最多占 `1_048_575` bytes。`Decoder` 预分配固定容量 buffer，逐 byte 查找 LF，可以接收任意 chunk boundary、一次多帧以及拆在多个 chunk 中的 multibyte UTF-8。协议只接受 LF：bare CR 和 CRLF 都以 `INVALID_NEWLINE` 拒绝，避免不同平台 normalization 产生两种 frame 解释。错误只报告稳定 code/message，不拼接原始 invalid payload。
 
-`AgentEntry.run()` 的注入面只有 argv、byte transport、clock、ID generator 与 role loop。argv 必须严格采用以下顺序，不能增加第五种业务输入：
+`AgentEntry.run()` 的注入面只有 argv、可主动取消输入的 byte transport、clock、ID generator 与 role loop。`Transport.cancelInput()` 是生命周期契约的一部分：它必须解除当前 pending read，而不只是要求 iterator 在下一次 yield 时结束。argv 必须严格采用以下顺序，不能增加第五种业务输入：
 
 ```text
 --task-id <AdaptiveTask.ID>
@@ -52,13 +52,13 @@ validated argv identity
   → role calls model.stream / process.complete through bounded RpcClient
   → Controller rpc.event / response / end / error correlation
   → acknowledged process.complete
-  → cleanup reader and timers
+  → cancel pending input read, then return iterator and clear timers
   → exit 0
 ```
 
-握手前收到非 `accepted` frame、版本错误、Schema 错误、timeout、重复 accepted、未知 request correlation 或 completion 前 shutdown 都走 protocol/config exit `64`。role callback 或其他内部 defect 走 exit `70`。`RpcClient` 在发送第 33 个 outstanding call 前同步抛出 sanitized `RPC_LIMIT`，收到 response/end/error 后立即删除 pending entry；stream event 只调用对应 request 的 `onEvent`，不扩大 map。所有退出路径都会 clear heartbeat、reject/clear pending calls 并调用 input iterator 的 `return()`。
+握手前收到非 `accepted` frame、版本错误、Schema 错误、timeout、重复 accepted、未知 request correlation 或 completion 前 shutdown 都走 protocol/config exit `64`。role callback 或其他内部 defect 走 exit `70`。`RpcClient` 在发送第 33 个 outstanding call 前同步抛出 sanitized `RPC_LIMIT`，收到 response/end/error 后立即删除 pending entry；stream event 只调用对应 request 的 `onEvent`，不扩大 map。所有退出路径都会 clear heartbeat、reject/clear pending calls，先 await `Transport.cancelInput()` 解除可能仍在等待的 `next()`，再 await input iterator 的 `return()` 完成 generator cleanup。
 
-`runStdio()` 是供 S01-T07 hidden command 使用的真实入口适配器。它把 Bun stdin/stdout 和 system clock 注入同一 `run()`，默认从 `process.argv.slice(2)` 取得身份参数，并只设置最终 `process.exitCode`。它不读取 credential environment，也不决定如何执行任何 role；后续 command 必须显式提供 `runRole`。
+`runStdio()` 是供 S01-T07 hidden command 使用的真实入口适配器。它把 Bun stdin/stdout 和 system clock 注入同一 `run()`，默认从 `process.argv.slice(2)` 取得身份参数，并只设置最终 `process.exitCode`。`stdioTransport()` 在 generator 开始读取时保留 active `ReadableStreamDefaultReader`；`cancelInput()` 直接调用 `reader.cancel()`，使已挂起的 `reader.read()` 返回，然后 generator `finally` 才 release reader lock。它不读取 credential environment，也不决定如何执行任何 role；后续 command 必须显式提供 `runRole`。
 
 ## 推荐代码阅读路线
 
@@ -66,7 +66,8 @@ validated argv identity
 2. 再读 `encode()`、`Decoder.push()` 与 `decode()`，理解 encoded-byte limit、LF-only framing、固定 buffer 和单帧 convenience API 怎样共享同一个 codec。
 3. 阅读 `RpcClient.request()` 与 `receive()`，跟踪 request ID、32-call 上限、event delivery、terminal cleanup 和 `completeAcknowledged`。
 4. 阅读 `parseArgv()`、`waitForAccepted()` 与 `readController()`，观察 config/protocol error 怎样与 role/internal defect 分到 exit `64` 和 `70`。
-5. 最后读 `process-protocol.test.ts` 的内存 `AsyncQueue` 与 `FakeClock`，从无 fixed sleep 的测试还原 handshake、heartbeat、shutdown 和 completion acknowledgment。
+5. 再读 `run()` 的 `finally` 与 `stdioTransport()`，确认 active input cancellation 先于 iterator return，并最终 release stdin reader lock。
+6. 最后读 `process-protocol.test.ts` 的 `AsyncQueue`、`CancellationOnlyInput` 与 `FakeClock`，从无 fixed sleep 的测试还原 handshake、pending read cancellation、heartbeat、shutdown 和 completion acknowledgment。
 
 ## 术语释义
 
@@ -78,21 +79,24 @@ validated argv identity
 
 **Handshake deadline** 是 hello 之后等待 accepted 的硬上限。这里 deadline 固定为 10 秒并使用注入 clock；测试可以精确推进到 9,999ms 与 10,000ms，不依赖 wall-clock sleep。
 
+**Active input cancellation** 的直觉是先叫醒正在阻塞的 stdin read，再收起 iterator。工程上，async generator 已经 await `reader.read()` 时，单独调用 `iterator.return()` 可能要排队等待该 read 完成；本项目要求 transport 用独立 `cancelInput()` 先调用底层 reader cancellation，避免 timeout、success 或 fault cleanup 永久挂起。
+
 **Exit 64 / 70** 沿用常见 sysexits 含义：`64` 表示 protocol 或 argv configuration 不可接受，`70` 表示 child 内部执行失败。`0` 被保留给 Controller 已确认的 `process.complete`，而不是 role callback 单纯 return。
 
 ## 测试看护逻辑
 
-| 风险                                 | 测试方法                                             | 关键断言                                               | 证明范围                                             |
-| ------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------- |
-| wire object 被宽松接受               | wrong type/extra field/role/ID/generation cases      | 全部得到 sanitized `INVALID_FRAME`                     | Effect Schema closed union 与 Adaptive identity 生效 |
-| UTF-16 length 被误作 wire limit      | ASCII exact boundary 与 400,000 个中文字符           | exact `1_048_576` bytes 通过，multibyte oversized 拒绝 | 上限按 UTF-8 bytes 且包含 LF                         |
-| chunk boundary 改变内容              | incomplete、多帧与中文 byte split                    | frame 保序，直到 LF 才返回                             | incremental decoder 不依赖 read boundary             |
-| 平台 newline normalization 产生歧义  | bare CR 与 CRLF cases                                | 两者都是 `INVALID_NEWLINE`                             | wire newline 只有 LF 一种                            |
-| invalid payload 泄漏到错误           | malformed/version/extra field secrets                | error string 不包含原始 secret                         | codec failure 使用稳定摘要                           |
-| Controller 挂起导致 pending map 增长 | 32+1 calls                                           | 第 33 个是 typed `RPC_LIMIT`，response 后可补一个      | child pending state 有硬上限                         |
-| handshake 永久等待                   | injected `FakeClock` 推进 deadline                   | 9,999ms 未退出，10,000ms exit `64`                     | 10 秒上限确定且 timer 被清理                         |
-| 未确认 completion 被当作成功         | completion request 后检查 settled state              | response 前未退出，匹配 response 后 exit `0`           | 成功依赖 Controller acknowledgment                   |
-| reader/timer 遗留                    | timeout、wrong frame、success、fault、shutdown paths | `activeCount === 0` 且 iterator `returned`             | 测试覆盖的退出路径执行 cleanup                       |
+| 风险                                 | 测试方法                                             | 关键断言                                                      | 证明范围                                             |
+| ------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------- |
+| wire object 被宽松接受               | wrong type/extra field/role/ID/generation cases      | 全部得到 sanitized `INVALID_FRAME`                            | Effect Schema closed union 与 Adaptive identity 生效 |
+| UTF-16 length 被误作 wire limit      | ASCII exact boundary 与 400,000 个中文字符           | exact `1_048_576` bytes 通过，multibyte oversized 拒绝        | 上限按 UTF-8 bytes 且包含 LF                         |
+| chunk boundary 改变内容              | incomplete、多帧与中文 byte split                    | frame 保序，直到 LF 才返回                                    | incremental decoder 不依赖 read boundary             |
+| 平台 newline normalization 产生歧义  | bare CR 与 CRLF cases                                | 两者都是 `INVALID_NEWLINE`                                    | wire newline 只有 LF 一种                            |
+| invalid payload 泄漏到错误           | malformed/version/extra field secrets                | error string 不包含原始 secret                                | codec failure 使用稳定摘要                           |
+| Controller 挂起导致 pending map 增长 | 32+1 calls                                           | 第 33 个是 typed `RPC_LIMIT`，response 后可补一个             | child pending state 有硬上限                         |
+| handshake 永久等待                   | injected `FakeClock` 推进 deadline                   | 9,999ms 未退出，10,000ms exit `64`                            | 10 秒上限确定且 timer 被清理                         |
+| 未确认 completion 被当作成功         | completion request 后检查 settled state              | response 前未退出，匹配 response 后 exit `0`                  | 成功依赖 Controller acknowledgment                   |
+| pending read 阻止进程退出            | `CancellationOnlyInput` timeout case                 | transport cancel 被调用后 run 才 settle，随后 iterator return | cleanup 顺序是 active cancel → iterator cleanup      |
+| reader/timer 遗留                    | timeout、wrong frame、success、fault、shutdown paths | `activeCount === 0` 且 iterator `returned`                    | 测试覆盖的退出路径执行 cleanup                       |
 
 这些测试没有启动真实 OS child，也没有证明 supervisor 会 scrub environment、durable generation 一定匹配、stdout/stderr 日志已经隔离、Controller router 会审计模型调用，或 provider stream 可用。它们证明的是 credential-free wire/entry contract 本身；真实进程和 Store 组合属于 S01-T07，Model Gateway 与 audit composition 属于 S01-T08。
 
@@ -106,7 +110,7 @@ bun test test/adaptive/process-protocol.test.ts
 bun typecheck
 ```
 
-预期观察：focused file 显示 21 个通过用例、`0 fail`，codec、RPC state 与 child entry loop 三组都通过；typecheck 的 `tsgo --noEmit` 退出码为 `0`。若 newline case 失败，先检查输入是否包含 byte `0x0d`；若 completion case 卡住，检查 Controller response 的 `requestID` 是否等于 child `rpc.request.id`；若 cleanup 断言失败，检查 accepted timeout 或 heartbeat handle 是否在 `finally` 清除。
+预期观察：focused file 显示 22 个通过用例、`0 fail`，codec、RPC state 与 child entry loop 三组都通过；typecheck 的 `tsgo --noEmit` 退出码为 `0`。若 newline case 失败，先检查输入是否包含 byte `0x0d`；若 completion case 卡住，检查 Controller response 的 `requestID` 是否等于 child `rpc.request.id`；若 cleanup 断言失败，检查 `cancelInput()` 是否先解除 pending read，再检查 heartbeat handle 与 iterator cleanup。
 
 再从 repository script package 验证教程结构：
 
@@ -115,7 +119,7 @@ cd script
 bun test adaptive-tutorial-check.test.ts
 ```
 
-预期观察：九个模板章节、中文正文、索引链接和 marker scan 全部通过。上述 21 个 focused case 是当前任务实现的本地运行结果，不是历史 PR 的固定承诺；增加测试时应同步修正这里的观测数字。
+预期观察：九个模板章节、中文正文、索引链接和 marker scan 全部通过。上述 22 个 focused case 是当前任务实现的本地运行结果，不是历史 PR 的固定承诺；增加测试时应同步修正这里的观测数字。
 
 ## 当前边界与下一步
 

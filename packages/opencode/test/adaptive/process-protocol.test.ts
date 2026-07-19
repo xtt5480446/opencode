@@ -280,6 +280,39 @@ describe("adaptive child entry loop", () => {
     expect(harness.input.returned).toBe(true)
   })
 
+  test("actively cancels a pending transport read before iterator cleanup", async () => {
+    const input = new CancellationOnlyInput()
+    const output = new AsyncQueue<AgentProcessProtocol.ChildToController>()
+    const clock = new FakeClock()
+    let sequence = 0
+    let cancelCalls = 0
+    const running = AgentEntry.run({
+      argv: validArgv(),
+      transport: {
+        input,
+        write: (chunk) => output.push(AgentProcessProtocol.decode(chunk, "child-to-controller")),
+        cancelInput: () => {
+          cancelCalls++
+          input.release()
+        },
+      },
+      clock,
+      nextID: () => `frame-${sequence++}`,
+      runRole: async () => undefined,
+    })
+
+    await output.take()
+    clock.advance(AgentEntry.ACCEPTED_TIMEOUT_MS)
+    await flushMicrotasks()
+    const settledWithoutTestCleanup = await isSettled(running)
+    if (!settledWithoutTestCleanup) input.release()
+
+    expect(await running).toBe(64)
+    expect(settledWithoutTestCleanup).toBe(true)
+    expect(cancelCalls).toBe(1)
+    expect(input.returnCalled).toBe(true)
+  })
+
   test("rejects invalid or expanded argv without sending hello", async () => {
     for (const argv of [
       validArgv().with(5, "-1"),
@@ -408,6 +441,7 @@ describe("adaptive child entry loop", () => {
       argv: validArgv(),
       transport: {
         input: harness.input,
+        cancelInput: () => harness.input.return(),
         write: (chunk) => {
           const frame = AgentProcessProtocol.decode(chunk, "child-to-controller")
           if (frame.type === "heartbeat") {
@@ -535,6 +569,35 @@ class AsyncQueue<T> implements AsyncIterableIterator<T> {
   }
 }
 
+class CancellationOnlyInput implements AsyncIterableIterator<Uint8Array> {
+  readonly #pending: Promise<IteratorResult<Uint8Array>>
+  #release!: (result: IteratorResult<Uint8Array>) => void
+  returnCalled = false
+
+  constructor() {
+    this.#pending = new Promise((resolve) => {
+      this.#release = resolve
+    })
+  }
+
+  next() {
+    return this.#pending
+  }
+
+  return() {
+    this.returnCalled = true
+    return this.#pending
+  }
+
+  release() {
+    this.#release({ done: true, value: undefined })
+  }
+
+  [Symbol.asyncIterator]() {
+    return this
+  }
+}
+
 class FakeClock {
   #now = 0
   #sequence = 0
@@ -595,6 +658,7 @@ function makeHarness() {
     nextID: () => `frame-${sequence++}`,
     transport: {
       input,
+      cancelInput: () => input.return(),
       write: (chunk: Uint8Array) => output.push(AgentProcessProtocol.decode(chunk, "child-to-controller")),
     },
     send: (frame: AgentProcessProtocol.ControllerToChild) => input.push(AgentProcessProtocol.encode(frame)),
@@ -602,8 +666,7 @@ function makeHarness() {
 }
 
 async function flushMicrotasks() {
-  await Promise.resolve()
-  await Promise.resolve()
+  for (let index = 0; index < 10; index++) await Promise.resolve()
 }
 
 async function isSettled(promise: Promise<unknown>) {
