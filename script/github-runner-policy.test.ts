@@ -9,9 +9,15 @@ describe("fork GitHub runner policy", () => {
     expect(workflow).not.toContain("blacksmith-")
     expect(workflow).toContain('pull_request:\n    branches: ["stage-*"]')
     expect(workflow).toContain("adaptive:\n    if: github.event_name == 'pull_request'\n    runs-on: ubuntu-24.04")
-    expect(workflow).toContain("bun --cwd packages/schema test ./test/adaptive-task.test.ts")
-    expect(workflow).toContain("bun --cwd packages/core test ./test/adaptive ./test/database-migration.test.ts")
-    expect(workflow).toContain("bun --cwd packages/core typecheck")
+    expect(workflow).toContain(
+      "name: Test Adaptive Task schema\n        working-directory: packages/schema\n        run: bun test ./test/adaptive-task.test.ts",
+    )
+    expect(workflow).toContain(
+      "name: Test Adaptive Core foundation\n        working-directory: packages/core\n        run: bun test ./test/adaptive ./test/database-migration.test.ts",
+    )
+    expect(workflow).toContain(
+      "name: Typecheck Adaptive Core foundation\n        working-directory: packages/core\n        run: bun run typecheck",
+    )
   })
 
   test("full unit and e2e matrices remain manual or dev-only", async () => {
