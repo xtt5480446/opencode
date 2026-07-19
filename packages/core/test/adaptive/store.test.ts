@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { Effect, Exit } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import path from "path"
@@ -343,6 +343,44 @@ describe("AdaptiveStore Manifest and Request", () => {
     }),
   )
 
+  it.effect("preserves JSON object keys that overlap JavaScript prototype names", () =>
+    Effect.gen(function* () {
+      const store = yield* AdaptiveStore.Service
+      const createdTask = yield* store.createTask(task())
+      const agent = yield* store.createAgent({
+        id: AdaptiveTask.AgentID.create(),
+        taskID: createdTask.id,
+        role: "implementation",
+      })
+      const claimed = yield* store.claimAgent({
+        agentID: agent.id,
+        expectedGeneration: 0,
+        owner: "controller-a",
+        pid: 405,
+        leaseDurationMs: 1_000,
+      })
+      const payload = JSON.parse('{"__proto__":{"polluted":true},"constructor":"keep","prototype":"value"}')
+      const manifest = yield* store.putManifest({
+        id: AdaptiveTask.ContextManifestID.create(),
+        taskID: createdTask.id,
+        agentID: agent.id,
+        generation: claimed.generation,
+        owner: "controller-a",
+        purpose: "Preserve exact JSON keys",
+        system: ["system"],
+        messages: [payload],
+        tools: [],
+        components: [],
+        estimatedTokens: 100,
+        requestHash: "sha256:prototype-keys",
+      })
+
+      expect(manifest.messages).toEqual([payload])
+      expect(Object.hasOwn(manifest.messages[0] as object, "__proto__")).toBe(true)
+      expect(yield* store.getManifest(manifest.id)).toEqual(manifest)
+    }),
+  )
+
   it.effect("rejects unsupported Manifest JSON and rolls back ownership mismatch", () =>
     Effect.gen(function* () {
       const store = yield* AdaptiveStore.Service
@@ -374,8 +412,39 @@ describe("AdaptiveStore Manifest and Request", () => {
         requestHash: "sha256:manifest",
       }
 
-      expect((yield* store.putManifest({ ...base, messages: [undefined] }).pipe(Effect.flip))._tag).toBe(
-        "AdaptiveStore.InvalidManifest",
+      const sparse = Array(1)
+      const extraKey = ["value"] as unknown[] & Record<string, unknown>
+      extraKey.extra = "not JSON array data"
+      const cycle: Record<string, unknown> = {}
+      cycle.self = cycle
+      const symbolKeyed = { visible: true }
+      Object.defineProperty(symbolKeyed, Symbol("hidden"), { value: "not JSON object data", enumerable: true })
+      const nonEnumerable = { visible: true }
+      Object.defineProperty(nonEnumerable, "hidden", { value: "not serialized" })
+      const accessor = {}
+      Object.defineProperty(accessor, "computed", { get: () => "not a data property", enumerable: true })
+      const invalid = [
+        undefined,
+        sparse,
+        extraKey,
+        NaN,
+        Infinity,
+        1n,
+        () => {},
+        Symbol("value"),
+        new Date(),
+        cycle,
+        symbolKeyed,
+        nonEnumerable,
+        accessor,
+      ]
+      yield* Effect.forEach(invalid, (value) =>
+        Effect.gen(function* () {
+          const failure = yield* store
+            .putManifest({ ...base, id: AdaptiveTask.ContextManifestID.create(), messages: [value] })
+            .pipe(Effect.flip)
+          expect(failure._tag).toBe("AdaptiveStore.InvalidManifest")
+        }),
       )
       expect(
         (yield* store
@@ -383,6 +452,46 @@ describe("AdaptiveStore Manifest and Request", () => {
           .pipe(Effect.flip))._tag,
       ).toBe("AdaptiveStore.ManifestOwnershipMismatch")
       expect((yield* store.getManifest(base.id).pipe(Effect.flip))._tag).toBe("AdaptiveStore.ManifestNotFound")
+    }),
+  )
+
+  it.effect("returns typed InvalidManifest when persisted JSON is corrupt", () =>
+    Effect.gen(function* () {
+      const store = yield* AdaptiveStore.Service
+      const createdTask = yield* store.createTask(task())
+      const agent = yield* store.createAgent({
+        id: AdaptiveTask.AgentID.create(),
+        taskID: createdTask.id,
+        role: "discovery",
+      })
+      const claimed = yield* store.claimAgent({
+        agentID: agent.id,
+        expectedGeneration: 0,
+        owner: "controller-a",
+        pid: 506,
+        leaseDurationMs: 1_000,
+      })
+      const manifest = yield* store.putManifest({
+        id: AdaptiveTask.ContextManifestID.create(),
+        taskID: createdTask.id,
+        agentID: agent.id,
+        generation: claimed.generation,
+        owner: "controller-a",
+        purpose: "Detect corrupt persisted JSON",
+        system: ["system"],
+        messages: [],
+        tools: [],
+        components: [],
+        estimatedTokens: 100,
+        requestHash: "sha256:corrupt-json",
+      })
+      const { db } = yield* Database.Service
+      yield* db
+        .run(sql`UPDATE adaptive_context_manifest SET messages = ${"{malformed"} WHERE id = ${manifest.id}`)
+        .pipe(Effect.orDie)
+
+      const failure = yield* store.getManifest(manifest.id).pipe(Effect.flip)
+      expect(failure._tag).toBe("AdaptiveStore.InvalidManifest")
     }),
   )
 
@@ -465,6 +574,59 @@ describe("AdaptiveStore Manifest and Request", () => {
     }),
   )
 
+  it.effect("returns typed InvalidRequest for a malformed ModelPolicy snapshot", () =>
+    Effect.gen(function* () {
+      const store = yield* AdaptiveStore.Service
+      const createdTask = yield* store.createTask(task())
+      const agent = yield* store.createAgent({
+        id: AdaptiveTask.AgentID.create(),
+        taskID: createdTask.id,
+        role: "validator",
+      })
+      const claimed = yield* store.claimAgent({
+        agentID: agent.id,
+        expectedGeneration: 0,
+        owner: "controller-a",
+        pid: 607,
+        leaseDurationMs: 1_000,
+      })
+      const manifest = yield* store.putManifest({
+        id: AdaptiveTask.ContextManifestID.create(),
+        taskID: createdTask.id,
+        agentID: agent.id,
+        generation: claimed.generation,
+        owner: "controller-a",
+        purpose: "Reject a malformed request policy",
+        system: ["system"],
+        messages: [],
+        tools: [],
+        components: [],
+        estimatedTokens: 100,
+        requestHash: "sha256:request-policy",
+      })
+      const requestID = AdaptiveTask.RequestID.create()
+      const modelPolicy = AdaptiveTask.ModelPolicy.make({
+        ...createdTask.modelPolicy,
+        hash: `sha256:${"b".repeat(64)}`,
+      })
+
+      const failure = yield* store
+        .insertModelRequest({
+          id: requestID,
+          taskID: createdTask.id,
+          agentID: agent.id,
+          generation: claimed.generation,
+          manifestID: manifest.id,
+          modelPolicy,
+        })
+        .pipe(Effect.flip)
+      expect(failure._tag).toBe("AdaptiveStore.InvalidRequest")
+      expect(yield* store.getModelRequest(requestID).pipe(Effect.flip)).toMatchObject({
+        _tag: "AdaptiveStore.RequestNotFound",
+      })
+    }),
+  )
+
   it.effect("rejects Request references that disagree with the Manifest tuple", () =>
     Effect.gen(function* () {
       const store = yield* AdaptiveStore.Service
@@ -510,6 +672,77 @@ describe("AdaptiveStore Manifest and Request", () => {
           .pipe(Effect.flip))._tag,
       ).toBe("AdaptiveStore.RequestReferenceMismatch")
       expect((yield* store.getModelRequest(requestID).pipe(Effect.flip))._tag).toBe("AdaptiveStore.RequestNotFound")
+
+      const missingParentRequestID = AdaptiveTask.RequestID.create()
+      expect(
+        (yield* store
+          .insertModelRequest({
+            id: missingParentRequestID,
+            taskID: createdTask.id,
+            agentID: agent.id,
+            generation: claimed.generation,
+            manifestID: manifest.id,
+            retryOf: AdaptiveTask.RequestID.create(),
+            modelPolicy: createdTask.modelPolicy,
+          })
+          .pipe(Effect.flip))._tag,
+      ).toBe("AdaptiveStore.RequestReferenceMismatch")
+      expect((yield* store.getModelRequest(missingParentRequestID).pipe(Effect.flip))._tag).toBe(
+        "AdaptiveStore.RequestNotFound",
+      )
+
+      const otherTask = yield* store.createTask(task())
+      const otherAgent = yield* store.createAgent({
+        id: AdaptiveTask.AgentID.create(),
+        taskID: otherTask.id,
+        role: "validator",
+      })
+      const otherClaim = yield* store.claimAgent({
+        agentID: otherAgent.id,
+        expectedGeneration: 0,
+        owner: "controller-b",
+        pid: 708,
+        leaseDurationMs: 1_000,
+      })
+      const otherManifest = yield* store.putManifest({
+        id: AdaptiveTask.ContextManifestID.create(),
+        taskID: otherTask.id,
+        agentID: otherAgent.id,
+        generation: otherClaim.generation,
+        owner: "controller-b",
+        purpose: "Create a parent in another Task",
+        system: ["system"],
+        messages: [],
+        tools: [],
+        components: [],
+        estimatedTokens: 10,
+        requestHash: "sha256:other-task",
+      })
+      const otherParent = yield* store.insertModelRequest({
+        id: AdaptiveTask.RequestID.create(),
+        taskID: otherTask.id,
+        agentID: otherAgent.id,
+        generation: otherClaim.generation,
+        manifestID: otherManifest.id,
+        modelPolicy: otherTask.modelPolicy,
+      })
+      const crossTaskRequestID = AdaptiveTask.RequestID.create()
+      expect(
+        (yield* store
+          .insertModelRequest({
+            id: crossTaskRequestID,
+            taskID: createdTask.id,
+            agentID: agent.id,
+            generation: claimed.generation,
+            manifestID: manifest.id,
+            retryOf: otherParent.id,
+            modelPolicy: createdTask.modelPolicy,
+          })
+          .pipe(Effect.flip))._tag,
+      ).toBe("AdaptiveStore.RequestReferenceMismatch")
+      expect((yield* store.getModelRequest(crossTaskRequestID).pipe(Effect.flip))._tag).toBe(
+        "AdaptiveStore.RequestNotFound",
+      )
     }),
   )
 })

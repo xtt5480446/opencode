@@ -299,6 +299,12 @@ git commit -m "feat(core): pin adaptive model policy"
 
 ## Task 3: Foundation Database and Transactional Store
 
+> **Superseded design note:** S01-T03 is implemented against the later approved
+> [Adaptive Foundation Store Design](../specs/2026-07-18-s01-t03-adaptive-store-design.md).
+> That design supersedes the early `replaceModelPolicy` skeleton below: the production Store exposes no ModelPolicy
+> update API, persists the complete policy once, and verifies its hash on every Task read. The remaining snippets in
+> this section are historical planning context, not the authoritative interface contract.
+
 **Files:**
 
 - Create: `packages/core/src/adaptive/sql.ts`

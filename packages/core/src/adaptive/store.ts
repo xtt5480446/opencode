@@ -321,21 +321,42 @@ const jsonValue = (value: unknown, stack = new WeakSet<object>()): JsonValue => 
   if (stack.has(value)) throw new Error("cyclic JSON value")
   stack.add(value)
   try {
-    if (Array.isArray(value)) return value.map((item) => jsonValue(item, stack))
+    if (Array.isArray(value)) {
+      const keys = Reflect.ownKeys(value)
+      if (keys.some((key, index) => key !== (index === value.length ? "length" : String(index))))
+        throw new Error("JSON arrays must be dense and contain no extra properties")
+      return value.map((item) => jsonValue(item, stack))
+    }
     const prototype = Object.getPrototypeOf(value)
     if (prototype !== Object.prototype && prototype !== null) throw new Error("JSON objects must be plain objects")
-    const output: Record<string, JsonValue> = {}
-    for (const key of Object.keys(value)) output[key] = jsonValue((value as Record<string, unknown>)[key], stack)
+    const output: Record<string, JsonValue> = Object.create(null)
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string") throw new Error("JSON object keys must be strings")
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (!descriptor?.enumerable || !("value" in descriptor))
+        throw new Error("JSON object properties must be enumerable data properties")
+      Object.defineProperty(output, key, {
+        value: jsonValue(descriptor.value, stack),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      })
+    }
     return output
   } finally {
     stack.delete(value)
   }
 }
 
-const manifestValues = (input: Pick<PutManifestInput, "system" | "messages" | "tools" | "components">) => {
+const manifestValues = (input: {
+  readonly system: unknown
+  readonly messages: unknown
+  readonly tools: unknown
+  readonly components: unknown
+}) => {
   if (!Array.isArray(input.system) || input.system.some((part) => typeof part !== "string"))
     throw new Error("Manifest system must contain only strings")
-  const array = (name: string, value: readonly unknown[]) => {
+  const array = (name: string, value: unknown) => {
     if (!Array.isArray(value)) throw new Error(`Manifest ${name} must be an array`)
     return value.map((item) => jsonValue(item))
   }
@@ -347,8 +368,24 @@ const manifestValues = (input: Pick<PutManifestInput, "system" | "messages" | "t
   }
 }
 
-const manifestRecord = (row: typeof AdaptiveContextManifestTable.$inferSelect): ManifestRecord => {
-  const values = manifestValues(row)
+type ManifestRow = Omit<
+  typeof AdaptiveContextManifestTable.$inferSelect,
+  "system" | "messages" | "tools" | "components"
+> & {
+  readonly system: unknown
+  readonly messages: unknown
+  readonly tools: unknown
+  readonly components: unknown
+}
+
+const manifestRecord = (row: ManifestRow): ManifestRecord => {
+  const parse = (value: unknown) => (typeof value === "string" ? JSON.parse(value) : value)
+  const values = manifestValues({
+    system: parse(row.system),
+    messages: parse(row.messages),
+    tools: parse(row.tools),
+    components: parse(row.components),
+  })
   return {
     id: row.id,
     taskID: row.task_id,
@@ -362,7 +399,7 @@ const manifestRecord = (row: typeof AdaptiveContextManifestTable.$inferSelect): 
   }
 }
 
-const decodeManifest = (row: typeof AdaptiveContextManifestTable.$inferSelect) =>
+const decodeManifest = (row: ManifestRow) =>
   Effect.try({
     try: () => manifestRecord(row),
     catch: (cause) =>
@@ -629,7 +666,20 @@ const layer = Layer.effect(
 
     const getManifest = Effect.fn("AdaptiveStore.getManifest")(function* (id: AdaptiveTask.ContextManifestID) {
       const row = yield* db
-        .select()
+        .select({
+          id: AdaptiveContextManifestTable.id,
+          task_id: AdaptiveContextManifestTable.task_id,
+          agent_id: AdaptiveContextManifestTable.agent_id,
+          generation: AdaptiveContextManifestTable.generation,
+          purpose: AdaptiveContextManifestTable.purpose,
+          system: sql<string>`${AdaptiveContextManifestTable.system}`,
+          messages: sql<string>`${AdaptiveContextManifestTable.messages}`,
+          tools: sql<string>`${AdaptiveContextManifestTable.tools}`,
+          components: sql<string>`${AdaptiveContextManifestTable.components}`,
+          estimated_tokens: AdaptiveContextManifestTable.estimated_tokens,
+          request_hash: AdaptiveContextManifestTable.request_hash,
+          time_created: AdaptiveContextManifestTable.time_created,
+        })
         .from(AdaptiveContextManifestTable)
         .where(eq(AdaptiveContextManifestTable.id, id))
         .get()
@@ -700,7 +750,7 @@ const layer = Layer.effect(
               .get()
               .pipe(Effect.orDie)
             if (!row) return yield* new DuplicateManifestError({ manifestID: input.id })
-            return manifestRecord(row)
+            return yield* decodeManifest(row)
           }),
         )
         .pipe(Effect.catchTag("SqlError", (cause) => Effect.die(cause)))
@@ -723,7 +773,14 @@ const layer = Layer.effect(
           requestID: input.id,
           reason: "Request generation must be a nonnegative integer",
         })
-      AdaptiveModelPolicy.assertEqual(input.modelPolicy, input.modelPolicy)
+      yield* Effect.try({
+        try: () => AdaptiveModelPolicy.assertEqual(input.modelPolicy, input.modelPolicy),
+        catch: (cause) =>
+          new InvalidRequestError({
+            requestID: input.id,
+            reason: cause instanceof Error ? cause.message : String(cause),
+          }),
+      })
       const now = yield* Clock.currentTimeMillis
       return yield* db
         .transaction((tx) =>

@@ -13,6 +13,7 @@ import normalizeStoragePathsMigration from "@opencode-ai/core/database/migration
 import sessionMessageProjectionOrderMigration from "@opencode-ai/core/database/migration/20260603040000_session_message_projection_order"
 import eventSourcedSessionInputMigration from "@opencode-ai/core/database/migration/20260604172448_event_sourced_session_input"
 import contextEpochAgentMigration from "@opencode-ai/core/database/migration/20260605042240_add_context_epoch_agent"
+import adaptiveRuntimeFoundationMigration from "@opencode-ai/core/database/migration/20260717090000_adaptive_runtime_foundation"
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -134,6 +135,41 @@ describe("DatabaseMigration", () => {
           { name: "session_message_session_seq_idx" },
           { name: "session_message_session_time_created_id_idx" },
           { name: "session_message_session_type_seq_idx" },
+        ])
+      }),
+    )
+  })
+
+  test("adds Adaptive tables without changing legacy Session or Event rows", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY, data text NOT NULL)`)
+        yield* db.run(
+          sql`CREATE TABLE event (id text PRIMARY KEY, aggregate_id text NOT NULL, seq integer NOT NULL, data text NOT NULL)`,
+        )
+        yield* db.run(sql`INSERT INTO session (id, data) VALUES ('ses_legacy', '{"title":"unchanged"}')`)
+        yield* db.run(
+          sql`INSERT INTO event (id, aggregate_id, seq, data) VALUES ('evt_legacy', 'ses_legacy', 7, '{"type":"legacy"}')`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [adaptiveRuntimeFoundationMigration])
+
+        expect(yield* db.all(sql`SELECT id, data FROM session`)).toEqual([
+          { id: "ses_legacy", data: '{"title":"unchanged"}' },
+        ])
+        expect(yield* db.all(sql`SELECT id, aggregate_id, seq, data FROM event`)).toEqual([
+          { id: "evt_legacy", aggregate_id: "ses_legacy", seq: 7, data: '{"type":"legacy"}' },
+        ])
+        expect(
+          yield* db.all(
+            sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'adaptive_%' ORDER BY name`,
+          ),
+        ).toEqual([
+          { name: "adaptive_agent_process" },
+          { name: "adaptive_context_manifest" },
+          { name: "adaptive_model_request" },
+          { name: "adaptive_task" },
         ])
       }),
     )
