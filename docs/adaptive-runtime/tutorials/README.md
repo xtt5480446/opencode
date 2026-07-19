@@ -45,11 +45,11 @@ Tutorial 与实现位于同一个 Task、Issue 和 PR 中，是 Definition of Do
 
 ## Stage 1：G1 Execution Foundation
 
-| Task    | 教程                                                          | 产出                                                                | 状态                   |
-| ------- | ------------------------------------------------------------- | ------------------------------------------------------------------- | ---------------------- |
-| S01-T01 | [Adaptive Task 公共契约](./s01-t01-adaptive-task-contract.md) | Task/Agent/Request/Manifest ID、状态词汇、ModelPolicy、Task Summary | 已完成                 |
-| S01-T02 | [ModelPolicy 确定性 Hash](./s01-t02-model-policy-hashing.md)  | 模型执行策略的 canonical identity 与漂移检测                        | 已完成                 |
-| S01-T03 | Foundation Database and Transactional Store                   | 可重启的 Task/Agent/Manifest/Request 权威状态                       | 开发中，随任务 PR 交付 |
+| Task    | 教程                                                                        | 产出                                                                | 状态                   |
+| ------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------- | ---------------------- |
+| S01-T01 | [Adaptive Task 公共契约](./s01-t01-adaptive-task-contract.md)               | Task/Agent/Request/Manifest ID、状态词汇、ModelPolicy、Task Summary | 已完成                 |
+| S01-T02 | [ModelPolicy 确定性 Hash](./s01-t02-model-policy-hashing.md)                | 模型执行策略的 canonical identity 与漂移检测                        | 已完成                 |
+| S01-T03 | [Foundation Database 与 Transactional Store](./s01-t03-foundation-store.md) | 可重启的 Task/Agent/Manifest/Request 权威状态                       | 已完成，随任务 PR 交付 |
 
 后续教程会继续按依赖顺序加入本索引，而不是按文档创建时间排列。
 
