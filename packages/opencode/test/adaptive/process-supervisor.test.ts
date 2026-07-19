@@ -107,7 +107,7 @@ const waitExists = (file: string) =>
     const timer = setInterval(check, 5)
     check()
     return Effect.sync(() => clearInterval(timer))
-  })
+  }).pipe(Effect.timeout("5 seconds"))
 
 const waitFor = <A>(stream: Stream.Stream<A>, predicate: (value: A) => boolean) =>
   Stream.runHead(Stream.filter(stream, predicate)).pipe(
@@ -138,10 +138,11 @@ const lines = async function* () {
   }
 }
 
-${input.stubborn ? 'process.on("SIGTERM", () => writeFileSync(".term", "received"))' : ""}
+writeFileSync(".spawned", String(process.pid))
 send({ type: "hello", ...identity })
 for await (const frame of lines()) {
   if (frame.type !== "accepted") continue
+  writeFileSync(".accepted", "received")
   send({ type: "ready" })
   ${
     input.heartbeatGate
@@ -152,7 +153,7 @@ for await (const frame of lines()) {
   })`
       : `${
           input.stubborn
-            ? `const grandchild = Bun.spawn(["node", "-e", 'process.on("SIGTERM", () => {}); process.stdout.write(String(process.pid) + "\\\\n"); setInterval(() => {}, 10000)'], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })`
+            ? `const grandchild = Bun.spawn(["node", "-e", 'const { writeFileSync } = require("node:fs"); process.on("SIGTERM", () => writeFileSync(".term", "received")); process.stdout.write(String(process.pid) + "\\\\n"); setInterval(() => {}, 10000)'], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })`
             : `const grandchild = Bun.spawn(["node", "-e", 'process.stdout.write(String(process.pid) + "\\\\n"); setInterval(() => {}, 10000)'], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })`
         }
   const reader = grandchild.stdout.getReader()
@@ -163,6 +164,44 @@ for await (const frame of lines()) {
   }
 }
 process.exitCode = 64
+`
+
+const handshakeFixture = (input: { phase: "hello" | "ready"; end: "timeout" | "eof" }) => `
+import { writeFileSync } from "node:fs"
+
+const argv = process.argv.slice(2)
+const value = (name) => argv[argv.indexOf(name) + 1]
+let next = 0
+const send = (frame) => process.stdout.write(JSON.stringify({ v: 1, id: String(++next), ...frame }) + "\\n")
+const lines = async function* () {
+  let buffer = ""
+  for await (const chunk of process.stdin) {
+    buffer += chunk.toString("utf8")
+    const parts = buffer.split("\\n")
+    buffer = parts.pop()
+    for (const line of parts) if (line) yield JSON.parse(line)
+  }
+}
+
+writeFileSync(".spawned", String(process.pid))
+${
+  input.phase === "hello"
+    ? input.end === "timeout"
+      ? "setInterval(() => {}, 10_000)"
+      : "process.exit(64)"
+    : `send({
+  type: "hello",
+  taskID: value("--task-id"),
+  agentID: value("--agent-id"),
+  generation: Number(value("--generation")),
+  role: value("--role"),
+})
+for await (const frame of lines()) {
+  if (frame.type !== "accepted") continue
+  writeFileSync(".accepted", "received")
+  ${input.end === "timeout" ? "setInterval(() => {}, 10_000); break" : "process.exit(64)"}
+}`
+}
 `
 
 describe("AdaptiveProcessCommand", () => {
@@ -244,6 +283,51 @@ describe("AdaptiveProcessCommand", () => {
 })
 
 describe("AdaptiveProcessSupervisor", () => {
+  for (const scenario of [
+    { name: "kills a child when hello times out", phase: "hello", end: "timeout", claimed: false },
+    { name: "observes a gone child when hello ends at EOF", phase: "hello", end: "eof", claimed: false },
+    { name: "settles and kills a claimed generation when ready times out", phase: "ready", end: "timeout", claimed: true },
+    { name: "settles a claimed generation when ready ends at EOF", phase: "ready", end: "eof", claimed: true },
+  ] as const) {
+    it.effect(scenario.name, () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(100)
+        const directory = yield* tmpdirScoped()
+        const seeded = yield* seed(directory)
+        const file = path.join(directory, `${scenario.phase}-${scenario.end}.ts`)
+        yield* Effect.promise(() => Bun.write(file, handshakeFixture(scenario)))
+        const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) })
+        const starting = yield* supervisor
+          .start({ agentID: seeded.agent.id, router: () => Effect.succeed(null) })
+          .pipe(Effect.forkChild({ startImmediately: true }))
+        const marker = path.join(directory, scenario.claimed ? ".accepted" : ".spawned")
+        yield* waitExists(marker)
+        const pid = Number(yield* Effect.promise(() => Bun.file(path.join(directory, ".spawned")).text()))
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL")
+            } catch {
+              // The process may already have completed through the expected startup cleanup.
+            }
+          }),
+        )
+        if (scenario.end === "timeout") yield* TestClock.adjust(10_000)
+
+        const error = yield* Fiber.join(starting).pipe(Effect.flip)
+        expect(error._tag).toBe("AdaptiveProcessSupervisor.StartError")
+        expect(error.exitCode).toBe(64)
+        expect(processExists(pid)).toBe(false)
+        const record = yield* seeded.store.getAgent(seeded.agent.id)
+        expect(record.generation).toBe(scenario.claimed ? 1 : 0)
+        expect(record.state).toBe(scenario.claimed ? "failed" : "idle")
+        expect(record.owner).toBeUndefined()
+        expect(record.pid).toBeUndefined()
+        expect(record.leaseExpiresAt).toBeUndefined()
+      }),
+    )
+  }
+
   it.effect("rejects a stale hello before accepted, claim, or RPC routing", () =>
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
@@ -275,6 +359,7 @@ describe("AdaptiveProcessSupervisor", () => {
 
       expect(error._tag).toBe("AdaptiveProcessSupervisor.StartError")
       expect(error.exitCode).toBe(64)
+      expect(existsSync(path.join(directory, ".accepted"))).toBe(false)
       expect(yield* Deferred.isDone(routed)).toBe(false)
       expect((yield* seeded.store.getAgent(seeded.agent.id)).generation).toBe(1)
     }),
@@ -349,7 +434,7 @@ describe("AdaptiveProcessSupervisor", () => {
     }),
   )
 
-  it.effect("force kills a stubborn child and grandchild three seconds after stop", () =>
+  it.effect("force kills a stubborn grandchild three seconds after its parent exits on stop", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(50_000)
       const directory = yield* tmpdirScoped()
@@ -371,7 +456,7 @@ describe("AdaptiveProcessSupervisor", () => {
       })
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          if (process.platform === "win32" || !processExists(handle.pid)) return
+          if (process.platform === "win32") return
           try {
             process.kill(-handle.pid, "SIGKILL")
           } catch {
@@ -387,11 +472,13 @@ describe("AdaptiveProcessSupervisor", () => {
         .stop({ agentID: handle.agentID, generation: handle.generation })
         .pipe(Effect.forkChild)
       yield* Fiber.join(term)
+      yield* waitGone(handle.pid)
       yield* TestClock.adjust(2_999)
-      expect(processExists(handle.pid)).toBe(true)
+      expect(processExists(grandchildPID)).toBe(true)
       yield* TestClock.adjust(1)
       yield* Fiber.join(stopping)
-      yield* Effect.all([waitGone(handle.pid), waitGone(grandchildPID)], { concurrency: 2 })
+      expect(processExists(handle.pid)).toBe(false)
+      expect(processExists(grandchildPID)).toBe(false)
       expect(routed.count).toBe(1)
       expect((yield* seeded.store.getAgent(handle.agentID)).state).toBe("stopped")
     }),

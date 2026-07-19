@@ -321,6 +321,30 @@ export const make = Effect.gen(function* () {
       return Effect.fail(toPlatformError("kill", new Error("Failed to kill child process"), command))
     })
 
+  const waitForGroupExit = (command: ChildProcess.StandardCommand, proc: NodeChildProcess.ChildProcess) =>
+    Effect.callback<void, PlatformError.PlatformError>((resume) => {
+      let done = false
+      const check = () => {
+        try {
+          globalThis.process.kill(-proc.pid!, 0)
+        } catch (cause) {
+          const error = toError(cause) as NodeJS.ErrnoException
+          if (error.code === "EPERM") return
+          done = true
+          clearInterval(timer)
+          if (error.code === "ESRCH") return resume(Effect.void)
+          resume(Effect.fail(toPlatformError("kill", error, command)))
+        }
+      }
+      const timer = setInterval(check, 10)
+      check()
+      return Effect.sync(() => {
+        if (done) return
+        done = true
+        clearInterval(timer)
+      })
+    })
+
   const timeout =
     (
       proc: NodeChildProcess.ChildProcess,
@@ -430,6 +454,19 @@ export const make = Effect.gen(function* () {
                 Effect.catch(killGroup(command, proc, s), () => killOne(command, proc, s))
               const attempt = send(sig).pipe(Effect.andThen(Deferred.await(signal)), Effect.asVoid)
               if (!opts?.forceKillAfter) return attempt
+              if (globalThis.process.platform !== "win32") {
+                return send(sig).pipe(
+                  Effect.andThen(
+                    Effect.race(
+                      waitForGroupExit(command, proc),
+                      Effect.sleep(opts.forceKillAfter).pipe(
+                        Effect.andThen(send("SIGKILL")),
+                        Effect.andThen(waitForGroupExit(command, proc)),
+                      ),
+                    ),
+                  ),
+                )
+              }
               return Effect.timeoutOrElse(attempt, {
                 duration: opts.forceKillAfter,
                 orElse: () => send("SIGKILL").pipe(Effect.andThen(Deferred.await(signal)), Effect.asVoid),

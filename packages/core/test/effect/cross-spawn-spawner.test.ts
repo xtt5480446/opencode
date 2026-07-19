@@ -1,8 +1,10 @@
 import { describe, expect } from "bun:test"
+import { existsSync } from "node:fs"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Effect, Exit, Stream } from "effect"
+import { Deferred, Effect, Exit, Fiber, Option, Stream } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import type * as PlatformError from "effect/PlatformError"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -58,6 +60,18 @@ async function gone(pid: number, timeout = 5_000) {
   }
   return !alive(pid)
 }
+
+const waitExists = (file: string) =>
+  Effect.callback<void>((resume) => {
+    const check = () => {
+      if (!existsSync(file)) return
+      clearInterval(timer)
+      resume(Effect.void)
+    }
+    const timer = setInterval(check, 5)
+    check()
+    return Effect.sync(() => clearInterval(timer))
+  }).pipe(Effect.timeout("5 seconds"))
 
 describe("cross-spawn spawner", () => {
   describe("basic spawning", () => {
@@ -273,6 +287,60 @@ describe("cross-spawn spawner", () => {
 
         expect(Date.now() - started).toBeLessThan(1_000)
         expect(Exit.isFailure(exit) ? true : exit.value !== ChildProcessSpawner.ExitCode(0)).toBe(true)
+      }),
+    )
+
+    fx.effect(
+      "forceKillAfter escalates a live group after its parent exits on SIGTERM",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        yield* TestClock.setTime(1_000)
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        )
+        const term = path.join(tmp.path, ".grandchild-term")
+        const grandchild = [
+          'const { writeFileSync } = require("node:fs")',
+          `process.on("SIGTERM", () => writeFileSync(${JSON.stringify(term)}, "received"))`,
+          'process.stdout.write(String(process.pid) + "\\n")',
+          "setInterval(() => {}, 10_000)",
+        ].join("\n")
+        const parent = [
+          'const { spawn } = require("node:child_process")',
+          `const child = spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: ["ignore", "pipe", "ignore"] })`,
+          'child.stdout.once("data", (chunk) => process.stdout.write(chunk))',
+          'process.on("SIGTERM", () => process.exit(0))',
+          "setInterval(() => {}, 10_000)",
+        ].join("\n")
+        const handle = yield* js(parent)
+        const first = yield* Stream.runHead(handle.stdout)
+        if (Option.isNone(first)) return yield* Effect.die("grandchild did not report its PID")
+        const grandchildPID = Number(new TextDecoder().decode(first.value).trim())
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              process.kill(-Number(handle.pid), "SIGKILL")
+            } catch {
+              // The group may already have completed through the expected escalation.
+            }
+          }),
+        )
+
+        const received = yield* waitExists(term).pipe(Effect.forkChild({ startImmediately: true }))
+        const killed = yield* Deferred.make<void>()
+        const killing = yield* handle
+          .kill({ forceKillAfter: 3_000 })
+          .pipe(Effect.ensuring(Deferred.succeed(killed, undefined)), Effect.forkChild({ startImmediately: true }))
+        yield* Fiber.join(received)
+        expect(yield* Effect.promise(() => gone(Number(handle.pid)))).toBe(true)
+        expect(yield* Deferred.isDone(killed)).toBe(false)
+        yield* TestClock.adjust(2_999)
+        expect(alive(grandchildPID)).toBe(true)
+        yield* TestClock.adjust(1)
+        yield* Fiber.join(killing)
+        expect(alive(grandchildPID)).toBe(false)
       }),
     )
 

@@ -2,7 +2,7 @@ import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
-import { Context, Deferred, Effect, Fiber, Layer, Option, PubSub, Queue, Schema, Scope, Stream } from "effect"
+import { Context, Deferred, Effect, Exit, Fiber, Layer, Option, PubSub, Queue, Schema, Scope, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { AgentProcessProtocol } from "./protocol"
 import { AdaptiveProcessCommand } from "./command"
@@ -264,93 +264,95 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
       role: record.role,
     } satisfies BoundIdentity
     const child = yield* command({ directory: task.directory, ...identity })
+    const inputQueue = yield* Queue.unbounded<Uint8Array | null>()
+    const frames = yield* Queue.unbounded<Envelope>()
+    const heartbeats = yield* Queue.unbounded<void>()
+    const events = yield* PubSub.unbounded<AgentProcessProtocol.ChildToController>()
+    const exited = yield* Deferred.make<number>()
+    const stderrDone = yield* Deferred.make<void>()
     const process = yield* spawner
       .spawn(child)
       .pipe(Effect.mapError(() => new StartError({ reason: "Adaptive agent process failed to spawn", exitCode: 70 })))
-    const inputQueue = yield* Queue.unbounded<Uint8Array | null>()
-    const frames = yield* Queue.unbounded<Envelope>()
     const state: Active = {
       identity,
       owner: `${globalThis.process.pid}:${crypto.randomUUID()}`,
       process,
       input: inputQueue,
       frames,
-      heartbeats: yield* Queue.unbounded<void>(),
-      events: yield* PubSub.unbounded<AgentProcessProtocol.ChildToController>(),
-      exited: yield* Deferred.make<number>(),
-      stderrDone: yield* Deferred.make<void>(),
+      heartbeats,
+      events,
+      exited,
+      stderrDone,
       rpc: new Map(),
       preview: { text: "", bytes: 0 },
     }
 
-    yield* Stream.run(
-      Stream.fromQueue(inputQueue).pipe(Stream.takeWhile((chunk): chunk is Uint8Array => chunk !== null)),
-      process.stdin,
-    ).pipe(Effect.ignore, Effect.forkIn(scope))
-    yield* readFrames(state).pipe(Effect.forkIn(scope, { startImmediately: true }))
-    yield* readStderr(state).pipe(Effect.forkIn(scope, { startImmediately: true }))
+    return yield* Effect.gen(function* () {
+      yield* Stream.run(
+        Stream.fromQueue(inputQueue).pipe(Stream.takeWhile((chunk): chunk is Uint8Array => chunk !== null)),
+        process.stdin,
+      ).pipe(Effect.ignore, Effect.forkIn(scope))
+      yield* readFrames(state).pipe(Effect.forkIn(scope, { startImmediately: true }))
+      yield* readStderr(state).pipe(Effect.forkIn(scope, { startImmediately: true }))
 
-    const hello = yield* takeHandshake(state, "hello")
-    if (
-      hello.type !== "hello" ||
-      hello.taskID !== identity.taskID ||
-      hello.agentID !== identity.agentID ||
-      hello.generation !== identity.generation ||
-      hello.role !== identity.role
-    ) {
-      const exitCode = yield* rejectStart(state)
-      return yield* new StartError({ reason: "Adaptive agent hello identity mismatch", exitCode })
-    }
+      const hello = yield* takeHandshake(state, "hello")
+      if (
+        hello.type !== "hello" ||
+        hello.taskID !== identity.taskID ||
+        hello.agentID !== identity.agentID ||
+        hello.generation !== identity.generation ||
+        hello.role !== identity.role
+      )
+        return yield* new StartError({ reason: "Adaptive agent hello identity mismatch", exitCode: 64 })
 
-    const claim = yield* store
-      .claimAgent({
-        agentID: identity.agentID,
-        expectedGeneration: record.generation,
-        owner: state.owner,
-        pid: Number(process.pid),
-        leaseDurationMs: LEASE_DURATION_MS,
+      const claim = yield* store
+        .claimAgent({
+          agentID: identity.agentID,
+          expectedGeneration: record.generation,
+          owner: state.owner,
+          pid: Number(process.pid),
+          leaseDurationMs: LEASE_DURATION_MS,
+        })
+        .pipe(Effect.option)
+      if (Option.isNone(claim) || claim.value.generation !== identity.generation)
+        return yield* new StartError({ reason: "Adaptive agent durable generation claim failed", exitCode: 64 })
+
+      yield* send(state, {
+        v: AgentProcessProtocol.VERSION,
+        id: crypto.randomUUID(),
+        type: "accepted",
+        heartbeatMs: HEARTBEAT_MS,
       })
-      .pipe(Effect.option)
-    if (Option.isNone(claim) || claim.value.generation !== identity.generation) {
-      const exitCode = yield* rejectStart(state)
-      return yield* new StartError({ reason: "Adaptive agent durable generation claim failed", exitCode })
-    }
+      const ready = yield* takeHandshake(state, "ready")
+      if (ready.type !== "ready")
+        return yield* new StartError({ reason: "Adaptive agent did not become ready", exitCode: 64 })
 
-    yield* send(state, {
-      v: AgentProcessProtocol.VERSION,
-      id: crypto.randomUUID(),
-      type: "accepted",
-      heartbeatMs: HEARTBEAT_MS,
-    })
-    const ready = yield* takeHandshake(state, "ready")
-    if (ready.type !== "ready") {
-      yield* finish(state, "failed", true)
-      return yield* new StartError({ reason: "Adaptive agent did not become ready", exitCode: 64 })
-    }
+      active.set(identity.agentID, state)
+      yield* PubSub.publish(state.events, ready)
+      yield* runFrames(state, input, scope).pipe(Effect.forkIn(scope, { startImmediately: true }))
+      const leaseReady = yield* Deferred.make<void>()
+      yield* watchLease(state, leaseReady).pipe(Effect.forkIn(scope, { startImmediately: true }))
+      yield* Deferred.await(leaseReady)
+      yield* process.exitCode.pipe(
+        Effect.map(Number),
+        Effect.catch(() => Effect.succeed(128)),
+        Effect.flatMap((code) => finish(state, code === 0 ? "stopped" : "failed", false, code)),
+        Effect.forkIn(scope, { startImmediately: true }),
+      )
+      yield* Effect.addFinalizer(() =>
+        state.finishing ? Deferred.await(state.finishing) : finish(state, "lost", true),
+      )
 
-    active.set(identity.agentID, state)
-    yield* PubSub.publish(state.events, ready)
-    yield* runFrames(state, input, scope).pipe(Effect.forkIn(scope, { startImmediately: true }))
-    const leaseReady = yield* Deferred.make<void>()
-    yield* watchLease(state, leaseReady).pipe(Effect.forkIn(scope, { startImmediately: true }))
-    yield* Deferred.await(leaseReady)
-    yield* process.exitCode.pipe(
-      Effect.map(Number),
-      Effect.catch(() => Effect.succeed(128)),
-      Effect.flatMap((code) => finish(state, code === 0 ? "stopped" : "failed", false, code)),
-      Effect.forkIn(scope, { startImmediately: true }),
-    )
-    yield* Effect.addFinalizer(() => (state.finishing ? Deferred.await(state.finishing) : finish(state, "lost", true)))
-
-    return {
-      agentID: identity.agentID,
-      generation: identity.generation,
-      pid: Number(process.pid),
-      request: (method: Method, payload: AgentProcessProtocol.JsonValue) => input.router(method, payload, identity),
-      events: Stream.fromPubSub(state.events),
-      exited: Deferred.await(state.exited),
-      stderrPreview: Deferred.await(state.stderrDone).pipe(Effect.map(() => state.preview.text)),
-    }
+      return {
+        agentID: identity.agentID,
+        generation: identity.generation,
+        pid: Number(process.pid),
+        request: (method: Method, payload: AgentProcessProtocol.JsonValue) => input.router(method, payload, identity),
+        events: Stream.fromPubSub(state.events),
+        exited: Deferred.await(state.exited),
+        stderrPreview: Deferred.await(state.stderrDone).pipe(Effect.map(() => state.preview.text)),
+      }
+    }).pipe(Effect.onExit((exit) => (Exit.isFailure(exit) ? finish(state, "failed", true) : Effect.void)))
   })
 
   const stop = Effect.fn("AdaptiveProcessSupervisor.stop")(function* (input: StopInput) {
@@ -440,20 +442,6 @@ function takeHandshake(state: Active, expected: "hello" | "ready") {
       return Effect.succeed(envelope.value.frame)
     }),
   )
-}
-
-function rejectStart(state: Active) {
-  return Effect.gen(function* () {
-    yield* Queue.offer(state.input, null).pipe(Effect.ignore)
-    const exited = yield* state.process.exitCode.pipe(
-      Effect.map(Number),
-      Effect.timeoutOption("1 second"),
-      Effect.option,
-    )
-    if (Option.isSome(exited) && Option.isSome(exited.value)) return exited.value.value
-    yield* state.process.kill({ forceKillAfter: 3_000 }).pipe(Effect.ignore)
-    return 64
-  })
 }
 
 function sanitizePreview(input: string) {
