@@ -368,6 +368,30 @@ it.effect("fails closed when a terminal request has no resolved observation", ()
   }),
 )
 
+it.effect("marks terminal settlement recovery as invalid without leaving an unsettled request", () =>
+  Effect.gen(function* () {
+    const audit = yield* AdaptiveModelAudit.Service
+    const store = yield* AdaptiveStore.Service
+    const state = yield* setup()
+    const input = admission(state)
+    yield* audit.admit(input)
+    yield* audit.streaming(input.requestID)
+    yield* audit.settleFailed(settlement(input.requestID))
+
+    expect(yield* store.getModelRequest(input.requestID)).toMatchObject({
+      status: "failed",
+      failure: "Model request settlement failed",
+      timeCompleted: expect.any(Number),
+    })
+    expect(yield* audit.verify(state.task.id)).toEqual({
+      valid: false,
+      code: "INVALID_MODEL_MIXING",
+      reasons: [`SETTLEMENT_RECOVERY_REQUIRED:${input.requestID}`],
+      requests: 1,
+    })
+  }),
+)
+
 it.effect("rejects zero requests, context limit drift, and multiple policy hashes", () =>
   Effect.gen(function* () {
     const audit = yield* AdaptiveModelAudit.Service
