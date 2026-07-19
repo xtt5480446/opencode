@@ -26,6 +26,8 @@ OpenCode Core 的 `cross-spawn-spawner.ts` 已经把 Effect `ChildProcessSpawner
 
 baseline 没有 Adaptive identity、Store claim 或 credential scrub。普通 `extendEnv` 可以继承 Controller 的 provider key、auth content、proxy credential 和进程内 RPC state，因此不能直接用于独立 Agent。`command.ts` 新增的是 Adaptive 专属命令策略；`supervisor.ts` 新增的是协议与 durable ownership 的组合。Core 的修改只收紧共享 process-group force deadline，不包含 Adaptive 专属逻辑。
 
+quarantine ownership 还要求 `adaptive_agent_process` 接受 `failed + owner/PID + null lease`，因此现有 T03 数据库必须重建这个 parent table。`20260719162735_adaptive_agent_quarantine` 显式声明 migration runner 在 transaction 之前暂时关闭 foreign keys；runner 先读取并验证实际 PRAGMA 状态，再把 table rebuild、migration journal insert 和 `foreign_key_check` 放进同一个 transaction。任何 dangling Task/Agent/Manifest/request/retry reference 都会让 transaction 与 journal 一起回滚，原始 `foreign_keys` 状态则在无条件 finalizer 中恢复。普通 migration 不进入这条特殊路径，升级也不靠重建每一张 child table 来掩盖数据丢失。
+
 测试 fixture 只通过注入 command factory 替换可执行文件，仍复用 production `agentArgs()` 与 `options()`；production `AdaptiveProcessCommand.make()` 没有 entry override、probe flag 或额外 argv。Linux 的真实 hidden-child 环境检查直接读取 `/proc/<pid>/environ`，不会要求 child 把原始环境或 secret 回传给 Controller。
 
 ## 最终实现
@@ -124,11 +126,13 @@ bun typecheck
 
 ```bash
 cd packages/core
-bun test test/effect/cross-spawn-spawner.test.ts test/adaptive/store.test.ts
+bun test test/database-migration.test.ts test/effect/cross-spawn-spawner.test.ts test/adaptive/store.test.ts
 
 cd ../../script
 bun test adaptive-tutorial-check.test.ts
 ```
+
+预期观察：database migration 文件的 19 个 case 全部通过；existing Task、Agent、Manifest 和 retry-linked request 在 quarantine schema rebuild 后逐字段不变，journal 只记录一次，foreign key list/check 有效且 PRAGMA 恢复为 `1`。注入 dangling FK 的 migration 会回滚数据和 journal，并同样恢复 PRAGMA。
 
 若 child 没有 ready，先检查严格 argv 和 hello generation；若 lease 不更新，检查 Store owner/generation 和当前 TestClock；若 stop 后还有进程，先记录 child PID 的 PGID/SID，再检查 command 是否保留 detached 与三秒 force deadline。
 

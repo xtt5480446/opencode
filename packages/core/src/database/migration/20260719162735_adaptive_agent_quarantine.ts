@@ -2,10 +2,10 @@ import { Effect } from "effect"
 import type { DatabaseMigration } from "../migration"
 
 export default {
-  id: "20260719162735_little_ricochet",
+  id: "20260719162735_adaptive_agent_quarantine",
+  foreignKeys: "disabled",
   up(tx) {
     return Effect.gen(function* () {
-      yield* tx.run(`PRAGMA foreign_keys=OFF;`)
       yield* tx.run(`
         CREATE TABLE \`__new_adaptive_agent_process\` (
           \`id\` text PRIMARY KEY,
@@ -33,7 +33,6 @@ export default {
       )
       yield* tx.run(`DROP TABLE \`adaptive_agent_process\`;`)
       yield* tx.run(`ALTER TABLE \`__new_adaptive_agent_process\` RENAME TO \`adaptive_agent_process\`;`)
-      yield* tx.run(`PRAGMA foreign_keys=ON;`)
       yield* tx.run(
         `CREATE INDEX \`adaptive_agent_task_state_idx\` ON \`adaptive_agent_process\` (\`task_id\`,\`state\`);`,
       )
