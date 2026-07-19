@@ -943,6 +943,102 @@ describe("AdaptiveProcessSupervisor", () => {
     }),
   )
 
+  for (const scenario of [
+    {
+      name: "quarantines a defective exit observation when termination remains unconfirmed",
+      exitCode: "defect",
+      reason: "Adaptive agent exit observation failed",
+    },
+    {
+      name: "quarantines an exit observation timeout when termination remains unconfirmed",
+      exitCode: "timeout",
+      reason: "Adaptive agent exit code did not settle",
+    },
+  ] as const) {
+    it.effect(scenario.name, () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(32_000)
+        const directory = yield* tmpdirScoped()
+        const seeded = yield* seed(directory)
+        const file = path.join(directory, `exit-observation-${scenario.exitCode}.ts`)
+        yield* Effect.promise(() => Bun.write(file, fixture({ heartbeatGate: true })))
+        const real = yield* ChildProcessSpawner.ChildProcessSpawner
+        const unconfirmed = ChildProcessSpawner.make((command) =>
+          real.spawn(command).pipe(
+            Effect.map((handle) =>
+              ChildProcessSpawner.makeHandle({
+                pid: handle.pid,
+                stdin: handle.stdin,
+                stdout: handle.stdout,
+                stderr: handle.stderr,
+                all: handle.all,
+                getInputFd: handle.getInputFd,
+                getOutputFd: handle.getOutputFd,
+                isRunning: Effect.succeed(true),
+                exitCode: scenario.exitCode === "defect" ? Effect.die("injected exit defect") : Effect.never,
+                kill: () => Effect.void,
+                unref: handle.unref,
+              }),
+            ),
+          ),
+        )
+        const supervisor = yield* AdaptiveProcessSupervisor.make({ command: fixtureCommand(file) }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, unconfirmed),
+        )
+        const handle = yield* supervisor.start({ agentID: seeded.agent.id, router: () => Effect.succeed(null) })
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              process.kill(process.platform === "win32" ? handle.pid : -handle.pid, "SIGKILL")
+            } catch {
+              // The fixture may have exited after stdin shutdown.
+            }
+          }),
+        )
+        const stopping = yield* supervisor
+          .stop({ agentID: handle.agentID, generation: handle.generation })
+          .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }))
+        yield* Effect.yieldNow
+        yield* TestClock.adjust(5_000)
+
+        const stopExit = yield* Fiber.join(stopping)
+        expect(Exit.isFailure(stopExit)).toBe(true)
+        if (Exit.isFailure(stopExit))
+          expect(Cause.squash(stopExit.cause)).toMatchObject({
+            _tag: "AdaptiveProcessSupervisor.TerminationError",
+            stage: "exit",
+          })
+        const exited = yield* handle.exited.pipe(Effect.exit)
+        expect(Exit.isFailure(exited)).toBe(true)
+        const quarantined = yield* seeded.store.getAgent(handle.agentID)
+        expect(quarantined).toMatchObject({
+          generation: handle.generation,
+          state: "failed",
+          owner: expect.any(String),
+          pid: handle.pid,
+          exitReason: scenario.reason,
+        })
+        expect(quarantined.leaseExpiresAt).toBeUndefined()
+
+        const freshCommands = { count: 0 }
+        const fresh = yield* AdaptiveProcessSupervisor.make({
+          command: () => {
+            freshCommands.count += 1
+            return Effect.fail(
+              new AdaptiveProcessSupervisor.StartError({ reason: "fresh supervisor invoked command", exitCode: 70 }),
+            )
+          },
+        })
+        const reclaimed = yield* fresh
+          .start({ agentID: handle.agentID, router: () => Effect.succeed(null) })
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(reclaimed)).toBe(true)
+        expect(freshCommands.count).toBe(0)
+        expect((yield* seeded.store.getAgent(handle.agentID)).generation).toBe(handle.generation)
+      }),
+    )
+  }
+
   it.effect("quarantines an RPC interruption timeout without hanging scope cleanup", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(35_000)

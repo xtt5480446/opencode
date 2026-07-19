@@ -201,6 +201,7 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
         let code = terminal.knownCode ?? 128
         let problem: TerminationError | undefined
         let uncertain = false
+        let terminationConfirmed = terminal.knownCode !== undefined
         const record = (stage: TerminationError["stage"], reason: string, ownershipUncertain = false) => {
           problem ??= new TerminationError({ stage, reason, exitCode: code })
           uncertain ||= ownershipUncertain
@@ -210,20 +211,23 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
             const killed = yield* bounded(state.process.kill({ forceKillAfter: 3_000 }), KILL_TIMEOUT_MS)
             if (killed === "timeout") record("kill", "Adaptive agent process-group kill timed out", true)
             else if (Exit.isFailure(killed)) record("kill", "Adaptive agent process-group kill failed", true)
+            else {
+              const running = yield* bounded(state.process.isRunning, EXIT_TIMEOUT_MS)
+              if (running !== "timeout" && Exit.isSuccess(running) && !running.value) terminationConfirmed = true
+            }
           }
           yield* Queue.shutdown(state.input).pipe(Effect.exit)
 
           if (terminal.knownCode === undefined) {
-            const observed = yield* bounded(
-              state.process.exitCode.pipe(
-                Effect.map(Number),
-                Effect.catch(() => Effect.succeed(128)),
-              ),
-              EXIT_TIMEOUT_MS,
-            )
-            if (observed === "timeout") record("exit", "Adaptive agent exit code did not settle")
-            else if (Exit.isFailure(observed)) record("exit", "Adaptive agent exit observation failed")
-            else code = observed.value
+            const observed = yield* bounded(state.process.exitCode.pipe(Effect.map(Number)), EXIT_TIMEOUT_MS)
+            if (observed === "timeout") {
+              if (!terminationConfirmed) record("exit", "Adaptive agent exit code did not settle", true)
+            } else if (Exit.isFailure(observed)) {
+              if (!terminationConfirmed) record("exit", "Adaptive agent exit observation failed", true)
+            } else {
+              code = observed.value
+              terminationConfirmed = true
+            }
           }
 
           const registrations = Array.from(state.rpc.values())
