@@ -1,8 +1,9 @@
 import { describe, expect } from "bun:test"
 import { LLM } from "@opencode-ai/llm"
 import { LLMClient } from "@opencode-ai/llm/route"
-import { DateTime, Effect } from "effect"
+import { DateTime, Effect, Layer } from "effect"
 import { Headers } from "effect/unstable/http"
+import { Catalog } from "@opencode-ai/core/catalog"
 import { Credential } from "@opencode-ai/core/credential"
 import { Integration } from "@opencode-ai/core/integration"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -11,7 +12,8 @@ import { ProjectV2 } from "@opencode-ai/core/project"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { it } from "./lib/effect"
+import { PluginTestLayer } from "./plugin/fixture"
+import { it, testEffect } from "./lib/effect"
 
 type Api =
   | {
@@ -41,7 +43,51 @@ const model = (api: Api, variants: ModelV2.Info["variants"] = []) =>
     limit: { context: 100, output: 20 },
   })
 
+const resolverIt = testEffect(SessionRunnerModel.locationLayer.pipe(Layer.provideMerge(PluginTestLayer)))
+
 describe("SessionRunnerModel", () => {
+  resolverIt.effect("resolves an immutable model reference", () =>
+    Effect.gen(function* () {
+      const catalogModel = model(
+        { type: "aisdk", package: "@ai-sdk/openai", url: "https://openai.example/v1" },
+        [
+          {
+            id: ModelV2.VariantID.make("high"),
+            headers: {},
+            body: { reasoning: { effort: "high" } },
+          },
+        ],
+      )
+      const catalog = yield* Catalog.Service
+      yield* catalog.transform((editor) =>
+        editor.model.update(catalogModel.providerID, catalogModel.id, (draft) => {
+          Object.assign(draft, catalogModel)
+        }),
+      )
+
+      const resolved = yield* SessionRunnerModel.Service.use((models) =>
+        models.resolveRef({
+          model: {
+            providerID: catalogModel.providerID,
+            id: catalogModel.id,
+            variant: ModelV2.VariantID.make("high"),
+          },
+        }),
+      )
+      const prepared = yield* LLMClient.prepare(LLM.request({ model: resolved, prompt: "Hello" }))
+
+      expect(prepared).toMatchObject({
+        route: "openai-responses",
+        model: {
+          id: "api-test-model",
+          provider: "test-provider",
+          route: { defaults: { limits: { context: 100, output: 20 } } },
+        },
+      })
+      expect(resolved.route.defaults.http?.body).toMatchObject({ reasoning: { effort: "high" } })
+    }),
+  )
+
   it.effect("maps catalog OpenAI AI SDK models into native Responses routes", () =>
     Effect.gen(function* () {
       const resolved = yield* SessionRunnerModel.fromCatalogModel(
