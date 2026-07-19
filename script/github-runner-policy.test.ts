@@ -20,7 +20,7 @@ describe("fork GitHub runner policy", () => {
   test("process-heavy core tests allow hosted Windows startup latency", async () => {
     const pkg = await Bun.file(new URL("../packages/core/package.json", import.meta.url)).json()
 
-    expect(pkg.scripts.test).toBe("bun test --timeout 30000 --only-failures")
+    expect(pkg.scripts.test).toBe("bun test --timeout 30000 --max-concurrency=1 --only-failures")
   })
 
   test("duplicate detection skips forks that do not own the upstream model secret", async () => {
