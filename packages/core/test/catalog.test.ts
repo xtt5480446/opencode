@@ -128,6 +128,50 @@ describe("CatalogV2", () => {
     }).pipe(Effect.provide(localCatalogLayer))
   })
 
+  it.effect("derives availability only from recognized non-empty credential headers", () => {
+    const localCatalogLayer = Layer.fresh(
+      AppNodeBuilder.build(LayerNode.group([Catalog.node, Credential.node, Integration.node]), [
+        [Location.node, locationLayer],
+      ]),
+    )
+    const headers = ["Authorization", "x-api-key", "x-goog-api-key", "api-key"] as const
+
+    return Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const integrations = yield* Integration.Service
+      for (const [index, header] of headers.entries()) {
+        const providerID = ProviderV2.ID.make(`credential-header-${index}`)
+        const integrationID = Integration.ID.make(providerID)
+        yield* integrations.transform((editor) => editor.update(integrationID, () => {}))
+        yield* catalog.transform((editor) =>
+          editor.provider.update(providerID, (provider) => {
+            provider.integrationID = integrationID
+            provider.request.headers[header] = header === "Authorization" ? "Bearer secret" : "secret"
+          }),
+        )
+      }
+
+      for (const [providerName, header, value] of [
+        ["ordinary-header", "x-request-id", "request-123"],
+        ["empty-credential-header", "x-api-key", "   "],
+      ] as const) {
+        const providerID = ProviderV2.ID.make(providerName)
+        const integrationID = Integration.ID.make(providerID)
+        yield* integrations.transform((editor) => editor.update(integrationID, () => {}))
+        yield* catalog.transform((editor) =>
+          editor.provider.update(providerID, (provider) => {
+            provider.integrationID = integrationID
+            provider.request.headers[header] = value
+          }),
+        )
+      }
+
+      expect((yield* catalog.provider.available()).map((provider) => provider.id)).toEqual(
+        headers.map((_, index) => ProviderV2.ID.make(`credential-header-${index}`)),
+      )
+    }).pipe(Effect.provide(localCatalogLayer))
+  })
+
   it.effect("projects environment connections without a catalog plugin", () =>
     Effect.acquireUseRelease(
       Effect.sync(() => {

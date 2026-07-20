@@ -72,6 +72,12 @@ const layer = Layer.effect(
       if (provider.disabled) return false
       if (typeof provider.request.body.apiKey === "string") return true
       if (provider.api.type === "aisdk" && typeof provider.api.settings?.apiKey === "string") return true
+      if (
+        Object.entries(provider.request.headers).some(
+          ([name, value]) => CREDENTIAL_HEADERS.has(name.toLowerCase()) && value.trim().length > 0,
+        )
+      )
+        return true
       if (integration?.connections.length) return true
       return provider.integrationID === undefined && !integration
     }
@@ -293,6 +299,7 @@ const layer = Layer.effect(
 )
 
 const SMALL_MODEL_RE = /\b(nano|flash|lite|mini|haiku|small|fast)\b/
+const CREDENTIAL_HEADERS = new Set(["authorization", "x-api-key", "x-goog-api-key", "api-key"])
 
 export const locationLayer = layer.pipe(
   Layer.provideMerge(Integration.locationLayer),

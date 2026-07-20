@@ -23,6 +23,7 @@ import { ConfigProvider } from "./config/provider"
 import { ConfigReference } from "./config/reference"
 import { ConfigToolOutput } from "./config/tool-output"
 import { ConfigWatcher } from "./config/watcher"
+import { ConfigVariable } from "./config/variable"
 import { ConfigV1 } from "./v1/config/config"
 import { ConfigMigrateV1 } from "./v1/config/migrate"
 
@@ -145,9 +146,13 @@ const layer = Layer.effect(
     const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
     const decodeV1Info = Schema.decodeUnknownOption(ConfigV1.Info, decodeOptions)
 
-    const loadText = (text: string, path?: string, source?: string) => {
+    const loadText = Effect.fnUntraced(function* (
+      text: string,
+      source: { type: "path"; path: string } | { type: "virtual"; source: string; dir: string },
+    ) {
+      const expanded = yield* Effect.promise(() => ConfigVariable.substitute({ text, ...source }))
       const errors: ParseError[] = []
-      const input: unknown = parse(text, errors, { allowTrailingComma: true })
+      const input: unknown = parse(expanded, errors, { allowTrailingComma: true })
       if (errors.length) return
 
       const info = Option.getOrUndefined(
@@ -156,13 +161,18 @@ const layer = Layer.effect(
           : decodeInfo(input),
       )
       if (!info) return
-      return new Document({ type: "document", path, source, info })
-    }
+      return new Document({
+        type: "document",
+        path: source.type === "path" ? source.path : undefined,
+        source: source.type === "virtual" ? source.source : undefined,
+        info,
+      })
+    })
 
     const loadFile = Effect.fnUntraced(function* (filepath: string) {
       const text = yield* fs.readFileStringSafe(filepath)
       if (!text) return
-      return loadText(text, filepath)
+      return yield* loadText(text, { type: "path", path: filepath })
     })
 
     const loadDirectory = Effect.fnUntraced(function* (directory: AbsolutePath) {
@@ -205,7 +215,11 @@ const layer = Layer.effect(
     // Apply general settings first and more specific settings last:
     // global config, project files, then `.opencode` files.
     const inline = process.env.OPENCODE_CONFIG_CONTENT
-      ? loadText(process.env.OPENCODE_CONFIG_CONTENT, undefined, "OPENCODE_CONFIG_CONTENT")
+      ? yield* loadText(process.env.OPENCODE_CONFIG_CONTENT, {
+          type: "virtual",
+          source: "OPENCODE_CONFIG_CONTENT",
+          dir: location.directory,
+        })
       : undefined
     const configs = [
       ...(supplementary[0] ?? []),

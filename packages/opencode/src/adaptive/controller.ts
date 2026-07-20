@@ -167,7 +167,7 @@ export const make = Effect.fn("AdaptiveController.make")(function* () {
       outputReserve,
       safetyReserve,
     })
-    const requirement = input.requirement.trim() || "Inspect repository"
+    const requirement = input.requirement.trim() ? input.requirement : "Inspect repository"
     const task = yield* store
       .createTask({
         id: AdaptiveTask.ID.create(),

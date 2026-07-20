@@ -1058,6 +1058,10 @@ const layer = Layer.effect(
                 manifestID: AdaptiveModelRequestTable.manifest_id,
                 status: AdaptiveModelRequestTable.status,
                 role: AdaptiveAgentProcessTable.role,
+                currentGeneration: AdaptiveAgentProcessTable.generation,
+                currentState: AdaptiveAgentProcessTable.state,
+                currentOwner: AdaptiveAgentProcessTable.owner,
+                leaseExpiresAt: AdaptiveAgentProcessTable.lease_expires_at,
               })
               .from(AdaptiveModelRequestTable)
               .innerJoin(
@@ -1074,7 +1078,12 @@ const layer = Layer.effect(
               request.generation !== input.generation ||
               request.manifestID !== input.manifestID ||
               request.status !== "succeeded" ||
-              request.role !== "coordinator"
+              request.role !== "coordinator" ||
+              request.currentGeneration !== input.generation ||
+              !["starting", "running"].includes(request.currentState) ||
+              request.currentOwner === null ||
+              request.leaseExpiresAt === null ||
+              request.leaseExpiresAt <= now
             )
               return yield* new BootstrapReferenceMismatchError({
                 taskID: input.taskID,

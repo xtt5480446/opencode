@@ -253,6 +253,69 @@ describe("Config", () => {
     ),
   )
 
+  it.live("substitutes environment variables in OPENCODE_CONFIG_CONTENT", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = {
+          content: process.env.OPENCODE_CONFIG_CONTENT,
+          token: process.env.CORE_CONFIG_TEST_TOKEN,
+        }
+        process.env.CORE_CONFIG_TEST_TOKEN = "inline-secret"
+        process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ username: "{env:CORE_CONFIG_TEST_TOKEN}" })
+        return previous
+      }),
+      () =>
+        Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        ).pipe(
+          Effect.flatMap((tmp) =>
+            Effect.gen(function* () {
+              const config = yield* Config.Service
+              expect(Config.latest(yield* config.entries(), "username")).toBe("inline-secret")
+            }).pipe(Effect.provide(testLayer(tmp.path))),
+          ),
+        ),
+      (previous) =>
+        Effect.sync(() => {
+          if (previous.content === undefined) delete process.env.OPENCODE_CONFIG_CONTENT
+          else process.env.OPENCODE_CONFIG_CONTENT = previous.content
+          if (previous.token === undefined) delete process.env.CORE_CONFIG_TEST_TOKEN
+          else process.env.CORE_CONFIG_TEST_TOKEN = previous.token
+        }),
+    ),
+  )
+
+  it.live("resolves file substitutions in OPENCODE_CONFIG_CONTENT from the active Location", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = process.env.OPENCODE_CONFIG_CONTENT
+        process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ username: "{file:./api-key.txt}" })
+        return previous
+      }),
+      () =>
+        Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        ).pipe(
+          Effect.flatMap((tmp) =>
+            Effect.gen(function* () {
+              yield* Effect.promise(() => fs.writeFile(path.join(tmp.path, "api-key.txt"), "file-secret\n"))
+              return yield* Effect.gen(function* () {
+                const config = yield* Config.Service
+                expect(Config.latest(yield* config.entries(), "username")).toBe("file-secret")
+              }).pipe(Effect.provide(testLayer(tmp.path)))
+            }),
+          ),
+        ),
+      (previous) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env.OPENCODE_CONFIG_CONTENT
+          else process.env.OPENCODE_CONFIG_CONTENT = previous
+        }),
+    ),
+  )
+
   it.live("does not load legacy config.json files", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),

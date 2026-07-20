@@ -951,11 +951,19 @@ describe("AdaptiveStore bootstrap completion", () => {
       expect((yield* store.getBootstrap(createdTask.id).pipe(Effect.flip))._tag).toBe("AdaptiveStore.BootstrapNotFound")
 
       yield* store.settleModelRequest({ requestID: request.id, status: "succeeded" })
-      yield* TestClock.setTime(6_500)
-      const completed = yield* store.completeBootstrap(input)
+      yield* TestClock.setTime(7_001)
+      yield* store.claimAgent({
+        agentID: agent.id,
+        expectedGeneration: claimed.generation,
+        owner: "replacement-controller",
+        pid: 809,
+        leaseDurationMs: 1_000,
+      })
 
-      expect(completed).toEqual({ ...input, timeCreated: 6_500 })
-      expect(yield* store.getBootstrap(createdTask.id)).toEqual(completed)
+      expect((yield* store.completeBootstrap(input).pipe(Effect.flip))._tag).toBe(
+        "AdaptiveStore.BootstrapReferenceMismatch",
+      )
+      expect((yield* store.getBootstrap(createdTask.id).pipe(Effect.flip))._tag).toBe("AdaptiveStore.BootstrapNotFound")
     }),
   )
 })

@@ -270,7 +270,6 @@ export const RunCommand = effectCmd({
   handler: Effect.fn("Cli.run")(function* (args) {
     if (args.runtime === "adaptive") {
       const { AdaptiveController } = yield* Effect.promise(() => import("@/adaptive/controller"))
-      const controller = yield* AdaptiveController.Service
       const incompatible = args.continue
         ? "continue"
         : args.session
@@ -292,6 +291,13 @@ export const RunCommand = effectCmd({
         return yield* new CliError({
           message: new AdaptiveController.IncompatibleError({ option: incompatible }).message,
         })
+      if (!args.model) return yield* new CliError({ message: "--runtime adaptive requires --model provider/model" })
+      const [providerID, ...modelParts] = args.model.split("/")
+      const modelID = modelParts.join("/")
+      if (!providerID || !modelID)
+        return yield* new CliError({ message: "--runtime adaptive --model must use provider/model" })
+      const requestedModel = { providerID, modelID, ...(args.variant ? { variant: args.variant } : {}) }
+      const controller = yield* AdaptiveController.Service
       const emit = (event: AdaptiveControllerEvent) => {
         if (args.format === "json") {
           process.stdout.write(JSON.stringify(event) + EOL)
@@ -318,11 +324,7 @@ export const RunCommand = effectCmd({
           directory,
           requirement,
           mode: "normal",
-          requestedModel: (() => {
-            const value = args.model ?? ""
-            const [providerID, ...rest] = value.split("/")
-            return { providerID, modelID: rest.join("/"), ...(args.variant ? { variant: args.variant } : {}) }
-          })(),
+          requestedModel,
           emit,
         }),
       ).pipe(Effect.mapError((error) => new CliError({ message: error.message })))

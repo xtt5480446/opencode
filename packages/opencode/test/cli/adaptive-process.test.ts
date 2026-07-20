@@ -75,6 +75,29 @@ describe("opencode adaptive runtime subprocess", () => {
   )
 
   cliIt.concurrent(
+    "adaptive preserves the exact nonblank requirement in durable Task and Manifest state",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        const requirement = "  Preserve this requirement exactly.\n    Keep its indentation.  "
+        yield* llm.text("Repository discovery is required.")
+
+        const result = yield* opencode.run(requirement, { runtime: "adaptive", format: "json" })
+        opencode.expectExit(result, 0)
+        const taskID = opencode.parseJsonEvents(result.stdout)[0]?.taskID
+        const state = yield* opencode.spawn([
+          "db",
+          `SELECT task.requirement, json_extract(manifest.messages, '$[0].content[0].text') AS manifest_requirement FROM adaptive_task AS task JOIN adaptive_context_manifest AS manifest ON manifest.task_id = task.id WHERE task.id = '${taskID}'`,
+          "--format",
+          "json",
+        ])
+
+        opencode.expectExit(state, 0)
+        expect(JSON.parse(state.stdout)).toEqual([{ requirement, manifest_requirement: requirement }])
+      }),
+    30_000,
+  )
+
+  cliIt.concurrent(
     "adaptive rejects every legacy Session control before creating durable state",
     ({ llm, opencode }) =>
       Effect.gen(function* () {
@@ -130,6 +153,35 @@ describe("opencode adaptive runtime subprocess", () => {
         expect(result.stderr).toContain("--runtime adaptive cannot be combined with --session")
       }),
     5_000,
+  )
+
+  cliIt.live(
+    "adaptive validates the required model shape before draining open stdin",
+    ({ opencode }) =>
+      Effect.gen(function* () {
+        const cases = [
+          { model: null, message: "--runtime adaptive requires --model provider/model" },
+          { model: "test", message: "--runtime adaptive --model must use provider/model" },
+        ] as const
+
+        for (const item of cases) {
+          const run = yield* opencode.startRun("inspect", {
+            runtime: "adaptive",
+            keepStdinOpen: true,
+            model: item.model,
+          })
+          const result = yield* run.result.pipe(
+            Effect.timeoutOrElse({
+              duration: "2 seconds",
+              orElse: () => Effect.fail(new Error("adaptive model validation waited for stdin EOF")),
+            }),
+          )
+
+          expect(result.exitCode).not.toBe(0)
+          expect(result.stderr).toContain(item.message)
+        }
+      }),
+    10_000,
   )
 
   cliIt.concurrent(

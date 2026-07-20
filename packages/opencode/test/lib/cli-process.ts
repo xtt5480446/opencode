@@ -97,7 +97,7 @@ export type SpawnOpts = { readonly timeoutMs?: number; readonly env?: Record<str
 export type RunOpts = SpawnOpts & {
   readonly runtime?: "baseline" | "adaptive"
   readonly keepStdinOpen?: boolean
-  readonly model?: string
+  readonly model?: string | null
   readonly agent?: string
   readonly format?: "default" | "json"
   readonly command?: string
@@ -253,7 +253,7 @@ export function withCliFixture<A, E>(
     const runArgs = (message: string, opts?: RunOpts) => {
       const argv: string[] = ["run"]
       if (opts?.runtime) argv.push("--runtime", opts.runtime)
-      argv.push("--model", opts?.model ?? testModelID)
+      if (opts?.model !== null) argv.push("--model", opts?.model ?? testModelID)
       if (opts?.agent) argv.push("--agent", opts.agent)
       if (opts?.format) argv.push("--format", opts.format)
       if (opts?.command) argv.push("--command", opts.command)
