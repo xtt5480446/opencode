@@ -70,14 +70,9 @@ const layer = Layer.effect(
 
     const available = (provider: ProviderV2.Info, integration: Integration.Info | undefined) => {
       if (provider.disabled) return false
-      if (typeof provider.request.body.apiKey === "string") return true
-      if (provider.api.type === "aisdk" && typeof provider.api.settings?.apiKey === "string") return true
-      if (
-        Object.entries(provider.request.headers).some(
-          ([name, value]) => CREDENTIAL_HEADERS.has(name.toLowerCase()) && value.trim().length > 0,
-        )
-      )
-        return true
+      if (nonBlank(provider.request.body.apiKey)) return true
+      if (provider.api.type === "aisdk" && nonBlank(provider.api.settings?.apiKey)) return true
+      if (Object.entries(provider.request.headers).some(hasCredentialHeader)) return true
       if (integration?.connections.length) return true
       return provider.integrationID === undefined && !integration
     }
@@ -300,6 +295,17 @@ const layer = Layer.effect(
 
 const SMALL_MODEL_RE = /\b(nano|flash|lite|mini|haiku|small|fast)\b/
 const CREDENTIAL_HEADERS = new Set(["authorization", "x-api-key", "x-goog-api-key", "api-key"])
+const AUTHORIZATION_SCHEMES = new Set(["apikey", "basic", "bearer", "digest", "token"])
+
+const nonBlank = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0
+
+const hasCredentialHeader = ([name, value]: [string, string]) => {
+  const normalized = name.toLowerCase()
+  if (!CREDENTIAL_HEADERS.has(normalized) || !nonBlank(value)) return false
+  if (normalized !== "authorization") return true
+  const [scheme, credential] = value.trim().split(/\s+/, 2)
+  return credential !== undefined ? nonBlank(credential) : !AUTHORIZATION_SCHEMES.has(scheme!.toLowerCase())
+}
 
 export const locationLayer = layer.pipe(
   Layer.provideMerge(Integration.locationLayer),

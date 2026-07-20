@@ -6,6 +6,7 @@ import { Integration } from "@opencode-ai/core/integration"
 import { Location } from "@opencode-ai/core/location"
 import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
 import { PluginV2 } from "@opencode-ai/core/plugin"
+import { PluginInternal } from "@opencode-ai/core/plugin/internal"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { Hash } from "@opencode-ai/core/util/hash"
@@ -142,7 +143,7 @@ export const make = Effect.fn("AdaptiveController.make")(function* () {
     const location = locations.get(Location.Ref.make({ directory: AbsolutePath.make(input.directory) }))
     const resolved = yield* Effect.gen(function* () {
       const plugins = yield* PluginV2.Service
-      yield* plugins.wait(PluginV2.ID.make("config-provider"))
+      yield* plugins.wait(PluginInternal.CATALOG_READY_ID)
       const integrations = yield* Integration.Service
       yield* integrations.reload()
       const catalog = yield* Catalog.Service

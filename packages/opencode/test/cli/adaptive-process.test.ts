@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { pathToFileURL } from "node:url"
 import { cliIt } from "../lib/cli-process"
 import { raw } from "../lib/llm-server"
 
@@ -20,6 +21,25 @@ describe("opencode adaptive runtime subprocess", () => {
         expect(body.workspace).toBe("ok")
         expect(body.audit).toBe("ok")
         expect(body.protocol).toBe(1)
+        expect(yield* llm.calls).toBe(0)
+      }),
+    30_000,
+  )
+
+  cliIt.concurrent(
+    "offline doctor rejects a CLI entry that cannot dispatch the hidden adaptive child",
+    ({ home, llm, opencode }) =>
+      Effect.gen(function* () {
+        const wrapper = join(home, "broken-adaptive-child.ts")
+        const entry = pathToFileURL(join(import.meta.dir, "../../src/index.ts")).href
+        writeFileSync(
+          wrapper,
+          `if (process.argv.includes("__adaptive-agent")) process.exit(72)\nawait import(${JSON.stringify(entry)})\n`,
+        )
+
+        const result = yield* opencode.spawn(["adaptive", "doctor", "--offline", "--json"], { entry: wrapper })
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toContain("adaptive process command unavailable")
         expect(yield* llm.calls).toBe(0)
       }),
     30_000,

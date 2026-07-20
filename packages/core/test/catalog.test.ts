@@ -152,6 +152,7 @@ describe("CatalogV2", () => {
       }
 
       for (const [providerName, header, value] of [
+        ["opaque-authorization", "Authorization", "opaque-secret"],
         ["ordinary-header", "x-request-id", "request-123"],
         ["empty-credential-header", "x-api-key", "   "],
       ] as const) {
@@ -166,9 +167,44 @@ describe("CatalogV2", () => {
         )
       }
 
-      expect((yield* catalog.provider.available()).map((provider) => provider.id)).toEqual(
-        headers.map((_, index) => ProviderV2.ID.make(`credential-header-${index}`)),
-      )
+      expect((yield* catalog.provider.available()).map((provider) => provider.id)).toEqual([
+        ...headers.map((_, index) => ProviderV2.ID.make(`credential-header-${index}`)),
+        ProviderV2.ID.make("opaque-authorization"),
+      ])
+    }).pipe(Effect.provide(localCatalogLayer))
+  })
+
+  it.effect("rejects blank inline API keys and authorization schemes without credential content", () => {
+    const localCatalogLayer = Layer.fresh(
+      AppNodeBuilder.build(LayerNode.group([Catalog.node, Credential.node, Integration.node]), [
+        [Location.node, locationLayer],
+      ]),
+    )
+
+    return Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      const integrations = yield* Integration.Service
+      for (const providerName of ["blank-body", "blank-setting", "empty-bearer"] as const) {
+        const providerID = ProviderV2.ID.make(providerName)
+        const integrationID = Integration.ID.make(providerName)
+        yield* integrations.transform((editor) => editor.update(integrationID, () => {}))
+        yield* catalog.transform((editor) =>
+          editor.provider.update(providerID, (provider) => {
+            provider.integrationID = integrationID
+            if (providerName === "blank-body") provider.request.body.apiKey = "   "
+            if (providerName === "blank-setting") {
+              provider.api = {
+                type: "aisdk",
+                package: "@ai-sdk/openai-compatible",
+                settings: { apiKey: "" },
+              }
+            }
+            if (providerName === "empty-bearer") provider.request.headers.Authorization = "Bearer   "
+          }),
+        )
+      }
+
+      expect(yield* catalog.provider.available()).toEqual([])
     }).pipe(Effect.provide(localCatalogLayer))
   })
 

@@ -36,56 +36,54 @@ export const Plugin = define({
     const fs = yield* FSUtil.Service
     const location = yield* Location.Service
     const npm = yield* Npm.Service
-    yield* Effect.gen(function* () {
-      const configured: { package: string; options?: Record<string, any> }[] = []
+    const configured: { package: string; options?: Record<string, any> }[] = []
 
-      for (const entry of yield* config.entries()) {
-        if (entry.type === "document") {
-          const directory = entry.path ? path.dirname(entry.path) : location.directory
-          for (const item of entry.info.plugins ?? []) {
-            const ref = typeof item === "string" ? { package: item } : item
-            const packageName = (() => {
-              if (ref.package.startsWith("file://")) return fileURLToPath(ref.package)
-              if (ref.package.startsWith("./") || ref.package.startsWith("../")) {
-                return path.resolve(directory, ref.package)
-              }
-              return ref.package
-            })()
-            configured.push({ package: packageName, options: ref.options })
-          }
-        }
-
-        if (entry.type === "directory") {
-          const files = yield* fs
-            .glob("{plugin,plugins}/*.{ts,js}", {
-              cwd: entry.path,
-              absolute: true,
-              include: "file",
-              dot: true,
-              symlink: true,
-            })
-            .pipe(Effect.orElseSucceed(() => []))
-          files.sort()
-          for (const file of files) configured.push({ package: file })
+    for (const entry of yield* config.entries()) {
+      if (entry.type === "document") {
+        const directory = entry.path ? path.dirname(entry.path) : location.directory
+        for (const item of entry.info.plugins ?? []) {
+          const ref = typeof item === "string" ? { package: item } : item
+          const packageName = (() => {
+            if (ref.package.startsWith("file://")) return fileURLToPath(ref.package)
+            if (ref.package.startsWith("./") || ref.package.startsWith("../")) {
+              return path.resolve(directory, ref.package)
+            }
+            return ref.package
+          })()
+          configured.push({ package: packageName, options: ref.options })
         }
       }
 
-      for (const ref of configured) {
-        yield* Effect.gen(function* () {
-          const entrypoint = path.isAbsolute(ref.package)
-            ? pathToFileURL(ref.package).href
-            : (yield* npm.add(ref.package)).entrypoint
-          if (!entrypoint) return
-
-          const mod = yield* Effect.promise(() => import(entrypoint))
-          const value = (yield* Schema.decodeUnknownEffect(PluginModule)(mod)).default
-          const plugin = "effect" in value ? value : PluginPromise.fromPromise(value)
-          yield* ctx.plugin.add({
-            id: plugin.id,
-            effect: (host) => plugin.effect({ ...host, options: ref.options ?? {} }),
+      if (entry.type === "directory") {
+        const files = yield* fs
+          .glob("{plugin,plugins}/*.{ts,js}", {
+            cwd: entry.path,
+            absolute: true,
+            include: "file",
+            dot: true,
+            symlink: true,
           })
-        }).pipe(Effect.ignoreCause)
+          .pipe(Effect.orElseSucceed(() => []))
+        files.sort()
+        for (const file of files) configured.push({ package: file })
       }
-    }).pipe(Effect.forkScoped({ startImmediately: true }))
+    }
+
+    for (const ref of configured) {
+      yield* Effect.gen(function* () {
+        const entrypoint = path.isAbsolute(ref.package)
+          ? pathToFileURL(ref.package).href
+          : (yield* npm.add(ref.package)).entrypoint
+        if (!entrypoint) return
+
+        const mod = yield* Effect.promise(() => import(entrypoint))
+        const value = (yield* Schema.decodeUnknownEffect(PluginModule)(mod)).default
+        const plugin = "effect" in value ? value : PluginPromise.fromPromise(value)
+        yield* ctx.plugin.add({
+          id: plugin.id,
+          effect: (host) => plugin.effect({ ...host, options: ref.options ?? {} }),
+        })
+      }).pipe(Effect.ignoreCause)
+    }
   }),
 })

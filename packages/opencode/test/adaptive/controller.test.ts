@@ -1,7 +1,17 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Exit } from "effect"
+import { Effect, Exit, Layer, LayerMap } from "effect"
 import { AdaptiveController } from "@/adaptive/controller"
+import { AdaptiveModelGateway } from "@/adaptive/model-gateway"
+import { AdaptiveProcessSupervisor } from "@/adaptive/process/supervisor"
 import { runAdaptiveRole } from "@/cli/cmd/adaptive-agent"
+import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
+import { Catalog } from "@opencode-ai/core/catalog"
+import { Integration } from "@opencode-ai/core/integration"
+import { Location } from "@opencode-ai/core/location"
+import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
+import type { LocationServices } from "@opencode-ai/core/location-services"
+import { PluginV2 } from "@opencode-ai/core/plugin"
+import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 
 describe("AdaptiveController", () => {
@@ -22,6 +32,66 @@ describe("AdaptiveController", () => {
       }).pipe(Effect.exit),
     )
     expect(Exit.isFailure(result)).toBe(true)
+  })
+
+  test("waits for the final catalog plugin before resolving the requested model", async () => {
+    const waited: string[] = []
+    const location = Layer.mergeAll(
+      Layer.succeed(
+        PluginV2.Service,
+        PluginV2.Service.of({
+          add: () => Effect.die("unused"),
+          remove: () => Effect.die("unused"),
+          wait: (id) => Effect.sync(() => waited.push(id)),
+        }),
+      ),
+      Layer.succeed(
+        Integration.Service,
+        Integration.Service.of({ reload: () => Effect.void } as Integration.Interface),
+      ),
+      Layer.succeed(Catalog.Service, Catalog.Service.of({ reload: () => Effect.void } as Catalog.Interface)),
+      Layer.succeed(
+        SessionRunnerModel.Service,
+        SessionRunnerModel.Service.of({
+          resolve: () => Effect.die("unused"),
+          resolveRef: () => Effect.die("stop after readiness check"),
+        }),
+      ),
+    )
+    const locationMap = Layer.effect(
+      LocationServiceMap.Service,
+      LayerMap.make((_ref: Location.Ref) => location).pipe(
+        Effect.map((map) => map as unknown as LayerMap.LayerMap<Location.Ref, LocationServices>),
+      ),
+    )
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(AdaptiveStore.Service, AdaptiveStore.Service.of({} as AdaptiveStore.Interface)),
+      Layer.succeed(
+        AdaptiveProcessSupervisor.Service,
+        AdaptiveProcessSupervisor.Service.of({} as AdaptiveProcessSupervisor.Interface),
+      ),
+      Layer.succeed(
+        AdaptiveModelGateway.Service,
+        AdaptiveModelGateway.Service.of({} as AdaptiveModelGateway.Interface),
+      ),
+      locationMap,
+    )
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const controller = yield* AdaptiveController.make()
+        yield* Effect.scoped(
+          controller.start({
+            directory: "/tmp/project",
+            requirement: "inspect",
+            mode: "normal",
+            requestedModel: { providerID: "test", modelID: "model" },
+          }),
+        ).pipe(Effect.exit)
+      }).pipe(Effect.provide(dependencies)),
+    )
+
+    expect(waited).toEqual(["variant"])
   })
 
   test("the coordinator child streams one bootstrap turn and acknowledges completion", async () => {

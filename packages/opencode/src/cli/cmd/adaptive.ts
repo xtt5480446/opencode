@@ -9,9 +9,11 @@ import { AdaptiveModelPolicy } from "@opencode-ai/core/adaptive/model-policy"
 import { Database } from "@opencode-ai/core/database/database"
 import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { AppProcess } from "@opencode-ai/core/process"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { AdaptiveController } from "@/adaptive/controller"
 import { AdaptiveEvidence } from "@/adaptive/evidence"
+import { AgentEntry } from "@/adaptive/process/agent-entry"
 import { AgentProcessProtocol } from "@/adaptive/process/protocol"
 import { AdaptiveProcessCommand } from "@/adaptive/process/command"
 import { effectCmd, fail } from "../effect-cmd"
@@ -111,19 +113,53 @@ const foundationChecks = Effect.fn("Cli.adaptive.foundationChecks")(function* ()
     taskID: AdaptiveTask.ID.make(`adt_${"0".repeat(26)}`),
     agentID: AdaptiveTask.AgentID.make(`ada_${"0".repeat(26)}`),
     generation: 1,
-    role: "coordinator" as const,
+    role: "discovery" as const,
   }
+  const command = yield* AdaptiveProcessCommand.make(identity).pipe(
+    Effect.catch(() => fail("adaptive process command unavailable")),
+  )
+  const accepted = AgentProcessProtocol.encode({
+    v: AgentProcessProtocol.VERSION,
+    id: "doctor-accepted",
+    type: "accepted",
+    heartbeatMs: 5_000,
+  })
+  const shutdown = AgentProcessProtocol.encode({
+    v: AgentProcessProtocol.VERSION,
+    id: "doctor-shutdown",
+    type: "shutdown",
+    reason: "Adaptive offline doctor completed",
+  })
+  const child = yield* (yield* AppProcess.Service)
+    .run(command, {
+      stdin: Buffer.concat([accepted, shutdown]),
+      timeout: "5 seconds",
+      maxOutputBytes: 64 * 1024,
+      maxErrorBytes: 64 * 1024,
+    })
+    .pipe(Effect.catch(() => fail("adaptive process command unavailable")))
+  // Discovery has no completion RPC; the intentional shutdown is therefore a protocol stop.
+  if (child.exitCode !== AgentEntry.EXIT_PROTOCOL || child.stdoutTruncated || child.stderrTruncated)
+    return yield* fail("adaptive process command unavailable")
   yield* Effect.try({
     try: () => {
-      if (!existsSync(process.execPath)) throw new Error("runtime executable is missing")
-      AdaptiveProcessCommand.options(identity)
+      const decoder = AgentProcessProtocol.makeDecoder("child-to-controller")
+      const frames = decoder.push(child.stdout)
+      decoder.finish()
+      const [hello, ready] = frames
+      if (
+        frames.length !== 2 ||
+        hello?.type !== "hello" ||
+        hello.taskID !== identity.taskID ||
+        hello.agentID !== identity.agentID ||
+        hello.generation !== identity.generation ||
+        hello.role !== identity.role ||
+        ready?.type !== "ready"
+      )
+        throw new Error("adaptive child handshake failed")
     },
     catch: () => undefined,
   }).pipe(Effect.catch(() => fail("adaptive process command unavailable")))
-  yield* AdaptiveProcessCommand.make(identity).pipe(
-    Effect.asVoid,
-    Effect.catch(() => fail("adaptive process command unavailable")),
-  )
 
   yield* Effect.try({
     try: () => {
