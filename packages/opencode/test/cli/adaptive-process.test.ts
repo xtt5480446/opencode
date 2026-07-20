@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { cliIt } from "../lib/cli-process"
 import { raw } from "../lib/llm-server"
+import { testProviderConfig } from "../lib/test-provider"
 
 test("release build gates the native binary through the Adaptive smoke script", () => {
   const source = readFileSync(join(import.meta.dir, "../../script/build.ts"), "utf8")
@@ -373,6 +374,42 @@ describe("opencode adaptive runtime subprocess", () => {
           modelPolicyValid: true,
         })
         expect(body.taskID).toMatch(/^adt_[0-9A-Za-z]{26}$/)
+        expect(yield* llm.calls).toBe(1)
+      }),
+    30_000,
+  )
+
+  cliIt.concurrent(
+    "live doctor reuses an API key stored by providers login",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        const configured = testProviderConfig(llm.url)
+        const config = {
+          ...configured,
+          provider: {
+            ...configured.provider,
+            test: {
+              ...configured.provider.test,
+              options: { baseURL: llm.url },
+            },
+          },
+        }
+        const key = "providers-login-test-key"
+        yield* llm.text("Repository discovery is not required.", { usage: { input: 21, output: 6 } })
+
+        const result = yield* opencode.spawn(["adaptive", "doctor", "--live", "--model", "test/test-model", "--json"], {
+          env: {
+            OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+            OPENCODE_AUTH_CONTENT: JSON.stringify({ test: { type: "api", key } }),
+          },
+        })
+        opencode.expectExit(result, 0)
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          modelPolicy: { providerID: "test", modelID: "test-model", effectiveContextLimit: 100_000 },
+          request: { status: "succeeded", providerID: "test", modelID: "test-model" },
+          modelPolicyValid: true,
+        })
+        expect(result.stdout + result.stderr).not.toContain(key)
         expect(yield* llm.calls).toBe(1)
       }),
     30_000,

@@ -176,7 +176,18 @@ export const fromCatalogModel = (
 }
 
 export const resolve = (session: SessionSchema.Info, model: ModelV2.Info, credential?: Credential.Value) =>
-  withVariant(model, session.model?.variant).pipe(Effect.flatMap((model) => fromCatalogModel(model, credential)))
+  resolveModelRef(
+    {
+      providerID: model.providerID,
+      id: model.id,
+      variant: session.model?.variant,
+    },
+    model,
+    credential,
+  )
+
+export const resolveModelRef = (ref: ModelV2.Ref, model: ModelV2.Info, credential?: Credential.Value) =>
+  withVariant(model, ref.variant).pipe(Effect.flatMap((model) => fromCatalogModel(model, credential)))
 
 export const supported = (model: ModelV2.Info) =>
   model.api.type === "aisdk" &&
@@ -197,9 +208,7 @@ export const locationLayer = Layer.effect(
     ) {
       const selected =
         catalogModel ??
-        (yield* catalog.model.available()).find(
-          (model) => model.providerID === ref.providerID && model.id === ref.id,
-        )
+        (yield* catalog.model.available()).find((model) => model.providerID === ref.providerID && model.id === ref.id)
       if (!selected)
         return yield* new ModelUnavailableError({
           providerID: ref.providerID,
@@ -210,9 +219,7 @@ export const locationLayer = Layer.effect(
         provider?.integrationID ?? Integration.ID.make(selected.providerID),
       )
       const credential = connection ? yield* integrations.connection.resolve(connection) : undefined
-      return yield* withVariant(selected, ref.variant).pipe(
-        Effect.flatMap((model) => fromCatalogModel(model, credential)),
-      )
+      return yield* resolveModelRef(ref, selected, credential)
     })
 
     return Service.of({
@@ -221,14 +228,9 @@ export const locationLayer = Layer.effect(
         // Location plugins populate and filter the catalog asynchronously during layer startup.
         const defaultModel = yield* catalog.model.default()
         const selected =
-          defaultModel && supported(defaultModel)
-            ? defaultModel
-            : (yield* catalog.model.available()).find(supported)
+          defaultModel && supported(defaultModel) ? defaultModel : (yield* catalog.model.available()).find(supported)
         if (!selected) return yield* new ModelNotSelectedError({ sessionID: session.id })
-        return yield* resolveExact(
-          { providerID: selected.providerID, id: selected.id, variant: undefined },
-          selected,
-        )
+        return yield* resolveExact({ providerID: selected.providerID, id: selected.id, variant: undefined }, selected)
       }),
       resolveRef: Effect.fn("SessionRunnerModel.resolveRef")(function* (input) {
         return yield* resolveExact(input.model)
