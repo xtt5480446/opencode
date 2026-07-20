@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -6,6 +6,12 @@ import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { cliIt } from "../lib/cli-process"
 import { raw } from "../lib/llm-server"
+
+test("release build gates the native binary through the Adaptive smoke script", () => {
+  const source = readFileSync(join(import.meta.dir, "../../script/build.ts"), "utf8")
+  expect(source).toContain('const adaptiveSmokeScript = path.join(__dirname, "adaptive-smoke.ts")')
+  expect(source).toContain("await $`bun ${adaptiveSmokeScript} ${binaryPath}`")
+})
 
 describe("opencode adaptive runtime subprocess", () => {
   cliIt.concurrent(
