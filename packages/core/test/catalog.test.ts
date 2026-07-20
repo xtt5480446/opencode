@@ -101,6 +101,33 @@ describe("CatalogV2", () => {
     }).pipe(Effect.provide(localCatalogLayer))
   })
 
+  it.effect("derives availability from an AISDK apiKey when an integration has no connection", () => {
+    const integrationID = Integration.ID.make("inline-provider")
+    const providerID = ProviderV2.ID.make("inline-provider")
+    const localCatalogLayer = Layer.fresh(
+      AppNodeBuilder.build(LayerNode.group([Catalog.node, Credential.node, Integration.node]), [
+        [Location.node, locationLayer],
+      ]),
+    )
+
+    return Effect.gen(function* () {
+      const catalog = yield* Catalog.Service
+      yield* (yield* Integration.Service).transform((editor) => editor.update(integrationID, () => {}))
+      yield* catalog.transform((editor) =>
+        editor.provider.update(providerID, (provider) => {
+          provider.integrationID = integrationID
+          provider.api = {
+            type: "aisdk",
+            package: "@ai-sdk/openai-compatible",
+            settings: { apiKey: "inline-key" },
+          }
+        }),
+      )
+
+      expect((yield* catalog.provider.available()).map((provider) => provider.id)).toEqual([providerID])
+    }).pipe(Effect.provide(localCatalogLayer))
+  })
+
   it.effect("projects environment connections without a catalog plugin", () =>
     Effect.acquireUseRelease(
       Effect.sync(() => {

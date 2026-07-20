@@ -91,6 +91,22 @@ describe("AdaptiveStore Task", () => {
 })
 
 describe("AdaptiveStore Agent ownership", () => {
+  it.effect("lists only the task's Agents in stable creation and ID order", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(1_000)
+      const store = yield* AdaptiveStore.Service
+      const createdTask = yield* store.createTask(task())
+      const otherTask = yield* store.createTask({ ...task(), id: AdaptiveTask.ID.create() })
+      const ids = [AdaptiveTask.AgentID.create(), AdaptiveTask.AgentID.create()].toSorted()
+
+      yield* store.createAgent({ id: ids[1], taskID: createdTask.id, role: "implementation" })
+      yield* store.createAgent({ id: ids[0], taskID: createdTask.id, role: "coordinator" })
+      yield* store.createAgent({ id: AdaptiveTask.AgentID.create(), taskID: otherTask.id, role: "validator" })
+
+      expect((yield* store.listAgents(createdTask.id)).map((agent) => agent.id)).toEqual(ids)
+    }),
+  )
+
   it.effect("creates one unowned generation-zero Agent and rejects duplicate IDs", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(2_000)
@@ -656,6 +672,54 @@ describe("AdaptiveStore Manifest and Request", () => {
           .settleModelRequest({ requestID: input.id, status: "failed", failure: "late overwrite" })
           .pipe(Effect.flip))._tag,
       ).toBe("AdaptiveStore.RequestAlreadySettled")
+    }),
+  )
+
+  it.effect("lists only the task's model Requests in stable creation and ID order", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(5_000)
+      const store = yield* AdaptiveStore.Service
+      const createdTask = yield* store.createTask(task())
+      const agent = yield* store.createAgent({
+        id: AdaptiveTask.AgentID.create(),
+        taskID: createdTask.id,
+        role: "coordinator",
+      })
+      const claimed = yield* store.claimAgent({
+        agentID: agent.id,
+        expectedGeneration: 0,
+        owner: "controller-list",
+        pid: 609,
+        leaseDurationMs: 1_000,
+      })
+      const manifest = yield* store.putManifest({
+        id: AdaptiveTask.ContextManifestID.create(),
+        taskID: createdTask.id,
+        agentID: agent.id,
+        generation: claimed.generation,
+        owner: "controller-list",
+        purpose: "List request audit",
+        system: ["system"],
+        messages: [],
+        tools: [],
+        components: [],
+        estimatedTokens: 100,
+        requestHash: "sha256:list",
+      })
+      const ids = [AdaptiveTask.RequestID.create(), AdaptiveTask.RequestID.create()].toSorted()
+      for (const id of ids.toReversed()) {
+        yield* store.insertModelRequest({
+          id,
+          taskID: createdTask.id,
+          agentID: agent.id,
+          generation: claimed.generation,
+          manifestID: manifest.id,
+          modelPolicy: createdTask.modelPolicy,
+        })
+      }
+
+      expect((yield* store.listModelRequests(createdTask.id)).map((request) => request.id)).toEqual(ids)
+      expect(yield* store.listModelRequests(AdaptiveTask.ID.create())).toEqual([])
     }),
   )
 

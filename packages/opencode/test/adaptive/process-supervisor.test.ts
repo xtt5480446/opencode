@@ -552,6 +552,77 @@ describe("AdaptiveProcessCommand", () => {
 })
 
 describe("AdaptiveProcessSupervisor", () => {
+  it.live("runs generation preparation after the durable claim and before returning the handle", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const prepared = yield* Deferred.make<AdaptiveProcessSupervisor.ClaimedIdentity>()
+      const supervisor = yield* AdaptiveProcessSupervisor.make({
+        command: (input) => Effect.succeed(sourceCommand(input)),
+      })
+      const handle = yield* supervisor.start({
+        agentID: seeded.agent.id,
+        prepare: (identity) => Deferred.succeed(prepared, identity).pipe(Effect.asVoid),
+        router: () => Effect.succeed(null),
+      })
+
+      const identity = yield* Deferred.await(prepared).pipe(Effect.timeout("5 seconds"))
+      expect(identity).toMatchObject({
+        taskID: seeded.task.id,
+        agentID: seeded.agent.id,
+        generation: handle.generation,
+        owner: handle.owner,
+        pid: handle.pid,
+        role: "implementation",
+      })
+      expect(yield* seeded.store.getAgent(seeded.agent.id)).toMatchObject({
+        generation: handle.generation,
+        owner: handle.owner,
+        pid: handle.pid,
+        state: "running",
+      })
+
+      yield* supervisor.stop({ agentID: handle.agentID, generation: handle.generation })
+    }),
+  )
+
+  it.live("terminates and settles a claimed generation when preparation fails", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const seeded = yield* seed(directory)
+      const supervisor = yield* AdaptiveProcessSupervisor.make({
+        command: (input) => Effect.succeed(sourceCommand(input)),
+      })
+
+      const exit = yield* supervisor
+        .start({
+          agentID: seeded.agent.id,
+          prepare: () =>
+            Effect.fail(
+              new AdaptiveProcessSupervisor.RpcError({
+                code: "MANIFEST",
+                message: "Manifest write failed",
+              }),
+            ),
+          router: () => Effect.succeed(null),
+        })
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause)
+        expect(error).toBeInstanceOf(AdaptiveProcessSupervisor.StartError)
+        if (error instanceof AdaptiveProcessSupervisor.StartError)
+          expect(error.reason).toBe("Adaptive agent generation preparation failed")
+      }
+      expect(yield* seeded.store.getAgent(seeded.agent.id)).toMatchObject({
+        generation: 1,
+        state: "failed",
+        exitReason: "Adaptive agent startup failed",
+      })
+    }),
+  )
+
   it.effect("keeps sanitized stderr within the encoded preview byte limit", () =>
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()

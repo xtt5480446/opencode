@@ -209,6 +209,49 @@ describe("Config", () => {
     ),
   )
 
+  it.live("loads OPENCODE_CONFIG_CONTENT last without changing file discovery order", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = process.env.OPENCODE_CONFIG_CONTENT
+        process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+          $schema: "inline",
+          providers: { inline: provider },
+        })
+        return previous
+      }),
+      () =>
+        Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        ).pipe(
+          Effect.flatMap((tmp) =>
+            Effect.gen(function* () {
+              yield* Effect.promise(() =>
+                fs.writeFile(path.join(tmp.path, "opencode.json"), JSON.stringify({ $schema: "file" })),
+              )
+
+              return yield* Effect.gen(function* () {
+                const config = yield* Config.Service
+                const documents = (yield* config.entries()).filter((entry) => entry.type === "document")
+
+                expect(documents.map((document) => document.info.$schema)).toEqual(["file", "inline"])
+                expect(documents.map((document) => document.path)).toEqual([
+                  path.join(tmp.path, "opencode.json"),
+                  "OPENCODE_CONFIG_CONTENT",
+                ])
+                expect(Config.latest(yield* config.entries(), "providers")?.inline).toBeInstanceOf(ConfigProvider.Info)
+              }).pipe(Effect.provide(testLayer(tmp.path)))
+            }),
+          ),
+        ),
+      (previous) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env.OPENCODE_CONFIG_CONTENT
+          else process.env.OPENCODE_CONFIG_CONTENT = previous
+        }),
+    ),
+  )
+
   it.live("does not load legacy config.json files", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),

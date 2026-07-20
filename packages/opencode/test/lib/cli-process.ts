@@ -74,6 +74,7 @@ function isolatedEnv(home: string, configJson: string): Record<string, string> {
     OPENCODE_DISABLE_AUTOCOMPACT: "1",
     OPENCODE_DISABLE_MODELS_FETCH: "1",
     OPENCODE_AUTH_CONTENT: "{}",
+    OPENCODE_DB: path.join(home, "opencode-test.db"),
   }
 }
 
@@ -99,7 +100,6 @@ export type RunOpts = SpawnOpts & {
   readonly agent?: string
   readonly format?: "default" | "json"
   readonly command?: string
-  readonly printLogs?: boolean
   readonly permission?: Record<string, "ask" | "allow" | "deny">
   readonly extraArgs?: string[]
 }
@@ -252,7 +252,6 @@ export function withCliFixture<A, E>(
     const runArgs = (message: string, opts?: RunOpts) => {
       const argv: string[] = ["run"]
       if (opts?.runtime) argv.push("--runtime", opts.runtime)
-      if (opts?.printLogs) argv.push("--print-logs")
       argv.push("--model", opts?.model ?? testModelID)
       if (opts?.agent) argv.push("--agent", opts.agent)
       if (opts?.format) argv.push("--format", opts.format)

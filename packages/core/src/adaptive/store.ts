@@ -1,6 +1,6 @@
 export * as AdaptiveStore from "./store"
 
-import { and, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm"
+import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm"
 import { Clock, Context, Effect, Layer, Schema } from "effect"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Model } from "@opencode-ai/schema/model"
@@ -247,6 +247,7 @@ export interface Interface {
   readonly getTask: (id: AdaptiveTask.ID) => Effect.Effect<TaskRecord, TaskNotFoundError | CorruptModelPolicyError>
   readonly createAgent: (input: CreateAgentInput) => Effect.Effect<AgentRecord, DuplicateAgentError | TaskNotFoundError>
   readonly getAgent: (id: AdaptiveTask.AgentID) => Effect.Effect<AgentRecord, AgentNotFoundError>
+  readonly listAgents: (taskID: AdaptiveTask.ID) => Effect.Effect<AgentRecord[]>
   readonly claimAgent: (
     input: ClaimAgentInput,
   ) => Effect.Effect<AgentRecord, InvalidLeaseError | AgentNotFoundError | AgentClaimConflictError>
@@ -271,6 +272,7 @@ export interface Interface {
   readonly getModelRequest: (
     id: AdaptiveTask.RequestID,
   ) => Effect.Effect<ModelRequestRecord, RequestNotFoundError | CorruptModelPolicyError>
+  readonly listModelRequests: (taskID: AdaptiveTask.ID) => Effect.Effect<ModelRequestRecord[], CorruptModelPolicyError>
   readonly settleModelRequest: (
     input: ModelRequestSettlement,
   ) => Effect.Effect<
@@ -544,6 +546,17 @@ const layer = Layer.effect(
         .pipe(Effect.orDie)
       if (!row) return yield* new AgentNotFoundError({ agentID: id })
       return agentRecord(row)
+    })
+
+    const listAgents = Effect.fn("AdaptiveStore.listAgents")(function* (taskID: AdaptiveTask.ID) {
+      const rows = yield* db
+        .select()
+        .from(AdaptiveAgentProcessTable)
+        .where(eq(AdaptiveAgentProcessTable.task_id, taskID))
+        .orderBy(asc(AdaptiveAgentProcessTable.time_created), asc(AdaptiveAgentProcessTable.id))
+        .all()
+        .pipe(Effect.orDie)
+      return rows.map(agentRecord)
     })
 
     const createAgent = Effect.fn("AdaptiveStore.createAgent")(function* (input: CreateAgentInput) {
@@ -838,6 +851,17 @@ const layer = Layer.effect(
       return yield* decodeRequest(row)
     })
 
+    const listModelRequests = Effect.fn("AdaptiveStore.listModelRequests")(function* (taskID: AdaptiveTask.ID) {
+      const rows = yield* db
+        .select()
+        .from(AdaptiveModelRequestTable)
+        .where(eq(AdaptiveModelRequestTable.task_id, taskID))
+        .orderBy(asc(AdaptiveModelRequestTable.time_created), asc(AdaptiveModelRequestTable.id))
+        .all()
+        .pipe(Effect.orDie)
+      return yield* Effect.forEach(rows, decodeRequest)
+    })
+
     const insertModelRequest = Effect.fn("AdaptiveStore.insertModelRequest")(function* (input: ModelRequestInput) {
       if (input.generation < 0 || !Number.isSafeInteger(input.generation))
         return yield* new InvalidRequestError({
@@ -972,6 +996,7 @@ const layer = Layer.effect(
       getTask,
       createAgent,
       getAgent,
+      listAgents,
       claimAgent,
       heartbeat,
       settleAgent,
@@ -980,6 +1005,7 @@ const layer = Layer.effect(
       getManifest,
       insertModelRequest,
       getModelRequest,
+      listModelRequests,
       settleModelRequest,
     })
   }),

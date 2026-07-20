@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit } from "effect"
 import { AdaptiveController } from "@/adaptive/controller"
+import { runAdaptiveRole } from "@/cli/cmd/adaptive-agent"
+import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 
 describe("AdaptiveController", () => {
   test("exports the fixed coordinator bootstrap contract", () => {
@@ -20,5 +22,33 @@ describe("AdaptiveController", () => {
       }).pipe(Effect.exit),
     )
     expect(Exit.isFailure(result)).toBe(true)
+  })
+
+  test("the coordinator child streams one bootstrap turn and acknowledges completion", async () => {
+    const calls: Array<{ method: string; payload: unknown }> = []
+    await runAdaptiveRole({
+      identity: {
+        taskID: AdaptiveTask.ID.create(),
+        agentID: AdaptiveTask.AgentID.create(),
+        generation: 1,
+        role: "coordinator",
+      },
+      shutdown: new Promise<string>(() => {}),
+      modelStream: async (payload, onEvent) => {
+        calls.push({ method: "model.stream", payload })
+        onEvent?.({ type: "text-delta", id: "text-1", text: "Repository discovery is required." })
+      },
+      complete: async (payload) => {
+        calls.push({ method: "process.complete", payload })
+      },
+    })
+
+    expect(calls).toEqual([
+      { method: "model.stream", payload: null },
+      {
+        method: "process.complete",
+        payload: { type: "bootstrap.completed", bootstrap: "Repository discovery is required." },
+      },
+    ])
   })
 })

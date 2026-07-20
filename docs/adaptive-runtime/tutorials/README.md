@@ -45,17 +45,17 @@ Tutorial 与实现位于同一个 Task、Issue 和 PR 中，是 Definition of Do
 
 ## Stage 1：G1 Execution Foundation
 
-| Task    | 教程                                                                        | 产出                                                                | 状态                   |
-| ------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------- | ---------------------- |
-| S01-T01 | [Adaptive Task 公共契约](./s01-t01-adaptive-task-contract.md)               | Task/Agent/Request/Manifest ID、状态词汇、ModelPolicy、Task Summary | 已完成                 |
-| S01-T02 | [ModelPolicy 确定性 Hash](./s01-t02-model-policy-hashing.md)                | 模型执行策略的 canonical identity 与漂移检测                        | 已完成                 |
-| S01-T03 | [Foundation Database 与 Transactional Store](./s01-t03-foundation-store.md) | 可重启的 Task/Agent/Manifest/Request 权威状态                       | 已完成，随任务 PR 交付 |
-| S01-T04 | [固定模型引用的直接解析](./s01-t04-direct-model-resolution.md)              | 复用 Location catalog 的 provider/model/variant 精确解析            | 已完成，随任务 PR 交付 |
-| S01-T05 | [模型请求审计与准入](./s01-t05-model-request-audit.md)                      | 原子请求准入、resolved identity settlement 与确定性有效性证明       | 已完成，随任务 PR 交付 |
-| S01-T06 | [有界 Agent 进程协议](./s01-t06-bounded-process-protocol.md)                | LF-only NDJSON、严格 handshake、heartbeat 与有界 child RPC          | 已完成，随任务 PR 交付 |
-| S01-T07 | [凭据隔离的 Agent 进程监督](./s01-t07-process-supervision.md)               | 默认拒绝 child 环境、generation/lease 监督与 process-group cleanup  | 已完成，随任务 PR 交付 |
-| S01-T08 | [带审计的模型网关](./s01-t08-model-gateway.md)                              | 权威 Manifest 单轮 streaming、模型一致性与 terminal audit           | 已完成，随任务 PR 交付 |
-| S01-T09 | [Controller bootstrap 与 CLI runtime 隔离](./s01-t09-controller-bootstrap.md) | Adaptive 分支、管理命令与 Coordinator bootstrap 基础                  | 开发中 |
+| Task    | 教程                                                                          | 产出                                                                | 状态                   |
+| ------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------- | ---------------------- |
+| S01-T01 | [Adaptive Task 公共契约](./s01-t01-adaptive-task-contract.md)                 | Task/Agent/Request/Manifest ID、状态词汇、ModelPolicy、Task Summary | 已完成                 |
+| S01-T02 | [ModelPolicy 确定性 Hash](./s01-t02-model-policy-hashing.md)                  | 模型执行策略的 canonical identity 与漂移检测                        | 已完成                 |
+| S01-T03 | [Foundation Database 与 Transactional Store](./s01-t03-foundation-store.md)   | 可重启的 Task/Agent/Manifest/Request 权威状态                       | 已完成，随任务 PR 交付 |
+| S01-T04 | [固定模型引用的直接解析](./s01-t04-direct-model-resolution.md)                | 复用 Location catalog 的 provider/model/variant 精确解析            | 已完成，随任务 PR 交付 |
+| S01-T05 | [模型请求审计与准入](./s01-t05-model-request-audit.md)                        | 原子请求准入、resolved identity settlement 与确定性有效性证明       | 已完成，随任务 PR 交付 |
+| S01-T06 | [有界 Agent 进程协议](./s01-t06-bounded-process-protocol.md)                  | LF-only NDJSON、严格 handshake、heartbeat 与有界 child RPC          | 已完成，随任务 PR 交付 |
+| S01-T07 | [凭据隔离的 Agent 进程监督](./s01-t07-process-supervision.md)                 | 默认拒绝 child 环境、generation/lease 监督与 process-group cleanup  | 已完成，随任务 PR 交付 |
+| S01-T08 | [带审计的模型网关](./s01-t08-model-gateway.md)                                | 权威 Manifest 单轮 streaming、模型一致性与 terminal audit           | 已完成，随任务 PR 交付 |
+| S01-T09 | [Controller bootstrap 与 CLI runtime 隔离](./s01-t09-controller-bootstrap.md) | Adaptive 分支、管理命令与 Coordinator bootstrap 基础                | 开发完成，待 PR 验收   |
 
 后续教程会继续按依赖顺序加入本索引，而不是按文档创建时间排列。
 

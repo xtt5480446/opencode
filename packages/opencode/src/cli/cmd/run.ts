@@ -23,6 +23,7 @@ import { CliError, effectCmd } from "../effect-cmd"
 import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
 import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2"
+import type { Event as AdaptiveControllerEvent } from "@/adaptive/controller"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 
@@ -285,21 +286,41 @@ export const RunCommand = effectCmd({
                   : args.interactive || args.mini
                     ? "interactive"
                     : undefined
-      const result = yield* Effect.scoped(controller.start({
-        directory: process.cwd(),
-        requirement: [...args.message, ...(args["--"] || [])].join(" "),
-        mode: "normal",
-        requestedModel: (() => {
-          const value = args.model ?? ""
-          const [providerID, ...rest] = value.split("/")
-          return { providerID, modelID: rest.join("/"), ...(args.variant ? { variant: args.variant } : {}) }
-        })(),
-        ...(incompatible ? { incompatible } : {}),
-      })).pipe(Effect.catch(() => Effect.succeed({ taskID: "adt_unavailable", status: "planning" as const })))
-      const taskID = result.taskID
-      const event = { type: "adaptive.task.created", taskID, status: result.status }
-      if (args.format === "json") process.stdout.write(JSON.stringify(event) + EOL)
-      else process.stdout.write(`Adaptive Task ${taskID} (${result.status})${EOL}`)
+      const emit = (event: AdaptiveControllerEvent) => {
+        if (args.format === "json") {
+          process.stdout.write(JSON.stringify(event) + EOL)
+          return
+        }
+        if (event.type === "adaptive.task.created") {
+          process.stdout.write(`Adaptive Task ${event.taskID} (${event.status})${EOL}`)
+          return
+        }
+        process.stdout.write(event.bootstrap + EOL)
+      }
+      const root = Filesystem.resolve(process.env.PWD ?? process.cwd())
+      const directory = yield* Effect.try({
+        try: () => {
+          if (args.dir) process.chdir(path.isAbsolute(args.dir) ? args.dir : path.join(root, args.dir))
+          return args.dir ? process.cwd() : root
+        },
+        catch: () => new CliError({ message: `Failed to change directory to ${args.dir}` }),
+      })
+      const piped = yield* Effect.promise(() => (process.stdin.isTTY ? Promise.resolve(undefined) : Bun.stdin.text()))
+      const requirement = resolveRunInput([...args.message, ...(args["--"] || [])].join(" "), piped) ?? ""
+      yield* Effect.scoped(
+        controller.start({
+          directory,
+          requirement,
+          mode: "normal",
+          requestedModel: (() => {
+            const value = args.model ?? ""
+            const [providerID, ...rest] = value.split("/")
+            return { providerID, modelID: rest.join("/"), ...(args.variant ? { variant: args.variant } : {}) }
+          })(),
+          ...(incompatible ? { incompatible } : {}),
+          emit,
+        }),
+      ).pipe(Effect.mapError((error) => new CliError({ message: error.message })))
       return
     }
     const { Agent } = yield* Effect.promise(() => import("@/agent/agent"))

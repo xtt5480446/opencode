@@ -62,6 +62,11 @@ export type BoundIdentity = Readonly<{
   generation: number
   role: AdaptiveTask.Role
 }>
+export type ClaimedIdentity = BoundIdentity &
+  Readonly<{
+    owner: string
+    pid: number
+  }>
 export type Router = (
   method: Method,
   payload: AgentProcessProtocol.JsonValue,
@@ -70,6 +75,7 @@ export type Router = (
 
 export interface StartInput {
   readonly agentID: AdaptiveTask.AgentID
+  readonly prepare?: (identity: ClaimedIdentity) => Effect.Effect<void, RpcError>
   readonly router: Router
 }
 
@@ -643,6 +649,16 @@ export const make = Effect.fn("AdaptiveProcessSupervisor.make")(function* (optio
       if (Option.isNone(claim) || claim.value.generation !== identity.generation)
         return yield* new StartError({ reason: "Adaptive agent durable generation claim failed", exitCode: 64 })
       state.claimed = true
+
+      if (input.prepare) {
+        yield* input
+          .prepare({ ...identity, owner: state.owner, pid: Number(process.pid) })
+          .pipe(
+            Effect.mapError(
+              () => new StartError({ reason: "Adaptive agent generation preparation failed", exitCode: 70 }),
+            ),
+          )
+      }
 
       yield* send(state, {
         v: AgentProcessProtocol.VERSION,

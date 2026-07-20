@@ -71,6 +71,7 @@ const layer = Layer.effect(
     const available = (provider: ProviderV2.Info, integration: Integration.Info | undefined) => {
       if (provider.disabled) return false
       if (typeof provider.request.body.apiKey === "string") return true
+      if (provider.api.type === "aisdk" && typeof provider.api.settings?.apiKey === "string") return true
       if (integration?.connections.length) return true
       return provider.integrationID === undefined && !integration
     }
