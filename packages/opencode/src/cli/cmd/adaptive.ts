@@ -1,6 +1,6 @@
 import type { Argv } from "yargs"
-import { Effect, Schema } from "effect"
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
+import { Effect, Option, Schema } from "effect"
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { sql } from "drizzle-orm"
@@ -8,8 +8,10 @@ import { AdaptiveModelAudit } from "@opencode-ai/core/adaptive/model-audit"
 import { AdaptiveModelPolicy } from "@opencode-ai/core/adaptive/model-policy"
 import { Database } from "@opencode-ai/core/database/database"
 import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
+import { FSUtil } from "@opencode-ai/core/fs-util"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { AdaptiveController } from "@/adaptive/controller"
+import { AdaptiveEvidence } from "@/adaptive/evidence"
 import { AgentProcessProtocol } from "@/adaptive/process/protocol"
 import { AdaptiveProcessCommand } from "@/adaptive/process/command"
 import { effectCmd, fail } from "../effect-cmd"
@@ -50,12 +52,14 @@ const taskSummary = Effect.fn("Cli.adaptive.taskSummary")(function* (taskID: Ada
   const task = yield* store.getTask(taskID)
   const agents = yield* store.listAgents(task.id)
   const requests = yield* store.listModelRequests(task.id)
+  const bootstrap = Option.getOrUndefined(yield* store.getBootstrap(task.id).pipe(Effect.option))
   const agent = agents.at(-1)
   const request = requests.at(-1)
   return {
     taskID: task.id,
     status: task.status,
     modelPolicy: task.modelPolicy,
+    ...(bootstrap ? { bootstrap } : {}),
     ...(agent ? { process: processSummary(agent) } : {}),
     ...(request ? { request: requestSummary(request) } : {}),
   }
@@ -74,6 +78,7 @@ const foundationChecks = Effect.fn("Cli.adaptive.foundationChecks")(function* ()
     .pipe(Effect.catch(() => fail("adaptive database migration unavailable")))
   const expectedTables = [
     "adaptive_agent_process",
+    "adaptive_bootstrap",
     "adaptive_context_manifest",
     "adaptive_model_request",
     "adaptive_task",
@@ -185,6 +190,16 @@ const RequestEvidence = Schema.Struct({
   failure: Schema.optional(Schema.String),
 })
 
+const BootstrapEvidence = Schema.Struct({
+  taskID: AdaptiveTask.ID,
+  agentID: AdaptiveTask.AgentID,
+  generation: Schema.Int,
+  manifestID: AdaptiveTask.ContextManifestID,
+  requestID: AdaptiveTask.RequestID,
+  output: Schema.String,
+  timeCreated: Schema.Int,
+})
+
 const LiveDoctorEvidence = Schema.Struct({
   mode: Schema.Literal("live"),
   database: Schema.Literal("ok"),
@@ -193,6 +208,7 @@ const LiveDoctorEvidence = Schema.Struct({
   protocol: Schema.Literal(AgentProcessProtocol.VERSION),
   taskID: AdaptiveTask.ID,
   modelPolicy: AdaptiveTask.ModelPolicy,
+  bootstrap: BootstrapEvidence,
   process: ProcessEvidence,
   request: RequestEvidence,
   modelPolicyValid: Schema.Literal(true),
@@ -236,7 +252,7 @@ const DoctorCommand = effectCmd({
     const summary = yield* taskSummary(started.taskID).pipe(
       Effect.catch(() => fail("adaptive live doctor state is unavailable")),
     )
-    if (!summary.process || !summary.request || summary.request.status !== "succeeded")
+    if (!summary.bootstrap || !summary.process || !summary.request || summary.request.status !== "succeeded")
       return yield* fail("adaptive live doctor did not complete one model request")
     const audit = yield* AdaptiveModelAudit.Service
     const proof = yield* audit.verify(started.taskID)
@@ -256,6 +272,7 @@ const DoctorCommand = effectCmd({
       protocol: checks.protocol,
       taskID: started.taskID,
       modelPolicy: started.modelPolicy,
+      bootstrap: summary.bootstrap,
       process: summary.process,
       request: summary.request,
       modelPolicyValid: true as const,
@@ -303,6 +320,7 @@ const ExportCommand = effectCmd({
       .pipe(Effect.catch(() => fail("adaptive doctor evidence is invalid")))
     const process = agents.at(-1)
     const request = requests.at(-1)
+    const bootstrap = Option.getOrUndefined(yield* store.getBootstrap(task.id).pipe(Effect.option))
     const modelPolicyMatches = yield* Effect.sync(() => {
       try {
         AdaptiveModelPolicy.assertEqual(task.modelPolicy, source.modelPolicy)
@@ -315,8 +333,10 @@ const ExportCommand = effectCmd({
     const proof = yield* audit.verify(task.id)
     if (
       !modelPolicyMatches ||
+      !bootstrap ||
       !process ||
       !request ||
+      JSON.stringify(bootstrap) !== JSON.stringify(source.bootstrap) ||
       JSON.stringify(processSummary(process)) !== JSON.stringify(source.process) ||
       JSON.stringify(requestSummary(request)) !== JSON.stringify(source.request) ||
       !proof.valid ||
@@ -325,8 +345,6 @@ const ExportCommand = effectCmd({
     )
       return yield* fail("adaptive doctor evidence is invalid")
 
-    const output = args.output
-    if (existsSync(output)) return yield* fail("adaptive export output already exists")
     const files: Record<string, string> = {
       "doctor.json": JSON.stringify(source, null, 2) + "\n",
       "model-requests.jsonl": requests.map((item) => JSON.stringify(item)).join("\n") + "\n",
@@ -336,19 +354,14 @@ const ExportCommand = effectCmd({
       Object.entries(files)
         .map(([name, value]) => `${createHash("sha256").update(value).digest("hex")}  ${name}`)
         .join("\n") + "\n"
-    yield* Effect.try({
-      try: () => {
-        mkdirSync(output)
-        for (const [name, value] of Object.entries(files))
-          writeFileSync(join(output, name), value, { flag: "wx", mode: 0o600 })
-        writeFileSync(join(output, "SHA256SUMS"), sums, { flag: "wx", mode: 0o600 })
-      },
-      catch: (cause) => cause,
-    }).pipe(
-      Effect.catch((cause) =>
-        cause instanceof Error && "code" in cause && cause.code === "EEXIST"
+    const fs = yield* FSUtil.Service
+    yield* AdaptiveEvidence.write(fs, args.output, { ...files, SHA256SUMS: sums }).pipe(
+      Effect.catchTag("AdaptiveEvidence.WriteError", (error) =>
+        error.reason === "exists"
           ? fail("adaptive export output already exists")
-          : fail("adaptive export could not create evidence"),
+          : error.reason === "cleanup"
+            ? fail("adaptive export could not clean incomplete evidence")
+            : fail("adaptive export could not create evidence"),
       ),
     )
   }),

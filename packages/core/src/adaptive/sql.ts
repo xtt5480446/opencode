@@ -198,3 +198,30 @@ export const AdaptiveModelRequestTable = sqliteTable(
     ),
   ],
 )
+
+export const AdaptiveBootstrapTable = sqliteTable(
+  "adaptive_bootstrap",
+  {
+    task_id: text()
+      .$type<AdaptiveTask.ID>()
+      .primaryKey()
+      .references(() => AdaptiveTaskTable.id, { onDelete: "cascade" }),
+    agent_id: text()
+      .$type<AdaptiveTask.AgentID>()
+      .notNull()
+      .references(() => AdaptiveAgentProcessTable.id, { onDelete: "cascade" }),
+    generation: integer().notNull(),
+    manifest_id: text()
+      .$type<AdaptiveTask.ContextManifestID>()
+      .notNull()
+      .references(() => AdaptiveContextManifestTable.id),
+    request_id: text()
+      .$type<AdaptiveTask.RequestID>()
+      .notNull()
+      .unique()
+      .references(() => AdaptiveModelRequestTable.id),
+    output: text().notNull(),
+    time_created: integer().notNull(),
+  },
+  (table) => [check("adaptive_bootstrap_generation_check", sql`${table.generation} >= 0`)],
+)

@@ -896,7 +896,71 @@ describe("AdaptiveStore Manifest and Request", () => {
   )
 })
 
-test("AdaptiveStore recovers Task, ownership generation, Manifest, and Request from a new process layer", async () => {
+describe("AdaptiveStore bootstrap completion", () => {
+  it.effect("persists bootstrap only after the exact model request succeeds", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(6_000)
+      const store = yield* AdaptiveStore.Service
+      const createdTask = yield* store.createTask(task())
+      const agent = yield* store.createAgent({
+        id: AdaptiveTask.AgentID.create(),
+        taskID: createdTask.id,
+        role: "coordinator",
+      })
+      const claimed = yield* store.claimAgent({
+        agentID: agent.id,
+        expectedGeneration: 0,
+        owner: "controller-bootstrap",
+        pid: 808,
+        leaseDurationMs: 1_000,
+      })
+      const manifest = yield* store.putManifest({
+        id: AdaptiveTask.ContextManifestID.create(),
+        taskID: createdTask.id,
+        agentID: agent.id,
+        generation: claimed.generation,
+        owner: "controller-bootstrap",
+        purpose: "Coordinator bootstrap",
+        system: ["system"],
+        messages: [],
+        tools: [],
+        components: [],
+        estimatedTokens: 10,
+        requestHash: "sha256:bootstrap",
+      })
+      const request = yield* store.insertModelRequest({
+        id: AdaptiveTask.RequestID.create(),
+        taskID: createdTask.id,
+        agentID: agent.id,
+        generation: claimed.generation,
+        manifestID: manifest.id,
+        modelPolicy: createdTask.modelPolicy,
+      })
+      const input = {
+        taskID: createdTask.id,
+        agentID: agent.id,
+        generation: claimed.generation,
+        manifestID: manifest.id,
+        requestID: request.id,
+        output: "Repository discovery is required.",
+      }
+
+      expect((yield* store.completeBootstrap(input).pipe(Effect.flip))._tag).toBe(
+        "AdaptiveStore.BootstrapReferenceMismatch",
+      )
+      expect((yield* store.getBootstrap(createdTask.id).pipe(Effect.flip))._tag).toBe("AdaptiveStore.BootstrapNotFound")
+
+      yield* store.settleModelRequest({ requestID: request.id, status: "succeeded" })
+      yield* TestClock.setTime(6_500)
+      const completed = yield* store.completeBootstrap(input)
+
+      expect(completed).toEqual({ ...input, timeCreated: 6_500 })
+      expect(yield* store.getBootstrap(createdTask.id)).toEqual(completed)
+    }),
+  )
+})
+
+test("AdaptiveStore recovers Task, ownership generation, Manifest, Request, and bootstrap from a new process layer", async () => {
   await using tmp = await tmpdir()
   const filename = path.join(tmp.path, "adaptive.sqlite")
   const inputTask = task()
@@ -943,10 +1007,17 @@ test("AdaptiveStore recovers Task, ownership generation, Manifest, and Request f
       })
       const settled = yield* store.settleModelRequest({
         requestID: request.id,
-        status: "interrupted",
-        failure: "controller restart",
+        status: "succeeded",
       })
-      return { createdTask, claimed, manifest, settled }
+      const bootstrap = yield* store.completeBootstrap({
+        taskID: createdTask.id,
+        agentID: agent.id,
+        generation: claimed.generation,
+        manifestID: manifest.id,
+        requestID: settled.id,
+        output: "Repository discovery is required.",
+      })
+      return { createdTask, claimed, manifest, settled, bootstrap }
     }),
   )
 
@@ -958,6 +1029,7 @@ test("AdaptiveStore recovers Task, ownership generation, Manifest, and Request f
         claimed: yield* store.getAgent(agentID),
         manifest: yield* store.getManifest(manifestID),
         settled: yield* store.getModelRequest(requestID),
+        bootstrap: yield* store.getBootstrap(inputTask.id),
       }
     }),
   )

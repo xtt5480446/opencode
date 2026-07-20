@@ -109,6 +109,7 @@ export class Info extends Schema.Class<Info>("Config.Info")({
 export class Document extends Schema.Class<Document>("Config.Document")({
   type: Schema.Literal("document"),
   path: Schema.String.pipe(Schema.optional),
+  source: Schema.String.pipe(Schema.optional),
   info: Info,
 }) {}
 
@@ -144,7 +145,7 @@ const layer = Layer.effect(
     const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
     const decodeV1Info = Schema.decodeUnknownOption(ConfigV1.Info, decodeOptions)
 
-    const loadText = (text: string, source?: string) => {
+    const loadText = (text: string, path?: string, source?: string) => {
       const errors: ParseError[] = []
       const input: unknown = parse(text, errors, { allowTrailingComma: true })
       if (errors.length) return
@@ -155,7 +156,7 @@ const layer = Layer.effect(
           : decodeInfo(input),
       )
       if (!info) return
-      return new Document({ type: "document", path: source, info })
+      return new Document({ type: "document", path, source, info })
     }
 
     const loadFile = Effect.fnUntraced(function* (filepath: string) {
@@ -204,7 +205,7 @@ const layer = Layer.effect(
     // Apply general settings first and more specific settings last:
     // global config, project files, then `.opencode` files.
     const inline = process.env.OPENCODE_CONFIG_CONTENT
-      ? loadText(process.env.OPENCODE_CONFIG_CONTENT, "OPENCODE_CONFIG_CONTENT")
+      ? loadText(process.env.OPENCODE_CONFIG_CONTENT, undefined, "OPENCODE_CONFIG_CONTENT")
       : undefined
     const configs = [
       ...(supplementary[0] ?? []),

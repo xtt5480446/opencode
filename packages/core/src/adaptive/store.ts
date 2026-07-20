@@ -10,6 +10,7 @@ import { makeGlobalNode } from "../effect/app-node"
 import { AdaptiveModelPolicy } from "./model-policy"
 import {
   AdaptiveAgentProcessTable,
+  AdaptiveBootstrapTable,
   AdaptiveContextManifestTable,
   AdaptiveModelRequestTable,
   AdaptiveTaskTable,
@@ -142,6 +143,19 @@ export interface ModelRequestSettlement {
   readonly failure?: string
 }
 
+export interface CompleteBootstrapInput {
+  readonly taskID: AdaptiveTask.ID
+  readonly agentID: AdaptiveTask.AgentID
+  readonly generation: number
+  readonly manifestID: AdaptiveTask.ContextManifestID
+  readonly requestID: AdaptiveTask.RequestID
+  readonly output: string
+}
+
+export interface BootstrapRecord extends CompleteBootstrapInput {
+  readonly timeCreated: number
+}
+
 export class DuplicateTaskError extends Schema.TaggedErrorClass<DuplicateTaskError>()("AdaptiveStore.DuplicateTask", {
   taskID: AdaptiveTask.ID,
 }) {}
@@ -242,6 +256,21 @@ export class RequestAlreadySettledError extends Schema.TaggedErrorClass<RequestA
   { requestID: AdaptiveTask.RequestID },
 ) {}
 
+export class BootstrapNotFoundError extends Schema.TaggedErrorClass<BootstrapNotFoundError>()(
+  "AdaptiveStore.BootstrapNotFound",
+  { taskID: AdaptiveTask.ID },
+) {}
+
+export class BootstrapReferenceMismatchError extends Schema.TaggedErrorClass<BootstrapReferenceMismatchError>()(
+  "AdaptiveStore.BootstrapReferenceMismatch",
+  { taskID: AdaptiveTask.ID, requestID: AdaptiveTask.RequestID },
+) {}
+
+export class DuplicateBootstrapError extends Schema.TaggedErrorClass<DuplicateBootstrapError>()(
+  "AdaptiveStore.DuplicateBootstrap",
+  { taskID: AdaptiveTask.ID },
+) {}
+
 export interface Interface {
   readonly createTask: (input: CreateTaskInput) => Effect.Effect<TaskRecord, DuplicateTaskError>
   readonly getTask: (id: AdaptiveTask.ID) => Effect.Effect<TaskRecord, TaskNotFoundError | CorruptModelPolicyError>
@@ -279,6 +308,10 @@ export interface Interface {
     ModelRequestRecord,
     InvalidRequestError | RequestNotFoundError | RequestAlreadySettledError | CorruptModelPolicyError
   >
+  readonly completeBootstrap: (
+    input: CompleteBootstrapInput,
+  ) => Effect.Effect<BootstrapRecord, BootstrapReferenceMismatchError | DuplicateBootstrapError>
+  readonly getBootstrap: (taskID: AdaptiveTask.ID) => Effect.Effect<BootstrapRecord, BootstrapNotFoundError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/AdaptiveStore") {}
@@ -489,6 +522,16 @@ const decodeRequest = (row: typeof AdaptiveModelRequestTable.$inferSelect) =>
     try: () => requestRecord(row),
     catch: (cause) => new CorruptModelPolicyError({ taskID: row.task_id, cause }),
   })
+
+const bootstrapRecord = (row: typeof AdaptiveBootstrapTable.$inferSelect): BootstrapRecord => ({
+  taskID: row.task_id,
+  agentID: row.agent_id,
+  generation: row.generation,
+  manifestID: row.manifest_id,
+  requestID: row.request_id,
+  output: row.output,
+  timeCreated: row.time_created,
+})
 
 const layer = Layer.effect(
   Service,
@@ -991,6 +1034,74 @@ const layer = Layer.effect(
       return yield* decodeRequest(row)
     })
 
+    const getBootstrap = Effect.fn("AdaptiveStore.getBootstrap")(function* (taskID: AdaptiveTask.ID) {
+      const row = yield* db
+        .select()
+        .from(AdaptiveBootstrapTable)
+        .where(eq(AdaptiveBootstrapTable.task_id, taskID))
+        .get()
+        .pipe(Effect.orDie)
+      if (!row) return yield* new BootstrapNotFoundError({ taskID })
+      return bootstrapRecord(row)
+    })
+
+    const completeBootstrap = Effect.fn("AdaptiveStore.completeBootstrap")(function* (input: CompleteBootstrapInput) {
+      const now = yield* Clock.currentTimeMillis
+      return yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const request = yield* tx
+              .select({
+                taskID: AdaptiveModelRequestTable.task_id,
+                agentID: AdaptiveModelRequestTable.agent_id,
+                generation: AdaptiveModelRequestTable.generation,
+                manifestID: AdaptiveModelRequestTable.manifest_id,
+                status: AdaptiveModelRequestTable.status,
+                role: AdaptiveAgentProcessTable.role,
+              })
+              .from(AdaptiveModelRequestTable)
+              .innerJoin(
+                AdaptiveAgentProcessTable,
+                eq(AdaptiveAgentProcessTable.id, AdaptiveModelRequestTable.agent_id),
+              )
+              .where(eq(AdaptiveModelRequestTable.id, input.requestID))
+              .get()
+              .pipe(Effect.orDie)
+            if (
+              !request ||
+              request.taskID !== input.taskID ||
+              request.agentID !== input.agentID ||
+              request.generation !== input.generation ||
+              request.manifestID !== input.manifestID ||
+              request.status !== "succeeded" ||
+              request.role !== "coordinator"
+            )
+              return yield* new BootstrapReferenceMismatchError({
+                taskID: input.taskID,
+                requestID: input.requestID,
+              })
+            const row = yield* tx
+              .insert(AdaptiveBootstrapTable)
+              .values({
+                task_id: input.taskID,
+                agent_id: input.agentID,
+                generation: input.generation,
+                manifest_id: input.manifestID,
+                request_id: input.requestID,
+                output: input.output,
+                time_created: now,
+              })
+              .onConflictDoNothing()
+              .returning()
+              .get()
+              .pipe(Effect.orDie)
+            if (!row) return yield* new DuplicateBootstrapError({ taskID: input.taskID })
+            return bootstrapRecord(row)
+          }),
+        )
+        .pipe(Effect.catchTag("SqlError", (cause) => Effect.die(cause)))
+    })
+
     return Service.of({
       createTask,
       getTask,
@@ -1007,6 +1118,8 @@ const layer = Layer.effect(
       getModelRequest,
       listModelRequests,
       settleModelRequest,
+      completeBootstrap,
+      getBootstrap,
     })
   }),
 )

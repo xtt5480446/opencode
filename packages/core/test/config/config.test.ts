@@ -237,8 +237,9 @@ describe("Config", () => {
                 expect(documents.map((document) => document.info.$schema)).toEqual(["file", "inline"])
                 expect(documents.map((document) => document.path)).toEqual([
                   path.join(tmp.path, "opencode.json"),
-                  "OPENCODE_CONFIG_CONTENT",
+                  undefined,
                 ])
+                expect(documents.map((document) => document.source)).toEqual([undefined, "OPENCODE_CONFIG_CONTENT"])
                 expect(Config.latest(yield* config.entries(), "providers")?.inline).toBeInstanceOf(ConfigProvider.Info)
               }).pipe(Effect.provide(testLayer(tmp.path)))
             }),

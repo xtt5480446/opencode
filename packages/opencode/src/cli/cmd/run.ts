@@ -285,7 +285,13 @@ export const RunCommand = effectCmd({
                   ? "attach"
                   : args.interactive || args.mini
                     ? "interactive"
-                    : undefined
+                    : args.file
+                      ? "file"
+                      : undefined
+      if (incompatible)
+        return yield* new CliError({
+          message: new AdaptiveController.IncompatibleError({ option: incompatible }).message,
+        })
       const emit = (event: AdaptiveControllerEvent) => {
         if (args.format === "json") {
           process.stdout.write(JSON.stringify(event) + EOL)
@@ -317,7 +323,6 @@ export const RunCommand = effectCmd({
             const [providerID, ...rest] = value.split("/")
             return { providerID, modelID: rest.join("/"), ...(args.variant ? { variant: args.variant } : {}) }
           })(),
-          ...(incompatible ? { incompatible } : {}),
           emit,
         }),
       ).pipe(Effect.mapError((error) => new CliError({ message: error.message })))

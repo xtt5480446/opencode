@@ -85,6 +85,7 @@ describe("DatabaseMigration", () => {
               AND name IN (
                 'adaptive_task',
                 'adaptive_agent_process',
+                'adaptive_bootstrap',
                 'adaptive_context_manifest',
                 'adaptive_model_request'
               )
@@ -92,6 +93,7 @@ describe("DatabaseMigration", () => {
           `),
         ).toEqual([
           { name: "adaptive_agent_process" },
+          { name: "adaptive_bootstrap" },
           { name: "adaptive_context_manifest" },
           { name: "adaptive_model_request" },
           { name: "adaptive_task" },

@@ -29,6 +29,7 @@ export const Incompatible = Schema.Literals([
   "share",
   "attach",
   "interactive",
+  "file",
 ])
 export type Incompatible = typeof Incompatible.Type
 
@@ -101,7 +102,7 @@ export interface Interface {
 
 const Completion = Schema.Struct({
   type: Schema.Literal("bootstrap.completed"),
-  bootstrap: Schema.String,
+  bootstrap: Schema.Trim.pipe(Schema.check(Schema.isNonEmpty())),
 })
 const decodeCompletion = Schema.decodeUnknownEffect(Completion)
 const decodeJsonValue = Schema.decodeUnknownSync(AgentProcessProtocol.JsonValue)
@@ -232,7 +233,25 @@ export const make = Effect.fn("AdaptiveController.make")(function* () {
                   }),
               ),
               Effect.flatMap((result) =>
-                Deferred.succeed(completion, result).pipe(
+                Deferred.await(manifest).pipe(
+                  Effect.flatMap((record) =>
+                    store.completeBootstrap({
+                      taskID: identity.taskID,
+                      agentID: identity.agentID,
+                      generation: identity.generation,
+                      manifestID: record.id,
+                      requestID,
+                      output: result.bootstrap,
+                    }),
+                  ),
+                  Effect.mapError(
+                    () =>
+                      new AdaptiveProcessSupervisor.RpcError({
+                        code: "COMPLETION",
+                        message: "Adaptive bootstrap model request did not succeed",
+                      }),
+                  ),
+                  Effect.flatMap(() => Deferred.succeed(completion, result)),
                   Effect.flatMap((accepted) =>
                     accepted
                       ? Effect.succeed(null)

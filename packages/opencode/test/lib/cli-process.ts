@@ -96,6 +96,7 @@ export type SpawnOpts = { readonly timeoutMs?: number; readonly env?: Record<str
 // land here so tests stay grep-able and refactor-safe.
 export type RunOpts = SpawnOpts & {
   readonly runtime?: "baseline" | "adaptive"
+  readonly keepStdinOpen?: boolean
   readonly model?: string
   readonly agent?: string
   readonly format?: "default" | "json"
@@ -287,7 +288,7 @@ export function withCliFixture<A, E>(
           Bun.spawn(["bun", "run", "--conditions=browser", cliEntry, ...runArgs(message, opts)], {
             cwd: home,
             env: { ...process.env, ...env, ...options?.env },
-            stdin: "ignore",
+            stdin: opts?.keepStdinOpen ? "pipe" : "ignore",
             stdout: "pipe",
             stderr: "pipe",
           }),

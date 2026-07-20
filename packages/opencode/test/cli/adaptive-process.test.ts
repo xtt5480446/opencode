@@ -4,6 +4,7 @@ import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { cliIt } from "../lib/cli-process"
+import { raw } from "../lib/llm-server"
 
 describe("opencode adaptive runtime subprocess", () => {
   cliIt.concurrent(
@@ -85,6 +86,7 @@ describe("opencode adaptive runtime subprocess", () => {
           { name: "share", args: ["--share"] },
           { name: "attach", args: ["--attach", "http://127.0.0.1:1"] },
           { name: "interactive", args: ["--interactive"] },
+          { name: "file", args: ["--file", "missing.txt"] },
         ] as const
 
         for (const item of cases) {
@@ -106,6 +108,28 @@ describe("opencode adaptive runtime subprocess", () => {
         expect(JSON.parse(tasks.stdout)).toEqual([{ count: 0 }])
       }),
     30_000,
+  )
+
+  cliIt.live(
+    "adaptive rejects legacy controls before draining open stdin",
+    ({ opencode }) =>
+      Effect.gen(function* () {
+        const run = yield* opencode.startRun("inspect", {
+          runtime: "adaptive",
+          keepStdinOpen: true,
+          extraArgs: ["--session", "ses_test"],
+        })
+        const result = yield* run.result.pipe(
+          Effect.timeoutOrElse({
+            duration: "2 seconds",
+            orElse: () => Effect.fail(new Error("adaptive validation waited for stdin EOF")),
+          }),
+        )
+
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toContain("--runtime adaptive cannot be combined with --session")
+      }),
+    5_000,
   )
 
   cliIt.concurrent(
@@ -132,6 +156,10 @@ describe("opencode adaptive runtime subprocess", () => {
         expect(JSON.parse(status.stdout)).toMatchObject({
           taskID,
           status: "planning",
+          bootstrap: {
+            output: "Repository discovery is required.",
+            requestID: expect.stringMatching(/^adr_[0-9A-Za-z]{26}$/),
+          },
           process: { role: "coordinator", generation: 1, state: "stopped", exitCode: 0 },
           request: {
             status: "succeeded",
@@ -141,6 +169,76 @@ describe("opencode adaptive runtime subprocess", () => {
             outputTokens: 4,
           },
         })
+      }),
+    30_000,
+  )
+
+  cliIt.concurrent(
+    "adaptive bootstrap rejects a model stream that ends without finish",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        yield* llm.push(
+          raw({
+            chunks: [
+              {
+                id: "chatcmpl-unfinished",
+                object: "chat.completion.chunk",
+                choices: [{ delta: { role: "assistant" } }],
+              },
+              {
+                id: "chatcmpl-unfinished",
+                object: "chat.completion.chunk",
+                choices: [{ delta: { content: "partial" } }],
+              },
+            ],
+          }),
+        )
+
+        const result = yield* opencode.run("inspect", { runtime: "adaptive", format: "json" })
+        expect(result.exitCode).not.toBe(0)
+        const events = opencode.parseJsonEvents(result.stdout)
+        expect(events).toHaveLength(1)
+        expect(events[0]).toMatchObject({ type: "adaptive.task.created", status: "planning" })
+
+        const status = yield* opencode.spawn(["adaptive", "status", String(events[0]?.taskID), "--json"])
+        opencode.expectExit(status, 0)
+        expect(JSON.parse(status.stdout)).toMatchObject({ request: { status: "failed" } })
+        expect(JSON.parse(status.stdout)).not.toHaveProperty("bootstrap")
+      }),
+    30_000,
+  )
+
+  cliIt.concurrent(
+    "adaptive bootstrap rejects a successful model stream without text",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        yield* llm.push(
+          raw({
+            chunks: [
+              {
+                id: "chatcmpl-empty",
+                object: "chat.completion.chunk",
+                choices: [{ delta: { role: "assistant" } }],
+              },
+              {
+                id: "chatcmpl-empty",
+                object: "chat.completion.chunk",
+                choices: [{ delta: {}, finish_reason: "stop" }],
+              },
+            ],
+          }),
+        )
+
+        const result = yield* opencode.run("inspect", { runtime: "adaptive", format: "json" })
+        expect(result.exitCode).not.toBe(0)
+        const events = opencode.parseJsonEvents(result.stdout)
+        expect(events).toHaveLength(1)
+        expect(events[0]).toMatchObject({ type: "adaptive.task.created", status: "planning" })
+
+        const status = yield* opencode.spawn(["adaptive", "status", String(events[0]?.taskID), "--json"])
+        opencode.expectExit(status, 0)
+        expect(JSON.parse(status.stdout)).toMatchObject({ request: { status: "succeeded" } })
+        expect(JSON.parse(status.stdout)).not.toHaveProperty("bootstrap")
       }),
     30_000,
   )
