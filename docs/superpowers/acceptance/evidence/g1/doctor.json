@@ -1,0 +1,47 @@
+{
+  "mode": "live",
+  "database": "ok",
+  "workspace": "ok",
+  "audit": "ok",
+  "protocol": 1,
+  "taskID": "adt_f7fe61c8e00189OrcVC2QHiYdW",
+  "modelPolicy": {
+    "providerID": "deepseek",
+    "modelID": "deepseek-chat",
+    "effectiveContextLimit": 1000000,
+    "outputReserve": 16384,
+    "safetyReserve": 8192,
+    "hash": "sha256:e8b101f23f07670b741f78312e6964a92b8ea2591debd8f7764fa7f74e4c76b5"
+  },
+  "bootstrap": {
+    "taskID": "adt_f7fe61c8e00189OrcVC2QHiYdW",
+    "agentID": "ada_f7fe61c95001l5zSbt5Jef1Q47",
+    "generation": 1,
+    "manifestID": "acm_f7fe61e06001Akouu1G4Bj3PxE",
+    "requestID": "adr_f7fe61c970015BPrs916pXAXKA",
+    "output": "Task received: verifying the Adaptive Runtime execution boundary; repository discovery is not required.",
+    "timeCreated": 1784557216297
+  },
+  "process": {
+    "agentID": "ada_f7fe61c95001l5zSbt5Jef1Q47",
+    "role": "coordinator",
+    "generation": 1,
+    "state": "stopped",
+    "exitCode": 0,
+    "exitReason": "Adaptive agent exited normally (code 0)"
+  },
+  "request": {
+    "requestID": "adr_f7fe61c970015BPrs916pXAXKA",
+    "agentID": "ada_f7fe61c95001l5zSbt5Jef1Q47",
+    "generation": 1,
+    "manifestID": "acm_f7fe61e06001Akouu1G4Bj3PxE",
+    "status": "succeeded",
+    "providerID": "deepseek",
+    "modelID": "deepseek-chat",
+    "effectiveContextLimit": 1000000,
+    "policyHash": "sha256:e8b101f23f07670b741f78312e6964a92b8ea2591debd8f7764fa7f74e4c76b5",
+    "inputTokens": 58,
+    "outputTokens": 16
+  },
+  "modelPolicyValid": true
+}

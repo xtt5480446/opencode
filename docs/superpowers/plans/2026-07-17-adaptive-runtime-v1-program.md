@@ -411,7 +411,7 @@ Release rule: only the user may mark G6 `accepted`. That acceptance declares Com
 
 ## 14. Program Completion Check
 
-- [ ] G1 accepted: execution/gateway boundary works in packaged binary.
+- [x] G1 accepted: execution/gateway boundary works in packaged binary.
 - [ ] G2 accepted: forced Worker and Coordinator loss reconstructs context and finishes correct code.
 - [ ] G3 accepted: Roadmap/Detail/Coordinator gives a useful globally coherent navigation index.
 - [ ] G4 accepted: parallel independent Workers communicate through real frozen contracts in Git and greenfield tasks.

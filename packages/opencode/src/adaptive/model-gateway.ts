@@ -8,7 +8,6 @@ import { Location } from "@opencode-ai/core/location"
 import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Provider } from "@opencode-ai/schema/provider"
 import {
@@ -22,6 +21,8 @@ import {
   type Usage,
 } from "@opencode-ai/llm"
 import { Cause, Context, Effect, Exit, Layer, Schema, Scope, Stream } from "effect"
+import { Auth } from "@/auth"
+import { AdaptiveModelResolver } from "./model-resolver"
 
 export interface StreamInput {
   readonly taskID: AdaptiveTask.ID
@@ -244,6 +245,7 @@ const layer = Layer.effect(
     const audit = yield* AdaptiveModelAudit.Service
     const locations = yield* LocationServiceMap.Service
     const llm = yield* LLMClient.Service
+    const auth = yield* Auth.Service
 
     const prepare = (input: StreamInput): Effect.Effect<Stream.Stream<LLMEvent, Error>, Error, Scope.Scope> =>
       Effect.gen(function* () {
@@ -307,7 +309,7 @@ const layer = Layer.effect(
           id: task.modelPolicy.modelID,
           variant: task.modelPolicy.variant,
         }
-        const model = yield* SessionRunnerModel.Service.use((models) => models.resolveRef({ model: modelRef })).pipe(
+        const model = yield* AdaptiveModelResolver.resolveRef({ model: modelRef, auth }).pipe(
           Effect.provide(
             locations.get(
               Location.Ref.make({
@@ -399,5 +401,5 @@ const layer = Layer.effect(
 export const node = makeGlobalNode({
   service: Service,
   layer,
-  deps: [AdaptiveStore.node, AdaptiveModelAudit.node, LocationServiceMap.node, llmClient],
+  deps: [AdaptiveStore.node, AdaptiveModelAudit.node, LocationServiceMap.node, llmClient, Auth.node],
 })

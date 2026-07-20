@@ -28,6 +28,7 @@ import { Provider } from "@opencode-ai/schema/provider"
 import { eq, sql } from "drizzle-orm"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Stream } from "effect"
 import { AdaptiveModelGateway } from "@/adaptive/model-gateway"
+import { Auth } from "@/auth"
 import { testEffect } from "../lib/effect"
 
 const requests: LLMRequest[] = []
@@ -89,6 +90,16 @@ const client = Layer.succeed(
   }),
 )
 
+const noAuth = Layer.succeed(
+  Auth.Service,
+  Auth.Service.of({
+    get: () => Effect.succeed(undefined),
+    all: () => Effect.succeed({}),
+    set: () => Effect.void,
+    remove: () => Effect.void,
+  }),
+)
+
 const database = Database.layerFromPath(":memory:")
 const realAudit = AppNodeBuilder.build(AdaptiveModelAudit.node, [[Database.node, database]])
 
@@ -128,6 +139,7 @@ const it = testEffect(
       [AdaptiveModelAudit.node, wrappedAudit],
       [LocationServiceMap.node, locationMap],
       [LayerNodePlatform.llmClient, client],
+      [Auth.node, noAuth],
     ],
   ),
 )

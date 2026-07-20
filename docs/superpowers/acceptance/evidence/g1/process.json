@@ -1,0 +1,16 @@
+{
+  "taskID": "adt_f7fe61c8e00189OrcVC2QHiYdW",
+  "processes": [
+    {
+      "id": "ada_f7fe61c95001l5zSbt5Jef1Q47",
+      "taskID": "adt_f7fe61c8e00189OrcVC2QHiYdW",
+      "role": "coordinator",
+      "generation": 1,
+      "state": "stopped",
+      "exitCode": 0,
+      "exitReason": "Adaptive agent exited normally (code 0)",
+      "timeCreated": 1784557214869,
+      "timeUpdated": 1784557216308
+    }
+  ]
+}

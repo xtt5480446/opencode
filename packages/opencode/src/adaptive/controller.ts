@@ -8,14 +8,15 @@ import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginInternal } from "@opencode-ai/core/plugin/internal"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { LLMEvent } from "@opencode-ai/llm"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Model } from "@opencode-ai/schema/model"
 import { Provider } from "@opencode-ai/schema/provider"
 import { Context, Deferred, Duration, Effect, Layer, Option, Ref, Schema, Scope, Stream } from "effect"
+import { Auth } from "@/auth"
 import { AdaptiveModelGateway } from "./model-gateway"
+import { AdaptiveModelResolver } from "./model-resolver"
 import { AgentProcessProtocol } from "./process/protocol"
 import { AdaptiveProcessSupervisor } from "./process/supervisor"
 
@@ -148,6 +149,7 @@ export const make = Effect.fn("AdaptiveController.make")(function* (options: Mak
   const supervisor = yield* AdaptiveProcessSupervisor.Service
   const gateway = yield* AdaptiveModelGateway.Service
   const locations = yield* LocationServiceMap.Service
+  const auth = yield* Auth.Service
 
   const makeStart = Effect.fn("AdaptiveController.start")(function* (input: Input) {
     yield* validateInput(input)
@@ -167,10 +169,9 @@ export const make = Effect.fn("AdaptiveController.make")(function* (options: Mak
       yield* integrations.reload()
       const catalog = yield* Catalog.Service
       yield* catalog.reload()
-      const models = yield* SessionRunnerModel.Service
-      return yield* models
-        .resolveRef({ model: { providerID, id: modelID, variant } })
-        .pipe(Effect.mapError(() => new ModelUnavailableError({ providerID, modelID })))
+      return yield* AdaptiveModelResolver.resolveRef({ model: { providerID, id: modelID, variant }, auth }).pipe(
+        Effect.mapError(() => new ModelUnavailableError({ providerID, modelID })),
+      )
     }).pipe(Effect.provide(location))
     const contextLimit = resolved.defaults?.limits?.context ?? resolved.route.defaults.limits?.context
     if (!contextLimit || !Number.isSafeInteger(contextLimit) || contextLimit < 4)
@@ -383,7 +384,13 @@ export const layer = Layer.effect(Service, make())
 export const node = makeGlobalNode({
   service: Service,
   layer,
-  deps: [AdaptiveStore.node, AdaptiveModelGateway.node, AdaptiveProcessSupervisor.node, LocationServiceMap.node],
+  deps: [
+    AdaptiveStore.node,
+    AdaptiveModelGateway.node,
+    AdaptiveProcessSupervisor.node,
+    LocationServiceMap.node,
+    Auth.node,
+  ],
 })
 
 export * as AdaptiveController from "./controller"

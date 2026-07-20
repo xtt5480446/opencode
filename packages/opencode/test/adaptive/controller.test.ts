@@ -13,6 +13,17 @@ import type { LocationServices } from "@opencode-ai/core/location-services"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
+import { Auth } from "@/auth"
+
+const noAuth = Layer.succeed(
+  Auth.Service,
+  Auth.Service.of({
+    get: () => Effect.succeed(undefined),
+    all: () => Effect.succeed({}),
+    set: () => Effect.void,
+    remove: () => Effect.void,
+  }),
+)
 
 describe("AdaptiveController", () => {
   test("exports the fixed coordinator bootstrap contract", () => {
@@ -75,6 +86,7 @@ describe("AdaptiveController", () => {
         AdaptiveModelGateway.Service,
         AdaptiveModelGateway.Service.of({} as AdaptiveModelGateway.Interface),
       ),
+      noAuth,
       locationMap,
     )
 
@@ -137,6 +149,7 @@ describe("AdaptiveController", () => {
         AdaptiveModelGateway.Service,
         AdaptiveModelGateway.Service.of({} as AdaptiveModelGateway.Interface),
       ),
+      noAuth,
       locationMap,
     )
 
