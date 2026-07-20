@@ -14,13 +14,14 @@ import { LLMEvent } from "@opencode-ai/llm"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Model } from "@opencode-ai/schema/model"
 import { Provider } from "@opencode-ai/schema/provider"
-import { Context, Deferred, Effect, Layer, Option, Ref, Schema, Scope, Stream } from "effect"
+import { Context, Deferred, Duration, Effect, Layer, Option, Ref, Schema, Scope, Stream } from "effect"
 import { AdaptiveModelGateway } from "./model-gateway"
 import { AgentProcessProtocol } from "./process/protocol"
 import { AdaptiveProcessSupervisor } from "./process/supervisor"
 
 export const BOOTSTRAP_SYSTEM =
   "You are the Coordinator process for an Adaptive Runtime task. Confirm that you received the exact task requirement and return one concise sentence identifying whether repository discovery is required. Do not propose code, use another model, or claim the task is complete."
+export const CATALOG_READY_TIMEOUT_MS = 300_000
 
 export const Incompatible = Schema.Literals([
   "continue",
@@ -71,6 +72,15 @@ export class ModelUnavailableError extends Schema.TaggedErrorClass<ModelUnavaila
   }
 }
 
+export class CatalogUnavailableError extends Schema.TaggedErrorClass<CatalogUnavailableError>()(
+  "AdaptiveController.CatalogUnavailable",
+  {},
+) {
+  override get message() {
+    return "Adaptive model catalog initialization timed out"
+  }
+}
+
 export class BootstrapError extends Schema.TaggedErrorClass<BootstrapError>()("AdaptiveController.Bootstrap", {
   stage: Schema.Literals(["task", "process", "manifest", "model", "completion"]),
 }) {
@@ -95,7 +105,7 @@ export interface StartResult {
   readonly modelPolicy: AdaptiveTask.ModelPolicy
 }
 
-export type Error = IncompatibleError | ModelUnavailableError | BootstrapError
+export type Error = IncompatibleError | ModelUnavailableError | CatalogUnavailableError | BootstrapError
 
 export interface Interface {
   readonly start: (input: Input) => Effect.Effect<StartResult, Error, Scope.Scope>
@@ -129,7 +139,11 @@ const eventPayload = (event: LLMEvent) => {
   return decodeJsonValue({ ...base, ...(usage ? { usage } : {}) })
 }
 
-export const make = Effect.fn("AdaptiveController.make")(function* () {
+export interface MakeOptions {
+  readonly catalogReadyTimeoutMs?: number
+}
+
+export const make = Effect.fn("AdaptiveController.make")(function* (options: MakeOptions = {}) {
   const store = yield* AdaptiveStore.Service
   const supervisor = yield* AdaptiveProcessSupervisor.Service
   const gateway = yield* AdaptiveModelGateway.Service
@@ -143,17 +157,21 @@ export const make = Effect.fn("AdaptiveController.make")(function* () {
     const location = locations.get(Location.Ref.make({ directory: AbsolutePath.make(input.directory) }))
     const resolved = yield* Effect.gen(function* () {
       const plugins = yield* PluginV2.Service
-      yield* plugins.wait(PluginInternal.CATALOG_READY_ID)
+      yield* plugins.wait(PluginInternal.CATALOG_READY_ID).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.millis(options.catalogReadyTimeoutMs ?? CATALOG_READY_TIMEOUT_MS),
+          orElse: () => Effect.fail(new CatalogUnavailableError({})),
+        }),
+      )
       const integrations = yield* Integration.Service
       yield* integrations.reload()
       const catalog = yield* Catalog.Service
       yield* catalog.reload()
       const models = yield* SessionRunnerModel.Service
-      return yield* models.resolveRef({ model: { providerID, id: modelID, variant } })
-    }).pipe(
-      Effect.provide(location),
-      Effect.mapError(() => new ModelUnavailableError({ providerID, modelID })),
-    )
+      return yield* models
+        .resolveRef({ model: { providerID, id: modelID, variant } })
+        .pipe(Effect.mapError(() => new ModelUnavailableError({ providerID, modelID })))
+    }).pipe(Effect.provide(location))
     const contextLimit = resolved.defaults?.limits?.context ?? resolved.route.defaults.limits?.context
     if (!contextLimit || !Number.isSafeInteger(contextLimit) || contextLimit < 4)
       return yield* new ModelUnavailableError({ providerID, modelID })

@@ -19,6 +19,7 @@ describe("AdaptiveController", () => {
     expect(AdaptiveController.BOOTSTRAP_SYSTEM).toBe(
       "You are the Coordinator process for an Adaptive Runtime task. Confirm that you received the exact task requirement and return one concise sentence identifying whether repository discovery is required. Do not propose code, use another model, or claim the task is complete.",
     )
+    expect(AdaptiveController.CATALOG_READY_TIMEOUT_MS).toBe(300_000)
   })
 
   test("rejects legacy session controls before bootstrap", async () => {
@@ -92,6 +93,68 @@ describe("AdaptiveController", () => {
     )
 
     expect(waited).toEqual(["variant"])
+  })
+
+  test("fails boundedly when final catalog readiness never completes", async () => {
+    const location = Layer.mergeAll(
+      Layer.succeed(
+        PluginV2.Service,
+        PluginV2.Service.of({
+          add: () => Effect.die("unused"),
+          remove: () => Effect.die("unused"),
+          wait: () => Effect.never,
+        }),
+      ),
+      Layer.succeed(
+        Integration.Service,
+        Integration.Service.of({ reload: () => Effect.die("unreachable") } as unknown as Integration.Interface),
+      ),
+      Layer.succeed(
+        Catalog.Service,
+        Catalog.Service.of({ reload: () => Effect.die("unreachable") } as unknown as Catalog.Interface),
+      ),
+      Layer.succeed(
+        SessionRunnerModel.Service,
+        SessionRunnerModel.Service.of({
+          resolve: () => Effect.die("unused"),
+          resolveRef: () => Effect.die("unreachable"),
+        }),
+      ),
+    )
+    const locationMap = Layer.effect(
+      LocationServiceMap.Service,
+      LayerMap.make((_ref: Location.Ref) => location).pipe(
+        Effect.map((map) => map as unknown as LayerMap.LayerMap<Location.Ref, LocationServices>),
+      ),
+    )
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(AdaptiveStore.Service, AdaptiveStore.Service.of({} as AdaptiveStore.Interface)),
+      Layer.succeed(
+        AdaptiveProcessSupervisor.Service,
+        AdaptiveProcessSupervisor.Service.of({} as AdaptiveProcessSupervisor.Interface),
+      ),
+      Layer.succeed(
+        AdaptiveModelGateway.Service,
+        AdaptiveModelGateway.Service.of({} as AdaptiveModelGateway.Interface),
+      ),
+      locationMap,
+    )
+
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const controller = yield* AdaptiveController.make({ catalogReadyTimeoutMs: 1 })
+        return yield* Effect.scoped(
+          controller.start({
+            directory: "/tmp/project",
+            requirement: "inspect",
+            mode: "normal",
+            requestedModel: { providerID: "test", modelID: "model" },
+          }),
+        ).pipe(Effect.flip)
+      }).pipe(Effect.provide(dependencies)),
+    )
+
+    expect(error._tag).toBe("AdaptiveController.CatalogUnavailable")
   })
 
   test("the coordinator child streams one bootstrap turn and acknowledges completion", async () => {
