@@ -51,6 +51,8 @@ export type Requirements =
   | Reference.Service
   | SkillV2.Service
 
+export const CATALOG_READY_ID = PluginV2.ID.make("variant")
+
 export interface Plugin<R = never> {
   readonly id: string
   readonly effect: (context: PluginContext) => Effect.Effect<void, never, R | Scope.Scope>

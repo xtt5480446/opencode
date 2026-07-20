@@ -43,5 +43,6 @@ export const migrations = (
     import("./migration/20260717090000_adaptive_runtime_foundation"),
     import("./migration/20260719101547_adaptive_model_request_resolved_observation"),
     import("./migration/20260719162735_adaptive_agent_quarantine"),
+    import("./migration/20260720034849_adaptive_bootstrap"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

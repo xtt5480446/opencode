@@ -54,7 +54,7 @@ describe("ConfigExternalPlugin", () => {
         ),
       )
 
-      expect(yield* waitForAgent(agents, "configured")).toMatchObject({
+      expect(yield* agents.get(AgentV2.ID.make("configured"))).toMatchObject({
         description: "Loaded from config",
         mode: "subagent",
       })

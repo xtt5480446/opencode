@@ -19,10 +19,11 @@ import { pathToFileURL } from "url"
 import { open } from "node:fs/promises"
 import { Effect } from "effect"
 import { UI } from "../ui"
-import { effectCmd } from "../effect-cmd"
+import { CliError, effectCmd } from "../effect-cmd"
 import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
 import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2"
+import type { Event as AdaptiveControllerEvent } from "@/adaptive/controller"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 
@@ -144,6 +145,12 @@ export const RunCommand = effectCmd({
         describe: "the command to run, use message for args",
         type: "string",
       })
+      .option("runtime", {
+        type: "string",
+        choices: ["baseline", "adaptive"] as const,
+        default: "baseline" as const,
+        describe: "agent runtime",
+      })
       .option("continue", {
         alias: ["c"],
         describe: "continue the last session",
@@ -261,6 +268,68 @@ export const RunCommand = effectCmd({
         describe: "enable direct interactive demo slash commands; pass one as the message to run it immediately",
       }),
   handler: Effect.fn("Cli.run")(function* (args) {
+    if (args.runtime === "adaptive") {
+      const { AdaptiveController } = yield* Effect.promise(() => import("@/adaptive/controller"))
+      const incompatible = args.continue
+        ? "continue"
+        : args.session
+          ? "session"
+          : args.fork
+            ? "fork"
+            : args.command
+              ? "command"
+              : args.share
+                ? "share"
+                : args.attach
+                  ? "attach"
+                  : args.interactive || args.mini
+                    ? "interactive"
+                    : args.file
+                      ? "file"
+                      : undefined
+      if (incompatible)
+        return yield* new CliError({
+          message: new AdaptiveController.IncompatibleError({ option: incompatible }).message,
+        })
+      if (!args.model) return yield* new CliError({ message: "--runtime adaptive requires --model provider/model" })
+      const [providerID, ...modelParts] = args.model.split("/")
+      const modelID = modelParts.join("/")
+      if (!providerID || !modelID)
+        return yield* new CliError({ message: "--runtime adaptive --model must use provider/model" })
+      const requestedModel = { providerID, modelID, ...(args.variant ? { variant: args.variant } : {}) }
+      const controller = yield* AdaptiveController.Service
+      const emit = (event: AdaptiveControllerEvent) => {
+        if (args.format === "json") {
+          process.stdout.write(JSON.stringify(event) + EOL)
+          return
+        }
+        if (event.type === "adaptive.task.created") {
+          process.stdout.write(`Adaptive Task ${event.taskID} (${event.status})${EOL}`)
+          return
+        }
+        process.stdout.write(event.bootstrap + EOL)
+      }
+      const root = Filesystem.resolve(process.env.PWD ?? process.cwd())
+      const directory = yield* Effect.try({
+        try: () => {
+          if (args.dir) process.chdir(path.isAbsolute(args.dir) ? args.dir : path.join(root, args.dir))
+          return args.dir ? process.cwd() : root
+        },
+        catch: () => new CliError({ message: `Failed to change directory to ${args.dir}` }),
+      })
+      const piped = yield* Effect.promise(() => (process.stdin.isTTY ? Promise.resolve(undefined) : Bun.stdin.text()))
+      const requirement = resolveRunInput([...args.message, ...(args["--"] || [])].join(" "), piped) ?? ""
+      yield* Effect.scoped(
+        controller.start({
+          directory,
+          requirement,
+          mode: "normal",
+          requestedModel,
+          emit,
+        }),
+      ).pipe(Effect.mapError((error) => new CliError({ message: error.message })))
+      return
+    }
     const { Agent } = yield* Effect.promise(() => import("@/agent/agent"))
     const { RuntimeFlags } = yield* Effect.promise(() => import("@/effect/runtime-flags"))
     const { InstanceRef } = yield* Effect.promise(() => import("@/effect/instance-ref"))
@@ -1007,5 +1076,6 @@ export async function runMini(input: MiniCommandInput) {
     "dangerously-skip-permissions": false,
     dangerouslySkipPermissions: false,
     demo: input.demo ?? false,
+    runtime: "baseline",
   })
 }

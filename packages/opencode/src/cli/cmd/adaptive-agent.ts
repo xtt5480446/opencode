@@ -1,4 +1,21 @@
 import { cmd } from "./cmd"
+import type { RoleContext } from "../../adaptive/process/agent-entry"
+
+export async function runAdaptiveRole(context: RoleContext) {
+  if (context.identity.role !== "coordinator") {
+    await context.shutdown
+    return
+  }
+
+  let bootstrap = ""
+  await context.modelStream(null, (payload) => {
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return
+    const event = payload as Record<string, unknown>
+    if (event.type !== "text-delta" || typeof event.text !== "string") return
+    bootstrap += event.text
+  })
+  await context.complete({ type: "bootstrap.completed", bootstrap })
+}
 
 export async function runAdaptiveAgent(argv: readonly string[]) {
   const { AgentEntry } = await import("../../adaptive/process/agent-entry")
@@ -8,9 +25,7 @@ export async function runAdaptiveAgent(argv: readonly string[]) {
     process.exitCode = AgentEntry.EXIT_PROTOCOL
     return
   }
-  await AgentEntry.runStdio(async (context) => {
-    await context.shutdown
-  }, argv)
+  await AgentEntry.runStdio(runAdaptiveRole, argv)
 }
 
 export const AdaptiveAgentCommand = cmd({

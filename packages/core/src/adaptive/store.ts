@@ -1,6 +1,6 @@
 export * as AdaptiveStore from "./store"
 
-import { and, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm"
+import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm"
 import { Clock, Context, Effect, Layer, Schema } from "effect"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Model } from "@opencode-ai/schema/model"
@@ -10,6 +10,7 @@ import { makeGlobalNode } from "../effect/app-node"
 import { AdaptiveModelPolicy } from "./model-policy"
 import {
   AdaptiveAgentProcessTable,
+  AdaptiveBootstrapTable,
   AdaptiveContextManifestTable,
   AdaptiveModelRequestTable,
   AdaptiveTaskTable,
@@ -142,6 +143,19 @@ export interface ModelRequestSettlement {
   readonly failure?: string
 }
 
+export interface CompleteBootstrapInput {
+  readonly taskID: AdaptiveTask.ID
+  readonly agentID: AdaptiveTask.AgentID
+  readonly generation: number
+  readonly manifestID: AdaptiveTask.ContextManifestID
+  readonly requestID: AdaptiveTask.RequestID
+  readonly output: string
+}
+
+export interface BootstrapRecord extends CompleteBootstrapInput {
+  readonly timeCreated: number
+}
+
 export class DuplicateTaskError extends Schema.TaggedErrorClass<DuplicateTaskError>()("AdaptiveStore.DuplicateTask", {
   taskID: AdaptiveTask.ID,
 }) {}
@@ -242,11 +256,27 @@ export class RequestAlreadySettledError extends Schema.TaggedErrorClass<RequestA
   { requestID: AdaptiveTask.RequestID },
 ) {}
 
+export class BootstrapNotFoundError extends Schema.TaggedErrorClass<BootstrapNotFoundError>()(
+  "AdaptiveStore.BootstrapNotFound",
+  { taskID: AdaptiveTask.ID },
+) {}
+
+export class BootstrapReferenceMismatchError extends Schema.TaggedErrorClass<BootstrapReferenceMismatchError>()(
+  "AdaptiveStore.BootstrapReferenceMismatch",
+  { taskID: AdaptiveTask.ID, requestID: AdaptiveTask.RequestID },
+) {}
+
+export class DuplicateBootstrapError extends Schema.TaggedErrorClass<DuplicateBootstrapError>()(
+  "AdaptiveStore.DuplicateBootstrap",
+  { taskID: AdaptiveTask.ID },
+) {}
+
 export interface Interface {
   readonly createTask: (input: CreateTaskInput) => Effect.Effect<TaskRecord, DuplicateTaskError>
   readonly getTask: (id: AdaptiveTask.ID) => Effect.Effect<TaskRecord, TaskNotFoundError | CorruptModelPolicyError>
   readonly createAgent: (input: CreateAgentInput) => Effect.Effect<AgentRecord, DuplicateAgentError | TaskNotFoundError>
   readonly getAgent: (id: AdaptiveTask.AgentID) => Effect.Effect<AgentRecord, AgentNotFoundError>
+  readonly listAgents: (taskID: AdaptiveTask.ID) => Effect.Effect<AgentRecord[]>
   readonly claimAgent: (
     input: ClaimAgentInput,
   ) => Effect.Effect<AgentRecord, InvalidLeaseError | AgentNotFoundError | AgentClaimConflictError>
@@ -271,12 +301,17 @@ export interface Interface {
   readonly getModelRequest: (
     id: AdaptiveTask.RequestID,
   ) => Effect.Effect<ModelRequestRecord, RequestNotFoundError | CorruptModelPolicyError>
+  readonly listModelRequests: (taskID: AdaptiveTask.ID) => Effect.Effect<ModelRequestRecord[], CorruptModelPolicyError>
   readonly settleModelRequest: (
     input: ModelRequestSettlement,
   ) => Effect.Effect<
     ModelRequestRecord,
     InvalidRequestError | RequestNotFoundError | RequestAlreadySettledError | CorruptModelPolicyError
   >
+  readonly completeBootstrap: (
+    input: CompleteBootstrapInput,
+  ) => Effect.Effect<BootstrapRecord, BootstrapReferenceMismatchError | DuplicateBootstrapError>
+  readonly getBootstrap: (taskID: AdaptiveTask.ID) => Effect.Effect<BootstrapRecord, BootstrapNotFoundError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/AdaptiveStore") {}
@@ -488,6 +523,16 @@ const decodeRequest = (row: typeof AdaptiveModelRequestTable.$inferSelect) =>
     catch: (cause) => new CorruptModelPolicyError({ taskID: row.task_id, cause }),
   })
 
+const bootstrapRecord = (row: typeof AdaptiveBootstrapTable.$inferSelect): BootstrapRecord => ({
+  taskID: row.task_id,
+  agentID: row.agent_id,
+  generation: row.generation,
+  manifestID: row.manifest_id,
+  requestID: row.request_id,
+  output: row.output,
+  timeCreated: row.time_created,
+})
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -544,6 +589,17 @@ const layer = Layer.effect(
         .pipe(Effect.orDie)
       if (!row) return yield* new AgentNotFoundError({ agentID: id })
       return agentRecord(row)
+    })
+
+    const listAgents = Effect.fn("AdaptiveStore.listAgents")(function* (taskID: AdaptiveTask.ID) {
+      const rows = yield* db
+        .select()
+        .from(AdaptiveAgentProcessTable)
+        .where(eq(AdaptiveAgentProcessTable.task_id, taskID))
+        .orderBy(asc(AdaptiveAgentProcessTable.time_created), asc(AdaptiveAgentProcessTable.id))
+        .all()
+        .pipe(Effect.orDie)
+      return rows.map(agentRecord)
     })
 
     const createAgent = Effect.fn("AdaptiveStore.createAgent")(function* (input: CreateAgentInput) {
@@ -838,6 +894,17 @@ const layer = Layer.effect(
       return yield* decodeRequest(row)
     })
 
+    const listModelRequests = Effect.fn("AdaptiveStore.listModelRequests")(function* (taskID: AdaptiveTask.ID) {
+      const rows = yield* db
+        .select()
+        .from(AdaptiveModelRequestTable)
+        .where(eq(AdaptiveModelRequestTable.task_id, taskID))
+        .orderBy(asc(AdaptiveModelRequestTable.time_created), asc(AdaptiveModelRequestTable.id))
+        .all()
+        .pipe(Effect.orDie)
+      return yield* Effect.forEach(rows, decodeRequest)
+    })
+
     const insertModelRequest = Effect.fn("AdaptiveStore.insertModelRequest")(function* (input: ModelRequestInput) {
       if (input.generation < 0 || !Number.isSafeInteger(input.generation))
         return yield* new InvalidRequestError({
@@ -967,11 +1034,89 @@ const layer = Layer.effect(
       return yield* decodeRequest(row)
     })
 
+    const getBootstrap = Effect.fn("AdaptiveStore.getBootstrap")(function* (taskID: AdaptiveTask.ID) {
+      const row = yield* db
+        .select()
+        .from(AdaptiveBootstrapTable)
+        .where(eq(AdaptiveBootstrapTable.task_id, taskID))
+        .get()
+        .pipe(Effect.orDie)
+      if (!row) return yield* new BootstrapNotFoundError({ taskID })
+      return bootstrapRecord(row)
+    })
+
+    const completeBootstrap = Effect.fn("AdaptiveStore.completeBootstrap")(function* (input: CompleteBootstrapInput) {
+      const now = yield* Clock.currentTimeMillis
+      return yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const request = yield* tx
+              .select({
+                taskID: AdaptiveModelRequestTable.task_id,
+                agentID: AdaptiveModelRequestTable.agent_id,
+                generation: AdaptiveModelRequestTable.generation,
+                manifestID: AdaptiveModelRequestTable.manifest_id,
+                status: AdaptiveModelRequestTable.status,
+                role: AdaptiveAgentProcessTable.role,
+                currentGeneration: AdaptiveAgentProcessTable.generation,
+                currentState: AdaptiveAgentProcessTable.state,
+                currentOwner: AdaptiveAgentProcessTable.owner,
+                leaseExpiresAt: AdaptiveAgentProcessTable.lease_expires_at,
+              })
+              .from(AdaptiveModelRequestTable)
+              .innerJoin(
+                AdaptiveAgentProcessTable,
+                eq(AdaptiveAgentProcessTable.id, AdaptiveModelRequestTable.agent_id),
+              )
+              .where(eq(AdaptiveModelRequestTable.id, input.requestID))
+              .get()
+              .pipe(Effect.orDie)
+            if (
+              !request ||
+              request.taskID !== input.taskID ||
+              request.agentID !== input.agentID ||
+              request.generation !== input.generation ||
+              request.manifestID !== input.manifestID ||
+              request.status !== "succeeded" ||
+              request.role !== "coordinator" ||
+              request.currentGeneration !== input.generation ||
+              !["starting", "running"].includes(request.currentState) ||
+              request.currentOwner === null ||
+              request.leaseExpiresAt === null ||
+              request.leaseExpiresAt <= now
+            )
+              return yield* new BootstrapReferenceMismatchError({
+                taskID: input.taskID,
+                requestID: input.requestID,
+              })
+            const row = yield* tx
+              .insert(AdaptiveBootstrapTable)
+              .values({
+                task_id: input.taskID,
+                agent_id: input.agentID,
+                generation: input.generation,
+                manifest_id: input.manifestID,
+                request_id: input.requestID,
+                output: input.output,
+                time_created: now,
+              })
+              .onConflictDoNothing()
+              .returning()
+              .get()
+              .pipe(Effect.orDie)
+            if (!row) return yield* new DuplicateBootstrapError({ taskID: input.taskID })
+            return bootstrapRecord(row)
+          }),
+        )
+        .pipe(Effect.catchTag("SqlError", (cause) => Effect.die(cause)))
+    })
+
     return Service.of({
       createTask,
       getTask,
       createAgent,
       getAgent,
+      listAgents,
       claimAgent,
       heartbeat,
       settleAgent,
@@ -980,7 +1125,10 @@ const layer = Layer.effect(
       getManifest,
       insertModelRequest,
       getModelRequest,
+      listModelRequests,
       settleModelRequest,
+      completeBootstrap,
+      getBootstrap,
     })
   }),
 )

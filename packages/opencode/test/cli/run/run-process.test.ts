@@ -9,6 +9,24 @@ import { reply } from "../../lib/llm-server"
 import { cliIt } from "../../lib/cli-process"
 
 describe("opencode run (non-interactive subprocess)", () => {
+  cliIt.concurrent(
+    "omitted runtime and explicit baseline preserve the same CLI behavior",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        yield* llm.text("baseline parity")
+        yield* llm.text("baseline parity")
+
+        const omitted = yield* opencode.run("say hi")
+        const explicit = yield* opencode.run("say hi", { runtime: "baseline" })
+
+        opencode.expectExit(omitted, 0)
+        opencode.expectExit(explicit, 0)
+        expect(explicit.stdout).toBe(omitted.stdout)
+        expect(explicit.stderr).toBe(omitted.stderr)
+      }),
+    60_000,
+  )
+
   // Happy path: prompt completes, output reaches stdout, process exits 0.
   // If this fails, all the others likely will too — debug here first.
   cliIt.concurrent(

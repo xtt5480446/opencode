@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "e1b9ba87-d504-44f0-a855-2fc83718a016",
+  "id": "857cbda0-d3ac-4cec-81bc-ba00d4166424",
   "prevIds": [
-    "bb426b9f-d268-434b-9ac6-8392eab94960"
+    "e1b9ba87-d504-44f0-a855-2fc83718a016"
   ],
   "ddl": [
     {
@@ -28,6 +28,10 @@
     },
     {
       "name": "adaptive_agent_process",
+      "entityType": "tables"
+    },
+    {
+      "name": "adaptive_bootstrap",
       "entityType": "tables"
     },
     {
@@ -507,6 +511,76 @@
       "name": "time_updated",
       "entityType": "columns",
       "table": "adaptive_agent_process"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "task_id",
+      "entityType": "columns",
+      "table": "adaptive_bootstrap"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "agent_id",
+      "entityType": "columns",
+      "table": "adaptive_bootstrap"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "generation",
+      "entityType": "columns",
+      "table": "adaptive_bootstrap"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "manifest_id",
+      "entityType": "columns",
+      "table": "adaptive_bootstrap"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "request_id",
+      "entityType": "columns",
+      "table": "adaptive_bootstrap"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "output",
+      "entityType": "columns",
+      "table": "adaptive_bootstrap"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "adaptive_bootstrap"
     },
     {
       "type": "text",
@@ -2184,6 +2258,66 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "nameExplicit": false,
+      "name": "fk_adaptive_bootstrap_task_id_adaptive_task_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_bootstrap"
+    },
+    {
+      "columns": [
+        "agent_id"
+      ],
+      "tableTo": "adaptive_agent_process",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_adaptive_bootstrap_agent_id_adaptive_agent_process_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_bootstrap"
+    },
+    {
+      "columns": [
+        "manifest_id"
+      ],
+      "tableTo": "adaptive_context_manifest",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
+      "name": "fk_adaptive_bootstrap_manifest_id_adaptive_context_manifest_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_bootstrap"
+    },
+    {
+      "columns": [
+        "request_id"
+      ],
+      "tableTo": "adaptive_model_request",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
+      "name": "fk_adaptive_bootstrap_request_id_adaptive_model_request_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_bootstrap"
+    },
+    {
+      "columns": [
+        "task_id"
+      ],
+      "tableTo": "adaptive_task",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
       "name": "fk_adaptive_context_manifest_task_id_adaptive_task_id_fk",
       "entityType": "fks",
       "table": "adaptive_context_manifest"
@@ -2501,6 +2635,15 @@
       "nameExplicit": false,
       "name": "adaptive_agent_process_pk",
       "table": "adaptive_agent_process",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "task_id"
+      ],
+      "nameExplicit": false,
+      "name": "adaptive_bootstrap_pk",
+      "table": "adaptive_bootstrap",
       "entityType": "pks"
     },
     {
@@ -3035,6 +3178,15 @@
       "table": "todo"
     },
     {
+      "columns": [
+        "request_id"
+      ],
+      "nameExplicit": false,
+      "name": "adaptive_bootstrap_request_id_unique",
+      "entityType": "uniques",
+      "table": "adaptive_bootstrap"
+    },
+    {
       "value": "\"role\" IN ('coordinator', 'roadmap-reviewer', 'discovery', 'implementation', 'validator', 'integration')",
       "name": "adaptive_agent_role_check",
       "entityType": "checks",
@@ -3063,6 +3215,12 @@
       "name": "adaptive_agent_state_owner_check",
       "entityType": "checks",
       "table": "adaptive_agent_process"
+    },
+    {
+      "value": "\"generation\" >= 0",
+      "name": "adaptive_bootstrap_generation_check",
+      "entityType": "checks",
+      "table": "adaptive_bootstrap"
     },
     {
       "value": "\"generation\" >= 0",
