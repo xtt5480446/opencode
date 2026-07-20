@@ -4,7 +4,7 @@ import { fileURLToPath } from "url"
 import path from "path"
 import { SqliteClient } from "@effect/sql-sqlite-bun"
 import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import { eq, inArray, sql } from "drizzle-orm"
 import { DatabaseMigration } from "@opencode-ai/core/database/migration"
 import { migrations } from "@opencode-ai/core/database/migration.gen"
@@ -13,6 +13,7 @@ import normalizeStoragePathsMigration from "@opencode-ai/core/database/migration
 import sessionMessageProjectionOrderMigration from "@opencode-ai/core/database/migration/20260603040000_session_message_projection_order"
 import eventSourcedSessionInputMigration from "@opencode-ai/core/database/migration/20260604172448_event_sourced_session_input"
 import contextEpochAgentMigration from "@opencode-ai/core/database/migration/20260605042240_add_context_epoch_agent"
+import adaptiveRuntimeFoundationMigration from "@opencode-ai/core/database/migration/20260717090000_adaptive_runtime_foundation"
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -36,6 +37,7 @@ const run = <A, E>(effect: Effect.Effect<A, E, SqlClientService>) =>
   )
 
 const makeDb = EffectDrizzleSqlite.makeWithDefaults()
+const adaptiveAgentQuarantineMigrationID = "20260719162735_adaptive_agent_quarantine"
 
 describe("DatabaseMigration", () => {
   test("serializes concurrent embedded initialization for one database path", async () => {
@@ -76,10 +78,57 @@ describe("DatabaseMigration", () => {
           yield* db.get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_context_epoch'`),
         ).toEqual({ name: "session_context_epoch" })
         expect(
+          yield* db.all(sql`
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN (
+                'adaptive_task',
+                'adaptive_agent_process',
+                'adaptive_bootstrap',
+                'adaptive_context_manifest',
+                'adaptive_model_request'
+              )
+            ORDER BY name
+          `),
+        ).toEqual([
+          { name: "adaptive_agent_process" },
+          { name: "adaptive_bootstrap" },
+          { name: "adaptive_context_manifest" },
+          { name: "adaptive_model_request" },
+          { name: "adaptive_task" },
+        ])
+        expect(
+          yield* db.all(sql`
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name IN (
+                'adaptive_task_directory_idx',
+                'adaptive_agent_task_state_idx',
+                'adaptive_manifest_agent_time_idx',
+                'adaptive_model_request_task_idx',
+                'adaptive_model_request_agent_idx'
+              )
+            ORDER BY name
+          `),
+        ).toEqual([
+          { name: "adaptive_agent_task_state_idx" },
+          { name: "adaptive_manifest_agent_time_idx" },
+          { name: "adaptive_model_request_agent_idx" },
+          { name: "adaptive_model_request_task_idx" },
+          { name: "adaptive_task_directory_idx" },
+        ])
+        expect(
           yield* db.get(
             sql`SELECT name FROM pragma_table_info('session_context_epoch') WHERE name IN ('agent', 'replacement_seq', 'revision')`,
           ),
         ).toBeUndefined()
+        expect(
+          (yield* db.all<{ name: string }>(sql`PRAGMA table_info(adaptive_model_request)`))
+            .map((column) => column.name)
+            .filter((name) => name.startsWith("resolved_")),
+        ).toEqual(["resolved_provider_id", "resolved_model_id", "resolved_variant", "resolved_effective_context_limit"])
         expect(yield* db.get(sql`SELECT count(*) as count FROM migration`)).toEqual({ count: migrations.length })
         expect(
           yield* db.all(
@@ -95,6 +144,265 @@ describe("DatabaseMigration", () => {
           { name: "session_message_session_time_created_id_idx" },
           { name: "session_message_session_type_seq_idx" },
         ])
+      }),
+    )
+  })
+
+  test("adds Adaptive tables without changing legacy Session or Event rows", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY, data text NOT NULL)`)
+        yield* db.run(
+          sql`CREATE TABLE event (id text PRIMARY KEY, aggregate_id text NOT NULL, seq integer NOT NULL, data text NOT NULL)`,
+        )
+        yield* db.run(sql`INSERT INTO session (id, data) VALUES ('ses_legacy', '{"title":"unchanged"}')`)
+        yield* db.run(
+          sql`INSERT INTO event (id, aggregate_id, seq, data) VALUES ('evt_legacy', 'ses_legacy', 7, '{"type":"legacy"}')`,
+        )
+        yield* db.run(sql`CREATE TABLE migration (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`)
+        yield* Effect.forEach(
+          migrations.filter((migration) => migration.id !== adaptiveRuntimeFoundationMigration.id),
+          (migration) => db.run(sql`INSERT INTO migration (id, time_completed) VALUES (${migration.id}, 1)`),
+        )
+
+        yield* DatabaseMigration.apply(db)
+
+        expect(yield* db.all(sql`SELECT id, data FROM session`)).toEqual([
+          { id: "ses_legacy", data: '{"title":"unchanged"}' },
+        ])
+        expect(yield* db.all(sql`SELECT id, aggregate_id, seq, data FROM event`)).toEqual([
+          { id: "evt_legacy", aggregate_id: "ses_legacy", seq: 7, data: '{"type":"legacy"}' },
+        ])
+        expect(
+          yield* db.all(
+            sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'adaptive_%' ORDER BY name`,
+          ),
+        ).toEqual([
+          { name: "adaptive_agent_process" },
+          { name: "adaptive_context_manifest" },
+          { name: "adaptive_model_request" },
+          { name: "adaptive_task" },
+        ])
+        expect(
+          yield* db.get(sql`SELECT id FROM migration WHERE id = ${adaptiveRuntimeFoundationMigration.id}`),
+        ).toEqual({ id: adaptiveRuntimeFoundationMigration.id })
+        expect(yield* db.get(sql`SELECT count(*) AS count FROM migration`)).toEqual({ count: migrations.length })
+      }),
+    )
+  })
+
+  test("adds resolved model observations to an existing T03 request without losing policy data", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`PRAGMA foreign_keys = ON`)
+        yield* DatabaseMigration.applyOnly(db, [adaptiveRuntimeFoundationMigration])
+        yield* db.run(sql`
+          INSERT INTO adaptive_task (
+            id, directory, mode, status, requirement, provider_id, model_id, variant,
+            effective_context_limit, output_reserve, safety_reserve, model_policy_hash,
+            roadmap_revision, base_snapshot_hash, time_created, time_updated
+          ) VALUES (
+            'adt_existing', '/workspace', 'benchmark', 'running', 'existing task',
+            'openai-compatible', 'kimi-k2', 'default', 100, 10, 5,
+            ${`sha256:${"a".repeat(64)}`}, 0, 'git:existing', 1, 1
+          )
+        `)
+        yield* db.run(sql`
+          INSERT INTO adaptive_agent_process (
+            id, task_id, role, generation, state, owner, pid, lease_expires_at, time_created, time_updated
+          ) VALUES ('ada_existing', 'adt_existing', 'implementation', 1, 'running', 'controller', 1, 1000, 1, 1)
+        `)
+        yield* db.run(sql`
+          INSERT INTO adaptive_context_manifest (
+            id, task_id, agent_id, generation, purpose, system, messages, tools, components,
+            estimated_tokens, request_hash, time_created
+          ) VALUES (
+            'acm_existing', 'adt_existing', 'ada_existing', 1, 'existing', '[]', '[]', '[]', '[]',
+            10, 'sha256:manifest', 1
+          )
+        `)
+        yield* db.run(sql`
+          INSERT INTO adaptive_model_request (
+            id, task_id, agent_id, generation, manifest_id, retry_of, provider_id, model_id, variant,
+            effective_context_limit, output_reserve, safety_reserve, model_policy_hash,
+            status, input_tokens, output_tokens, failure, time_created, time_completed
+          ) VALUES (
+            'adr_a', 'adt_existing', 'ada_existing', 1, 'acm_existing', NULL,
+            'openai-compatible', 'kimi-k2', 'default', 100, 10, 5,
+            ${`sha256:${"a".repeat(64)}`}, 'failed', 8, 2, 'retryable', 1, 2
+          ), (
+            'adr_b', 'adt_existing', 'ada_existing', 1, 'acm_existing', 'adr_a',
+            'openai-compatible', 'kimi-k2', 'default', 100, 10, 5,
+            ${`sha256:${"a".repeat(64)}`}, 'succeeded', 9, 3, NULL, 3, 4
+          )
+        `)
+
+        yield* DatabaseMigration.applyOnly(db, migrations)
+
+        expect(
+          yield* db.all(sql`
+            SELECT
+              id, task_id, role, generation, state, owner, pid, lease_expires_at,
+              exit_code, exit_reason, time_created, time_updated
+            FROM adaptive_agent_process
+          `),
+        ).toEqual([
+          {
+            id: "ada_existing",
+            task_id: "adt_existing",
+            role: "implementation",
+            generation: 1,
+            state: "running",
+            owner: "controller",
+            pid: 1,
+            lease_expires_at: 1000,
+            exit_code: null,
+            exit_reason: null,
+            time_created: 1,
+            time_updated: 1,
+          },
+        ])
+        expect(
+          yield* db.all(sql`
+            SELECT
+              id, task_id, agent_id, generation, purpose, system, messages, tools, components,
+              estimated_tokens, request_hash, time_created
+            FROM adaptive_context_manifest
+          `),
+        ).toEqual([
+          {
+            id: "acm_existing",
+            task_id: "adt_existing",
+            agent_id: "ada_existing",
+            generation: 1,
+            purpose: "existing",
+            system: "[]",
+            messages: "[]",
+            tools: "[]",
+            components: "[]",
+            estimated_tokens: 10,
+            request_hash: "sha256:manifest",
+            time_created: 1,
+          },
+        ])
+        expect(
+          yield* db.all(sql`
+            SELECT
+              id,
+              retry_of,
+              provider_id,
+              model_id,
+              variant,
+              effective_context_limit,
+              model_policy_hash,
+              status,
+              input_tokens,
+              output_tokens,
+              failure,
+              time_created,
+              time_completed,
+              resolved_provider_id,
+              resolved_model_id,
+              resolved_variant,
+              resolved_effective_context_limit
+            FROM adaptive_model_request
+            ORDER BY id
+          `),
+        ).toEqual([
+          {
+            id: "adr_a",
+            retry_of: null,
+            provider_id: "openai-compatible",
+            model_id: "kimi-k2",
+            variant: "default",
+            effective_context_limit: 100,
+            model_policy_hash: `sha256:${"a".repeat(64)}`,
+            status: "failed",
+            input_tokens: 8,
+            output_tokens: 2,
+            failure: "retryable",
+            time_created: 1,
+            time_completed: 2,
+            resolved_provider_id: null,
+            resolved_model_id: null,
+            resolved_variant: null,
+            resolved_effective_context_limit: null,
+          },
+          {
+            id: "adr_b",
+            retry_of: "adr_a",
+            provider_id: "openai-compatible",
+            model_id: "kimi-k2",
+            variant: "default",
+            effective_context_limit: 100,
+            model_policy_hash: `sha256:${"a".repeat(64)}`,
+            status: "succeeded",
+            input_tokens: 9,
+            output_tokens: 3,
+            failure: null,
+            time_created: 3,
+            time_completed: 4,
+            resolved_provider_id: null,
+            resolved_model_id: null,
+            resolved_variant: null,
+            resolved_effective_context_limit: null,
+          },
+        ])
+        expect(yield* db.all(sql`PRAGMA foreign_key_check`)).toEqual([])
+        expect(yield* db.get(sql`PRAGMA foreign_keys`)).toEqual({ foreign_keys: 1 })
+        expect(
+          (yield* db.all<{ from: string; table: string }>(sql`PRAGMA foreign_key_list(adaptive_model_request)`)).find(
+            (foreignKey) => foreignKey.from === "retry_of",
+          ),
+        ).toMatchObject({ table: "adaptive_model_request" })
+        expect(
+          (yield* db.all<{ from: string; table: string }>(sql`PRAGMA foreign_key_list(adaptive_model_request)`)).find(
+            (foreignKey) => foreignKey.from === "agent_id",
+          ),
+        ).toMatchObject({ table: "adaptive_agent_process" })
+        expect(
+          (yield* db.all<{ from: string; table: string }>(
+            sql`PRAGMA foreign_key_list(adaptive_context_manifest)`,
+          )).find((foreignKey) => foreignKey.from === "agent_id"),
+        ).toMatchObject({ table: "adaptive_agent_process" })
+        expect(
+          yield* db.get(sql`SELECT count(*) AS count FROM migration WHERE id = ${adaptiveAgentQuarantineMigrationID}`),
+        ).toEqual({ count: 1 })
+      }),
+    )
+  })
+
+  test("rolls back an invalid foreign-key-disabled migration and restores enforcement", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`PRAGMA foreign_keys = ON`)
+        yield* db.run(sql`CREATE TABLE parent (id text PRIMARY KEY)`)
+        yield* db.run(sql`CREATE TABLE child (id text PRIMARY KEY, parent_id text NOT NULL REFERENCES parent(id))`)
+        let foreignKeysInsideMigration = -1
+        const invalidMigration = {
+          id: "test_foreign_key_check_rollback",
+          foreignKeys: "disabled",
+          up(tx) {
+            return Effect.gen(function* () {
+              foreignKeysInsideMigration =
+                (yield* tx.get<{ foreign_keys: number }>(sql`PRAGMA foreign_keys`))?.foreign_keys ?? -1
+              yield* tx.run(sql`INSERT INTO child (id, parent_id) VALUES ('dangling', 'missing')`)
+            })
+          },
+        } as const satisfies DatabaseMigration.Migration
+
+        const exit = yield* DatabaseMigration.applyOnly(db, [invalidMigration]).pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit))
+          expect(String(Cause.squash(exit.cause))).toContain("Database migration foreign key check failed")
+        expect(foreignKeysInsideMigration).toBe(0)
+        expect(yield* db.all(sql`SELECT * FROM child`)).toEqual([])
+        expect(yield* db.all(sql`SELECT id FROM migration WHERE id = ${invalidMigration.id}`)).toEqual([])
+        expect(yield* db.get(sql`PRAGMA foreign_keys`)).toEqual({ foreign_keys: 1 })
       }),
     )
   })

@@ -1,8 +1,11 @@
 import { describe, expect } from "bun:test"
+import { NodeFileSystem, NodePath } from "@effect/platform-node"
+import { existsSync } from "node:fs"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Effect, Exit, Stream } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Stream } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import type * as PlatformError from "effect/PlatformError"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -11,6 +14,7 @@ import { testEffect } from "../lib/effect"
 
 const live = LayerNode.compile(CrossSpawnSpawner.node)
 const fx = testEffect(live)
+const probeFx = testEffect(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer))
 
 function js(code: string, opts?: ChildProcess.CommandOptions) {
   return ChildProcess.make("node", ["-e", code], opts)
@@ -40,6 +44,15 @@ function alive(pid: number) {
   }
 }
 
+function groupAlive(pid: number) {
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
 async function tmpdir() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-core-test-"))
   return {
@@ -58,6 +71,18 @@ async function gone(pid: number, timeout = 5_000) {
   }
   return !alive(pid)
 }
+
+const waitExists = (file: string) =>
+  Effect.callback<void>((resume) => {
+    const check = () => {
+      if (!existsSync(file)) return
+      clearInterval(timer)
+      resume(Effect.void)
+    }
+    const timer = setInterval(check, 5)
+    check()
+    return Effect.sync(() => clearInterval(timer))
+  }).pipe(Effect.timeout("5 seconds"))
 
 describe("cross-spawn spawner", () => {
   describe("basic spawning", () => {
@@ -273,6 +298,284 @@ describe("cross-spawn spawner", () => {
 
         expect(Date.now() - started).toBeLessThan(1_000)
         expect(Exit.isFailure(exit) ? true : exit.value !== ChildProcessSpawner.ExitCode(0)).toBe(true)
+      }),
+    )
+
+    fx.effect(
+      "forceKillAfter escalates a live group after its parent exits on SIGTERM",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        yield* TestClock.setTime(1_000)
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        )
+        const term = path.join(tmp.path, ".grandchild-term")
+        const grandchild = [
+          'const { writeFileSync } = require("node:fs")',
+          `process.on("SIGTERM", () => writeFileSync(${JSON.stringify(term)}, "received"))`,
+          'process.stdout.write(String(process.pid) + "\\n")',
+          "setInterval(() => {}, 10_000)",
+        ].join("\n")
+        const parent = [
+          'const { spawn } = require("node:child_process")',
+          `const child = spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: ["ignore", "pipe", "ignore"] })`,
+          'child.stdout.once("data", (chunk) => process.stdout.write(chunk))',
+          'process.on("SIGTERM", () => process.exit(0))',
+          "setInterval(() => {}, 10_000)",
+        ].join("\n")
+        const handle = yield* js(parent)
+        const first = yield* Stream.runHead(handle.stdout)
+        if (Option.isNone(first)) return yield* Effect.die("grandchild did not report its PID")
+        const grandchildPID = Number(new TextDecoder().decode(first.value).trim())
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              process.kill(-Number(handle.pid), "SIGKILL")
+            } catch {
+              // The group may already have completed through the expected escalation.
+            }
+          }),
+        )
+
+        const received = yield* waitExists(term).pipe(Effect.forkChild({ startImmediately: true }))
+        const killed = yield* Deferred.make<void>()
+        const killing = yield* handle
+          .kill({ forceKillAfter: 3_000 })
+          .pipe(Effect.ensuring(Deferred.succeed(killed, undefined)), Effect.forkChild({ startImmediately: true }))
+        yield* Fiber.join(received)
+        expect(yield* Effect.promise(() => gone(Number(handle.pid)))).toBe(true)
+        expect(yield* Deferred.isDone(killed)).toBe(false)
+        yield* TestClock.adjust(2_999)
+        expect(alive(grandchildPID)).toBe(true)
+        yield* TestClock.adjust(1)
+        yield* Fiber.join(killing)
+        expect(alive(grandchildPID)).toBe(false)
+        expect(groupAlive(Number(handle.pid))).toBe(false)
+      }),
+    )
+
+    fx.effect(
+      "forceKillAfter escalates a stubborn direct child when detached is false",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        yield* TestClock.setTime(5_000)
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        )
+        const term = path.join(tmp.path, ".direct-term")
+        const handle = yield* js(
+          [
+            'const { writeFileSync } = require("node:fs")',
+            `process.on("SIGTERM", () => writeFileSync(${JSON.stringify(term)}, "received"))`,
+            'process.stdout.write("ready\\n")',
+            "setInterval(() => {}, 10_000)",
+          ].join("\n"),
+          { detached: false },
+        )
+        yield* Stream.runHead(handle.stdout)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              process.kill(Number(handle.pid), "SIGKILL")
+            } catch {
+              // The direct child may already have completed through escalation.
+            }
+          }),
+        )
+        const received = yield* waitExists(term).pipe(Effect.forkChild({ startImmediately: true }))
+        const killed = yield* Deferred.make<void>()
+        const killing = yield* handle
+          .kill({ forceKillAfter: 100 })
+          .pipe(Effect.ensuring(Deferred.succeed(killed, undefined)), Effect.forkChild({ startImmediately: true }))
+        yield* Fiber.join(received)
+
+        expect(yield* Deferred.isDone(killed)).toBe(false)
+        yield* TestClock.adjust(99)
+        expect(alive(Number(handle.pid))).toBe(true)
+        yield* TestClock.adjust(1)
+        yield* Fiber.join(killing)
+        expect(alive(Number(handle.pid))).toBe(false)
+      }),
+    )
+
+    fx.effect(
+      "scope cleanup escalates a group after its parent exits on SIGTERM",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        yield* TestClock.setTime(10_000)
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        )
+        const term = path.join(tmp.path, ".scope-grandchild-term")
+        const grandchild = [
+          'const { writeFileSync } = require("node:fs")',
+          `process.on("SIGTERM", () => writeFileSync(${JSON.stringify(term)}, "received"))`,
+          'process.stdout.write(String(process.pid) + "\\n")',
+          "setInterval(() => {}, 10_000)",
+        ].join("\n")
+        const parent = [
+          'const { spawn } = require("node:child_process")',
+          `const child = spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: ["ignore", "pipe", "ignore"] })`,
+          'child.stdout.once("data", (chunk) => process.stdout.write(chunk))',
+          'process.on("SIGTERM", () => process.exit(0))',
+          "setInterval(() => {}, 10_000)",
+        ].join("\n")
+        const pids = yield* Deferred.make<{ parent: number; grandchild: number }>()
+        const release = yield* Deferred.make<void>()
+        const running = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const handle = yield* js(parent, { forceKillAfter: 3_000 })
+            const first = yield* Stream.runHead(handle.stdout)
+            if (Option.isNone(first)) return yield* Effect.die("grandchild did not report its PID")
+            yield* Deferred.succeed(pids, {
+              parent: Number(handle.pid),
+              grandchild: Number(new TextDecoder().decode(first.value).trim()),
+            })
+            yield* Deferred.await(release)
+          }),
+        ).pipe(Effect.forkChild({ startImmediately: true }))
+        const processes = yield* Deferred.await(pids)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              process.kill(-processes.parent, "SIGKILL")
+            } catch {
+              // The group may already have completed through scope cleanup.
+            }
+          }),
+        )
+        const received = yield* waitExists(term).pipe(Effect.forkChild({ startImmediately: true }))
+        yield* Deferred.succeed(release, undefined)
+        yield* Fiber.join(received)
+        expect(yield* Effect.promise(() => gone(processes.parent))).toBe(true)
+
+        yield* TestClock.adjust(2_999)
+        expect(alive(processes.grandchild)).toBe(true)
+        yield* TestClock.adjust(1)
+        yield* Fiber.join(running)
+        expect(alive(processes.grandchild)).toBe(false)
+        expect(groupAlive(processes.parent)).toBe(false)
+      }),
+    )
+
+    probeFx.live(
+      "bounds final group observation after SIGKILL with a typed platform error",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        const spawner = yield* CrossSpawnSpawner.makeWithOptions({
+          groupAlive: () => true,
+          forceKillObservationMs: 100,
+        })
+        const handle = yield* spawner.spawn(
+          js('process.on("SIGTERM", () => {}); process.stdout.write("ready\\n"); setInterval(() => {}, 10_000)'),
+        )
+        yield* Stream.runHead(handle.stdout)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              process.kill(-Number(handle.pid), "SIGKILL")
+            } catch {
+              // The real group is expected to be gone even though the injected probe stays alive.
+            }
+          }),
+        )
+
+        const started = Date.now()
+        const exit = yield* handle.kill({ forceKillAfter: 100 }).pipe(Effect.exit)
+        expect(Date.now() - started).toBeLessThan(1_000)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit))
+          expect(Cause.squash(exit.cause)).toMatchObject({
+            _tag: "PlatformError",
+            reason: {
+              _tag: "TimedOut",
+              method: "kill",
+            },
+          })
+      }),
+    )
+
+    for (const detached of [true, false]) {
+      probeFx.live(
+        `treats ESRCH after the liveness probe as an already-gone ${detached ? "group" : "direct child"}`,
+        Effect.gen(function* () {
+          if (process.platform === "win32") return
+
+          const delivered: Array<{ pid: number; detached: boolean; signal: NodeJS.Signals }> = []
+          const spawner = yield* CrossSpawnSpawner.makeWithOptions({
+            groupAlive: () => true,
+            signal: (pid: number, signal: NodeJS.Signals, grouped: boolean) => {
+              delivered.push({ pid, signal, detached: grouped })
+              const error = new Error("process exited before signal delivery") as NodeJS.ErrnoException
+              error.code = "ESRCH"
+              throw error
+            },
+          } as CrossSpawnSpawner.MakeOptions & {
+            signal: (pid: number, signal: NodeJS.Signals, detached: boolean) => boolean
+          })
+          const handle = yield* spawner.spawn(
+            js('process.on("SIGTERM", () => {}); process.stdout.write("ready\\n"); setInterval(() => {}, 10_000)', {
+              detached,
+            }),
+          )
+          yield* Stream.runHead(handle.stdout)
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              try {
+                process.kill(detached ? -Number(handle.pid) : Number(handle.pid), "SIGKILL")
+              } catch {
+                // The fixture may have completed if signal injection was not active.
+              }
+            }),
+          )
+
+          expect(Exit.isSuccess(yield* handle.kill({ forceKillAfter: 100 }).pipe(Effect.exit))).toBe(true)
+          expect(delivered).toEqual([{ pid: Number(handle.pid), detached, signal: "SIGTERM" }])
+        }),
+      )
+    }
+
+    probeFx.live(
+      "keeps non-ESRCH signal delivery failures typed",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        const spawner = yield* CrossSpawnSpawner.makeWithOptions({
+          groupAlive: () => true,
+          signal: () => {
+            const error = new Error("signal permission denied") as NodeJS.ErrnoException
+            error.code = "EPERM"
+            throw error
+          },
+        } as CrossSpawnSpawner.MakeOptions & {
+          signal: (pid: number, signal: NodeJS.Signals, detached: boolean) => boolean
+        })
+        const handle = yield* spawner.spawn(js('process.stdout.write("ready\\n"); setInterval(() => {}, 10_000)'))
+        yield* Stream.runHead(handle.stdout)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              process.kill(-Number(handle.pid), "SIGKILL")
+            } catch {
+              // The group may already be gone.
+            }
+          }),
+        )
+
+        const exit = yield* handle.kill().pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit))
+          expect(Cause.squash(exit.cause)).toMatchObject({
+            _tag: "PlatformError",
+            reason: { _tag: "PermissionDenied", method: "kill" },
+          })
       }),
     )
 

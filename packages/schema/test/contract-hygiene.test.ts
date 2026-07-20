@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
+import { AdaptiveTask } from "../src/adaptive-task"
 import { Agent } from "../src/agent"
 import { FileSystem } from "../src/filesystem"
 import { Model } from "../src/model"
@@ -35,6 +36,15 @@ describe("contract hygiene", () => {
 
   test("reusable public identifiers are stable and unique", () => {
     const identifiers = [
+      AdaptiveTask.ID,
+      AdaptiveTask.AgentID,
+      AdaptiveTask.RequestID,
+      AdaptiveTask.ContextManifestID,
+      AdaptiveTask.Mode,
+      AdaptiveTask.Role,
+      AdaptiveTask.Status,
+      AdaptiveTask.ModelPolicy,
+      AdaptiveTask.Summary,
       Agent.Color,
       FileSystem.Submatch,
       Model.Ref,

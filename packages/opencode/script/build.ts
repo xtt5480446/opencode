@@ -9,6 +9,7 @@ import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const dir = path.resolve(__dirname, "..")
+const adaptiveSmokeScript = path.join(__dirname, "adaptive-smoke.ts")
 
 process.chdir(dir)
 
@@ -205,6 +206,7 @@ for (const item of targets) {
     try {
       const versionOutput = await $`${binaryPath} --version`.text()
       console.log(`Smoke test passed: ${versionOutput.trim()}`)
+      await $`bun ${adaptiveSmokeScript} ${binaryPath}`
     } catch (e) {
       console.error(`Smoke test failed for ${name}:`, e)
       process.exit(1)

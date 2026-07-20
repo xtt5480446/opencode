@@ -71,14 +71,20 @@ export type Error =
   | UnsupportedApiError
   | Integration.AuthorizationError
 
+export type RefInput = { readonly model: ModelV2.Ref }
+
 export interface Interface {
   readonly resolve: (session: SessionSchema.Info) => Effect.Effect<Model, Error>
+  readonly resolveRef: (input: RefInput) => Effect.Effect<Model, Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionRunnerModel") {}
 
 /** Test or embedding seam for supplying a model resolver directly. */
-export const layerWith = (resolve: Interface["resolve"]) => Layer.succeed(Service, Service.of({ resolve }))
+export const layerWith = (
+  resolve: Interface["resolve"],
+  resolveRef: Interface["resolveRef"] = () => Effect.die("SessionRunnerModel.resolveRef is not implemented"),
+) => Layer.succeed(Service, Service.of({ resolve, resolveRef }))
 
 const apiKey = (model: ModelV2.Info, credential?: Credential.Value) => {
   if (credential?.type === "key") return Auth.value(credential.key)
@@ -170,7 +176,18 @@ export const fromCatalogModel = (
 }
 
 export const resolve = (session: SessionSchema.Info, model: ModelV2.Info, credential?: Credential.Value) =>
-  withVariant(model, session.model?.variant).pipe(Effect.flatMap((model) => fromCatalogModel(model, credential)))
+  resolveModelRef(
+    {
+      providerID: model.providerID,
+      id: model.id,
+      variant: session.model?.variant,
+    },
+    model,
+    credential,
+  )
+
+export const resolveModelRef = (ref: ModelV2.Ref, model: ModelV2.Info, credential?: Credential.Value) =>
+  withVariant(model, ref.variant).pipe(Effect.flatMap((model) => fromCatalogModel(model, credential)))
 
 export const supported = (model: ModelV2.Info) =>
   model.api.type === "aisdk" &&
@@ -184,32 +201,39 @@ export const locationLayer = Layer.effect(
   Effect.gen(function* () {
     const catalog = yield* Catalog.Service
     const integrations = yield* Integration.Service
+
+    const resolveExact = Effect.fn("SessionRunnerModel.resolveExact")(function* (
+      ref: ModelV2.Ref,
+      catalogModel?: ModelV2.Info,
+    ) {
+      const selected =
+        catalogModel ??
+        (yield* catalog.model.available()).find((model) => model.providerID === ref.providerID && model.id === ref.id)
+      if (!selected)
+        return yield* new ModelUnavailableError({
+          providerID: ref.providerID,
+          modelID: ref.id,
+        })
+      const provider = yield* catalog.provider.get(selected.providerID)
+      const connection = yield* integrations.connection.active(
+        provider?.integrationID ?? Integration.ID.make(selected.providerID),
+      )
+      const credential = connection ? yield* integrations.connection.resolve(connection) : undefined
+      return yield* resolveModelRef(ref, selected, credential)
+    })
+
     return Service.of({
       resolve: Effect.fn("SessionRunnerModel.resolve")(function* (session) {
+        if (session.model) return yield* resolveExact(session.model)
         // Location plugins populate and filter the catalog asynchronously during layer startup.
-        const defaultModel = session.model ? undefined : yield* catalog.model.default()
-        const selected = session.model
-          ? (yield* catalog.model.available()).find(
-              (model) => model.providerID === session.model?.providerID && model.id === session.model.id,
-            )
-          : defaultModel && supported(defaultModel)
-            ? defaultModel
-            : (yield* catalog.model.available()).find(supported)
-        if (!selected && session.model)
-          return yield* new ModelUnavailableError({
-            providerID: session.model.providerID,
-            modelID: session.model.id,
-          })
+        const defaultModel = yield* catalog.model.default()
+        const selected =
+          defaultModel && supported(defaultModel) ? defaultModel : (yield* catalog.model.available()).find(supported)
         if (!selected) return yield* new ModelNotSelectedError({ sessionID: session.id })
-        const provider = yield* catalog.provider.get(selected.providerID)
-        const connection = yield* integrations.connection.active(
-          provider?.integrationID ?? Integration.ID.make(selected.providerID),
-        )
-        return yield* resolve(
-          session,
-          selected,
-          connection ? yield* integrations.connection.resolve(connection) : undefined,
-        )
+        return yield* resolveExact({ providerID: selected.providerID, id: selected.id, variant: undefined }, selected)
+      }),
+      resolveRef: Effect.fn("SessionRunnerModel.resolveRef")(function* (input) {
+        return yield* resolveExact(input.model)
       }),
     })
   }),

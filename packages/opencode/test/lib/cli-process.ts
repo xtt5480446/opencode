@@ -74,6 +74,7 @@ function isolatedEnv(home: string, configJson: string): Record<string, string> {
     OPENCODE_DISABLE_AUTOCOMPACT: "1",
     OPENCODE_DISABLE_MODELS_FETCH: "1",
     OPENCODE_AUTH_CONTENT: "{}",
+    OPENCODE_DB: path.join(home, "opencode-test.db"),
   }
 }
 
@@ -89,16 +90,21 @@ export type RunHandle = {
   readonly result: Effect.Effect<RunResult>
 }
 
-export type SpawnOpts = { readonly timeoutMs?: number; readonly env?: Record<string, string> }
+export type SpawnOpts = {
+  readonly timeoutMs?: number
+  readonly env?: Record<string, string>
+  readonly entry?: string
+}
 
 // Typed equivalent of constructing argv for `opencode run`. New flags should
 // land here so tests stay grep-able and refactor-safe.
 export type RunOpts = SpawnOpts & {
-  readonly model?: string
+  readonly runtime?: "baseline" | "adaptive"
+  readonly keepStdinOpen?: boolean
+  readonly model?: string | null
   readonly agent?: string
   readonly format?: "default" | "json"
   readonly command?: string
-  readonly printLogs?: boolean
   readonly permission?: Record<string, "ask" | "allow" | "deny">
   readonly extraArgs?: string[]
 }
@@ -211,7 +217,7 @@ export function withCliFixture<A, E>(
       // on `Bun.stdin.text()` (see src/cli/cmd/run.ts — non-TTY stdin is
       // consumed as the prompt). The old Process.run wrapper defaulted to
       // ignore; ChildProcess.make defaults to pipe, so we set it explicitly.
-      const command = ChildProcess.make("bun", ["run", "--conditions=browser", cliEntry, ...args], {
+      const command = ChildProcess.make("bun", ["run", "--conditions=browser", opts?.entry ?? cliEntry, ...args], {
         cwd: home,
         env: { ...env, ...opts?.env },
         extendEnv: true,
@@ -250,8 +256,8 @@ export function withCliFixture<A, E>(
 
     const runArgs = (message: string, opts?: RunOpts) => {
       const argv: string[] = ["run"]
-      if (opts?.printLogs) argv.push("--print-logs")
-      argv.push("--model", opts?.model ?? testModelID)
+      if (opts?.runtime) argv.push("--runtime", opts.runtime)
+      if (opts?.model !== null) argv.push("--model", opts?.model ?? testModelID)
       if (opts?.agent) argv.push("--agent", opts.agent)
       if (opts?.format) argv.push("--format", opts.format)
       if (opts?.command) argv.push("--command", opts.command)
@@ -286,7 +292,7 @@ export function withCliFixture<A, E>(
           Bun.spawn(["bun", "run", "--conditions=browser", cliEntry, ...runArgs(message, opts)], {
             cwd: home,
             env: { ...process.env, ...env, ...options?.env },
-            stdin: "ignore",
+            stdin: opts?.keepStdinOpen ? "pipe" : "ignore",
             stdout: "pipe",
             stderr: "pipe",
           }),
