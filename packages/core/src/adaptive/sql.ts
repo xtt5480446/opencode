@@ -1,5 +1,7 @@
 import { sql } from "drizzle-orm"
-import { check, foreignKey, index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { check, foreignKey, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { AdaptiveOperation } from "@opencode-ai/schema/adaptive-operation"
+import { AdaptiveRoadmap } from "@opencode-ai/schema/adaptive-roadmap"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Timestamps } from "../database/schema.sql"
 
@@ -49,6 +51,7 @@ export const AdaptiveTaskTable = sqliteTable(
 )
 
 export type AdaptiveAgentState = "idle" | "starting" | "running" | "stopped" | "lost" | "failed"
+export type AdaptiveRecoveryState = "ready" | "verifying" | "blocked"
 
 export const AdaptiveAgentProcessTable = sqliteTable(
   "adaptive_agent_process",
@@ -66,6 +69,13 @@ export const AdaptiveAgentProcessTable = sqliteTable(
     lease_expires_at: integer(),
     exit_code: integer(),
     exit_reason: text(),
+    node_id: text(),
+    tool_session_id: text(),
+    assignment_id: text().$type<AdaptiveOperation.AssignmentID>(),
+    event_cursor: integer().notNull().default(0),
+    checkpoint_sequence: integer(),
+    recovery_state: text().$type<AdaptiveRecoveryState>().notNull().default("ready"),
+    restart_required: integer({ mode: "boolean" }).notNull().default(false),
     ...Timestamps,
   },
   (table) => [
@@ -108,7 +118,11 @@ export const AdaptiveContextManifestTable = sqliteTable(
     messages: text({ mode: "json" }).$type<readonly unknown[]>().notNull(),
     tools: text({ mode: "json" }).$type<readonly unknown[]>().notNull(),
     components: text({ mode: "json" }).$type<readonly unknown[]>().notNull(),
+    omissions: text({ mode: "json" }).$type<readonly unknown[]>().notNull().default([]),
     estimated_tokens: integer().notNull(),
+    roadmap_revision: integer().notNull().default(0),
+    turn: integer().notNull().default(0),
+    restart_reason: text(),
     request_hash: text().notNull(),
     time_created: integer().notNull(),
   },
@@ -224,4 +238,147 @@ export const AdaptiveBootstrapTable = sqliteTable(
     time_created: integer().notNull(),
   },
   (table) => [check("adaptive_bootstrap_generation_check", sql`${table.generation} >= 0`)],
+)
+
+export const AdaptiveRoadmapRevisionTable = sqliteTable(
+  "adaptive_roadmap_revision",
+  {
+    task_id: text()
+      .$type<AdaptiveTask.ID>()
+      .notNull()
+      .references(() => AdaptiveTaskTable.id, { onDelete: "cascade" }),
+    revision: integer().notNull(),
+    requirement: text({ mode: "json" }).$type<AdaptiveRoadmap.RequirementBaseline>().notNull(),
+    roadmap: text({ mode: "json" }).$type<AdaptiveRoadmap.Info>().notNull(),
+    content_hash: text().$type<AdaptiveOperation.Hash>().notNull(),
+    source_agent_id: text()
+      .$type<AdaptiveTask.AgentID>()
+      .notNull()
+      .references(() => AdaptiveAgentProcessTable.id, { onDelete: "cascade" }),
+    source_generation: integer().notNull(),
+    event_sequence: integer().notNull(),
+    time_created: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.task_id, table.revision] }),
+    uniqueIndex("adaptive_roadmap_task_event_idx").on(table.task_id, table.event_sequence),
+    check("adaptive_roadmap_revision_check", sql`${table.revision} > 0`),
+    check("adaptive_roadmap_hash_check", hashCheck(table.content_hash)),
+    check("adaptive_roadmap_source_generation_check", sql`${table.source_generation} > 0`),
+    check("adaptive_roadmap_event_sequence_check", sql`${table.event_sequence} >= 0`),
+  ],
+)
+
+export const AdaptiveDetailTable = sqliteTable(
+  "adaptive_detail",
+  {
+    task_id: text()
+      .$type<AdaptiveTask.ID>()
+      .notNull()
+      .references(() => AdaptiveTaskTable.id, { onDelete: "cascade" }),
+    key: text().notNull(),
+    version: integer().notNull(),
+    node_id: text().notNull(),
+    kind: text().$type<AdaptiveRoadmap.DetailKind>().notNull(),
+    status: text().$type<AdaptiveRoadmap.DetailStatus>().notNull(),
+    body: text().notNull(),
+    content_hash: text().$type<AdaptiveOperation.Hash>().notNull(),
+    source_agent_id: text()
+      .$type<AdaptiveTask.AgentID>()
+      .notNull()
+      .references(() => AdaptiveAgentProcessTable.id, { onDelete: "cascade" }),
+    source_generation: integer().notNull(),
+    time_created: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.task_id, table.key, table.version] }),
+    index("adaptive_detail_task_node_idx").on(table.task_id, table.node_id),
+    check("adaptive_detail_key_check", sql`length(${table.key}) > 0`),
+    check("adaptive_detail_version_check", sql`${table.version} >= 0`),
+    check("adaptive_detail_kind_check", sql`${table.kind} IN ('requirements', 'contracts', 'decisions', 'validation')`),
+    check("adaptive_detail_status_check", sql`${table.status} IN ('unresolved', 'draft', 'ready', 'superseded')`),
+    check("adaptive_detail_hash_check", hashCheck(table.content_hash)),
+    check("adaptive_detail_source_generation_check", sql`${table.source_generation} > 0`),
+  ],
+)
+
+export const AdaptiveAssignmentTable = sqliteTable(
+  "adaptive_assignment",
+  {
+    id: text().$type<AdaptiveOperation.AssignmentID>().primaryKey(),
+    task_id: text()
+      .$type<AdaptiveTask.ID>()
+      .notNull()
+      .references(() => AdaptiveTaskTable.id, { onDelete: "cascade" }),
+    worker_id: text()
+      .$type<AdaptiveTask.AgentID>()
+      .notNull()
+      .references(() => AdaptiveAgentProcessTable.id, { onDelete: "cascade" }),
+    node_id: text().notNull(),
+    generation: integer().notNull(),
+    roadmap_revision: integer().notNull(),
+    detail_refs: text({ mode: "json" }).$type<readonly AdaptiveRoadmap.DetailRef[]>().notNull(),
+    permitted_paths: text({ mode: "json" }).$type<readonly AdaptiveOperation.RepositoryGlob[]>().notNull(),
+    base_commit: text().notNull(),
+    acceptance_commands: text({ mode: "json" }).$type<readonly string[]>().notNull(),
+    time_created: integer().notNull(),
+    superseded_at: integer(),
+  },
+  (table) => [
+    index("adaptive_assignment_task_node_idx").on(table.task_id, table.node_id),
+    uniqueIndex("adaptive_assignment_worker_generation_idx").on(table.worker_id, table.generation),
+    check("adaptive_assignment_node_check", sql`length(${table.node_id}) > 0`),
+    check("adaptive_assignment_generation_check", sql`${table.generation} > 0`),
+    check("adaptive_assignment_roadmap_revision_check", sql`${table.roadmap_revision} > 0`),
+    check("adaptive_assignment_base_commit_check", sql`length(${table.base_commit}) > 0`),
+  ],
+)
+
+export const AdaptiveCheckpointTable = sqliteTable(
+  "adaptive_checkpoint",
+  {
+    worker_id: text()
+      .$type<AdaptiveTask.AgentID>()
+      .notNull()
+      .references(() => AdaptiveAgentProcessTable.id, { onDelete: "cascade" }),
+    sequence: integer().notNull(),
+    assignment_id: text()
+      .$type<AdaptiveOperation.AssignmentID>()
+      .notNull()
+      .references(() => AdaptiveAssignmentTable.id, { onDelete: "cascade" }),
+    generation: integer().notNull(),
+    roadmap_revision: integer().notNull(),
+    checkpoint: text({ mode: "json" }).$type<AdaptiveOperation.Checkpoint>().notNull(),
+    worktree_head: text().notNull(),
+    diff_hash: text().$type<AdaptiveOperation.Hash>().notNull(),
+    event_cursor: integer().notNull(),
+    time_created: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.worker_id, table.sequence] }),
+    index("adaptive_checkpoint_assignment_idx").on(table.assignment_id, table.sequence),
+    check("adaptive_checkpoint_sequence_check", sql`${table.sequence} >= 0`),
+    check("adaptive_checkpoint_generation_check", sql`${table.generation} > 0`),
+    check("adaptive_checkpoint_roadmap_revision_check", sql`${table.roadmap_revision} > 0`),
+    check("adaptive_checkpoint_diff_hash_check", hashCheck(table.diff_hash)),
+    check("adaptive_checkpoint_event_cursor_check", sql`${table.event_cursor} >= 0`),
+  ],
+)
+
+export const AdaptiveBlobTable = sqliteTable(
+  "adaptive_blob",
+  {
+    hash: text().$type<AdaptiveOperation.Hash>().primaryKey(),
+    media_type: text().notNull(),
+    byte_count: integer().notNull(),
+    relative_path: text().notNull().unique(),
+    time_created: integer().notNull(),
+    time_last_accessed: integer().notNull(),
+  },
+  (table) => [
+    check("adaptive_blob_hash_check", hashCheck(table.hash)),
+    check("adaptive_blob_media_type_check", sql`length(${table.media_type}) > 0`),
+    check("adaptive_blob_byte_count_check", sql`${table.byte_count} >= 0`),
+    check("adaptive_blob_relative_path_check", sql`length(${table.relative_path}) > 0`),
+  ],
 )

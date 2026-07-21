@@ -63,6 +63,7 @@ Tutorial 与实现位于同一个 Task、Issue 和 PR 中，是 Definition of Do
 | Task    | 教程                                                        | 产出                                                            | 状态                   |
 | ------- | ----------------------------------------------------------- | --------------------------------------------------------------- | ---------------------- |
 | S02-T01 | [可恢复开发状态的公共契约](./s02-t01-recovery-contracts.md) | Roadmap、Assignment、Checkpoint、恢复核验与 Task durable events | 已完成，随任务 PR 交付 |
+| S02-T02 | [可恢复开发状态的持久化底座](./s02-t02-durable-recovery-storage.md) | 不可变 Roadmap/Detail/Assignment/Checkpoint、verified Blob 与升级保真 | 已完成，随任务 PR 交付 |
 
 后续教程会继续按依赖顺序加入本索引，而不是按文档创建时间排列。
 

@@ -415,9 +415,55 @@ describe("AdaptiveStore Manifest and Request", () => {
       const created = yield* store.putManifest(input)
 
       const { owner: _owner, ...stored } = input
-      expect(created).toEqual({ ...stored, timeCreated: 4_000 })
+      expect(created).toEqual({ ...stored, omissions: [], roadmapRevision: 0, turn: 0, timeCreated: 4_000 })
       expect(yield* store.getManifest(input.id)).toEqual(created)
       expect((yield* store.putManifest(input).pipe(Effect.flip))._tag).toBe("AdaptiveStore.DuplicateManifest")
+    }),
+  )
+
+  it.effect("persists the recovery cursor, omissions, turn, and restart reason in a Manifest", () =>
+    Effect.gen(function* () {
+      const store = yield* AdaptiveStore.Service
+      const createdTask = yield* store.createTask(task())
+      const agent = yield* store.createAgent({
+        id: AdaptiveTask.AgentID.create(),
+        taskID: createdTask.id,
+        role: "implementation",
+      })
+      const claimed = yield* store.claimAgent({
+        agentID: agent.id,
+        expectedGeneration: 0,
+        owner: "controller-a",
+        pid: 406,
+        leaseDurationMs: 1_000,
+      })
+
+      const manifest = yield* store.putManifest({
+        id: AdaptiveTask.ContextManifestID.create(),
+        taskID: createdTask.id,
+        agentID: agent.id,
+        generation: claimed.generation,
+        owner: "controller-a",
+        purpose: "Recover an implementation Worker",
+        system: ["system"],
+        messages: [],
+        tools: [],
+        components: [{ key: "checkpoint" }],
+        omissions: [{ key: "old-success", reason: "budget" }],
+        roadmapRevision: 3,
+        turn: 7,
+        restartReason: "local_tail_limit",
+        estimatedTokens: 1_024,
+        requestHash: "sha256:recovery-manifest",
+      })
+
+      expect(manifest).toMatchObject({
+        omissions: [{ key: "old-success", reason: "budget" }],
+        roadmapRevision: 3,
+        turn: 7,
+        restartReason: "local_tail_limit",
+      })
+      expect(yield* store.getManifest(manifest.id)).toEqual(manifest)
     }),
   )
 
@@ -538,6 +584,8 @@ describe("AdaptiveStore Manifest and Request", () => {
         { tools: extra() },
         { components: Array(1) },
         { components: extra() },
+        { omissions: Array(1) },
+        { omissions: extra() },
       ]
       yield* Effect.forEach(invalidTopLevel, (values) =>
         Effect.gen(function* () {

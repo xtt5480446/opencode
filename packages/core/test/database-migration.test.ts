@@ -14,6 +14,10 @@ import sessionMessageProjectionOrderMigration from "@opencode-ai/core/database/m
 import eventSourcedSessionInputMigration from "@opencode-ai/core/database/migration/20260604172448_event_sourced_session_input"
 import contextEpochAgentMigration from "@opencode-ai/core/database/migration/20260605042240_add_context_epoch_agent"
 import adaptiveRuntimeFoundationMigration from "@opencode-ai/core/database/migration/20260717090000_adaptive_runtime_foundation"
+import adaptiveModelObservationMigration from "@opencode-ai/core/database/migration/20260719101547_adaptive_model_request_resolved_observation"
+import adaptiveAgentQuarantineMigration from "@opencode-ai/core/database/migration/20260719162735_adaptive_agent_quarantine"
+import adaptiveBootstrapMigration from "@opencode-ai/core/database/migration/20260720034849_adaptive_bootstrap"
+import adaptiveRecoveryStateMigration from "@opencode-ai/core/database/migration/20260721092343_adaptive_recovery_state"
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -370,6 +374,126 @@ describe("DatabaseMigration", () => {
         expect(
           yield* db.get(sql`SELECT count(*) AS count FROM migration WHERE id = ${adaptiveAgentQuarantineMigrationID}`),
         ).toEqual({ count: 1 })
+      }),
+    )
+  })
+
+  test("adds recovery storage without losing existing Adaptive process, Manifest, request, or bootstrap state", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`PRAGMA foreign_keys = ON`)
+        yield* DatabaseMigration.applyOnly(db, [
+          adaptiveRuntimeFoundationMigration,
+          adaptiveModelObservationMigration,
+          adaptiveAgentQuarantineMigration,
+          adaptiveBootstrapMigration,
+        ])
+        yield* db.run(sql`
+          INSERT INTO adaptive_task (
+            id, directory, mode, status, requirement, provider_id, model_id, variant,
+            effective_context_limit, output_reserve, safety_reserve, model_policy_hash,
+            roadmap_revision, base_snapshot_hash, time_created, time_updated
+          ) VALUES (
+            'adt_recovery', '/workspace', 'normal', 'running', 'preserve this task',
+            'test', 'test-model', NULL, 100, 10, 5, ${`sha256:${"a".repeat(64)}`},
+            0, 'git:base', 1, 1
+          )
+        `)
+        yield* db.run(sql`
+          INSERT INTO adaptive_agent_process (
+            id, task_id, role, generation, state, owner, pid, lease_expires_at,
+            exit_code, exit_reason, time_created, time_updated
+          ) VALUES (
+            'ada_recovery', 'adt_recovery', 'implementation', 1, 'running', 'controller', 10, 1000,
+            NULL, NULL, 1, 1
+          )
+        `)
+        yield* db.run(sql`
+          INSERT INTO adaptive_context_manifest (
+            id, task_id, agent_id, generation, purpose, system, messages, tools, components,
+            estimated_tokens, request_hash, time_created
+          ) VALUES (
+            'acm_recovery', 'adt_recovery', 'ada_recovery', 1, 'before stage two',
+            '["system"]', '[]', '[]', '[]', 10, 'sha256:manifest', 1
+          )
+        `)
+        yield* db.run(sql`
+          INSERT INTO adaptive_model_request (
+            id, task_id, agent_id, generation, manifest_id, retry_of,
+            provider_id, model_id, variant, effective_context_limit, output_reserve, safety_reserve,
+            model_policy_hash, resolved_provider_id, resolved_model_id, resolved_variant,
+            resolved_effective_context_limit, status, input_tokens, output_tokens, failure,
+            time_created, time_completed
+          ) VALUES (
+            'adr_recovery', 'adt_recovery', 'ada_recovery', 1, 'acm_recovery', NULL,
+            'test', 'test-model', NULL, 100, 10, 5, ${`sha256:${"a".repeat(64)}`},
+            'test', 'test-model', NULL, 100, 'succeeded', 8, 2, NULL, 1, 2
+          )
+        `)
+        yield* db.run(sql`
+          INSERT INTO adaptive_bootstrap (
+            task_id, agent_id, generation, manifest_id, request_id, output, time_created
+          ) VALUES ('adt_recovery', 'ada_recovery', 1, 'acm_recovery', 'adr_recovery', 'keep', 2)
+        `)
+
+        yield* DatabaseMigration.applyOnly(db, [adaptiveRecoveryStateMigration])
+
+        expect(
+          yield* db.get(sql`
+            SELECT
+              id, task_id, generation, node_id, tool_session_id, assignment_id,
+              event_cursor, checkpoint_sequence, recovery_state, restart_required
+            FROM adaptive_agent_process WHERE id = 'ada_recovery'
+          `),
+        ).toEqual({
+          id: "ada_recovery",
+          task_id: "adt_recovery",
+          generation: 1,
+          node_id: null,
+          tool_session_id: null,
+          assignment_id: null,
+          event_cursor: 0,
+          checkpoint_sequence: null,
+          recovery_state: "ready",
+          restart_required: 0,
+        })
+        expect(
+          yield* db.get(sql`
+            SELECT id, omissions, roadmap_revision, turn, restart_reason
+            FROM adaptive_context_manifest WHERE id = 'acm_recovery'
+          `),
+        ).toEqual({
+          id: "acm_recovery",
+          omissions: "[]",
+          roadmap_revision: 0,
+          turn: 0,
+          restart_reason: null,
+        })
+        expect(
+          yield* db.all(sql`
+            SELECT name FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN (
+                'adaptive_roadmap_revision', 'adaptive_detail', 'adaptive_assignment',
+                'adaptive_checkpoint', 'adaptive_blob'
+              )
+            ORDER BY name
+          `),
+        ).toEqual([
+          { name: "adaptive_assignment" },
+          { name: "adaptive_blob" },
+          { name: "adaptive_checkpoint" },
+          { name: "adaptive_detail" },
+          { name: "adaptive_roadmap_revision" },
+        ])
+        expect(yield* db.get(sql`SELECT output FROM adaptive_bootstrap WHERE task_id = 'adt_recovery'`)).toEqual({
+          output: "keep",
+        })
+        expect(yield* db.get(sql`SELECT status FROM adaptive_model_request WHERE id = 'adr_recovery'`)).toEqual({
+          status: "succeeded",
+        })
+        expect(yield* db.all(sql`PRAGMA foreign_key_check`)).toEqual([])
       }),
     )
   })

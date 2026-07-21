@@ -68,6 +68,13 @@ export default {
           \`lease_expires_at\` integer,
           \`exit_code\` integer,
           \`exit_reason\` text,
+          \`node_id\` text,
+          \`tool_session_id\` text,
+          \`assignment_id\` text,
+          \`event_cursor\` integer DEFAULT 0 NOT NULL,
+          \`checkpoint_sequence\` integer,
+          \`recovery_state\` text DEFAULT 'ready' NOT NULL,
+          \`restart_required\` integer DEFAULT false NOT NULL,
           \`time_created\` integer NOT NULL,
           \`time_updated\` integer NOT NULL,
           CONSTRAINT \`fk_adaptive_agent_process_task_id_adaptive_task_id_fk\` FOREIGN KEY (\`task_id\`) REFERENCES \`adaptive_task\`(\`id\`) ON DELETE CASCADE,
@@ -76,6 +83,42 @@ export default {
           CONSTRAINT "adaptive_agent_generation_check" CHECK("generation" >= 0),
           CONSTRAINT "adaptive_agent_owner_tuple_check" CHECK(("owner" IS NULL AND "pid" IS NULL AND "lease_expires_at" IS NULL) OR ("owner" IS NOT NULL AND length("owner") > 0 AND "pid" > 0 AND (("state" IN ('starting', 'running') AND "lease_expires_at" > 0) OR ("state" = 'failed' AND "lease_expires_at" IS NULL)))),
           CONSTRAINT "adaptive_agent_state_owner_check" CHECK(("state" IN ('starting', 'running') AND "owner" IS NOT NULL) OR ("state" IN ('idle', 'stopped', 'lost') AND "owner" IS NULL) OR "state" = 'failed')
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`adaptive_assignment\` (
+          \`id\` text PRIMARY KEY,
+          \`task_id\` text NOT NULL,
+          \`worker_id\` text NOT NULL,
+          \`node_id\` text NOT NULL,
+          \`generation\` integer NOT NULL,
+          \`roadmap_revision\` integer NOT NULL,
+          \`detail_refs\` text NOT NULL,
+          \`permitted_paths\` text NOT NULL,
+          \`base_commit\` text NOT NULL,
+          \`acceptance_commands\` text NOT NULL,
+          \`time_created\` integer NOT NULL,
+          \`superseded_at\` integer,
+          CONSTRAINT \`fk_adaptive_assignment_task_id_adaptive_task_id_fk\` FOREIGN KEY (\`task_id\`) REFERENCES \`adaptive_task\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT \`fk_adaptive_assignment_worker_id_adaptive_agent_process_id_fk\` FOREIGN KEY (\`worker_id\`) REFERENCES \`adaptive_agent_process\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT "adaptive_assignment_node_check" CHECK(length("node_id") > 0),
+          CONSTRAINT "adaptive_assignment_generation_check" CHECK("generation" > 0),
+          CONSTRAINT "adaptive_assignment_roadmap_revision_check" CHECK("roadmap_revision" > 0),
+          CONSTRAINT "adaptive_assignment_base_commit_check" CHECK(length("base_commit") > 0)
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`adaptive_blob\` (
+          \`hash\` text PRIMARY KEY,
+          \`media_type\` text NOT NULL,
+          \`byte_count\` integer NOT NULL,
+          \`relative_path\` text NOT NULL UNIQUE,
+          \`time_created\` integer NOT NULL,
+          \`time_last_accessed\` integer NOT NULL,
+          CONSTRAINT "adaptive_blob_hash_check" CHECK(length("hash") = 71 AND substr("hash", 1, 7) = 'sha256:' AND substr("hash", 8) NOT GLOB '*[^0-9a-f]*'),
+          CONSTRAINT "adaptive_blob_media_type_check" CHECK(length("media_type") > 0),
+          CONSTRAINT "adaptive_blob_byte_count_check" CHECK("byte_count" >= 0),
+          CONSTRAINT "adaptive_blob_relative_path_check" CHECK(length("relative_path") > 0)
         );
       `)
       yield* tx.run(`
@@ -95,6 +138,28 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`adaptive_checkpoint\` (
+          \`worker_id\` text NOT NULL,
+          \`sequence\` integer NOT NULL,
+          \`assignment_id\` text NOT NULL,
+          \`generation\` integer NOT NULL,
+          \`roadmap_revision\` integer NOT NULL,
+          \`checkpoint\` text NOT NULL,
+          \`worktree_head\` text NOT NULL,
+          \`diff_hash\` text NOT NULL,
+          \`event_cursor\` integer NOT NULL,
+          \`time_created\` integer NOT NULL,
+          CONSTRAINT \`adaptive_checkpoint_pk\` PRIMARY KEY(\`worker_id\`, \`sequence\`),
+          CONSTRAINT \`fk_adaptive_checkpoint_worker_id_adaptive_agent_process_id_fk\` FOREIGN KEY (\`worker_id\`) REFERENCES \`adaptive_agent_process\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT \`fk_adaptive_checkpoint_assignment_id_adaptive_assignment_id_fk\` FOREIGN KEY (\`assignment_id\`) REFERENCES \`adaptive_assignment\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT "adaptive_checkpoint_sequence_check" CHECK("sequence" >= 0),
+          CONSTRAINT "adaptive_checkpoint_generation_check" CHECK("generation" > 0),
+          CONSTRAINT "adaptive_checkpoint_roadmap_revision_check" CHECK("roadmap_revision" > 0),
+          CONSTRAINT "adaptive_checkpoint_diff_hash_check" CHECK(length("diff_hash") = 71 AND substr("diff_hash", 1, 7) = 'sha256:' AND substr("diff_hash", 8) NOT GLOB '*[^0-9a-f]*'),
+          CONSTRAINT "adaptive_checkpoint_event_cursor_check" CHECK("event_cursor" >= 0)
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`adaptive_context_manifest\` (
           \`id\` text PRIMARY KEY,
           \`task_id\` text NOT NULL,
@@ -105,7 +170,11 @@ export default {
           \`messages\` text NOT NULL,
           \`tools\` text NOT NULL,
           \`components\` text NOT NULL,
+          \`omissions\` text DEFAULT '[]' NOT NULL,
           \`estimated_tokens\` integer NOT NULL,
+          \`roadmap_revision\` integer DEFAULT 0 NOT NULL,
+          \`turn\` integer DEFAULT 0 NOT NULL,
+          \`restart_reason\` text,
           \`request_hash\` text NOT NULL,
           \`time_created\` integer NOT NULL,
           CONSTRAINT \`fk_adaptive_context_manifest_task_id_adaptive_task_id_fk\` FOREIGN KEY (\`task_id\`) REFERENCES \`adaptive_task\`(\`id\`) ON DELETE CASCADE,
@@ -114,6 +183,30 @@ export default {
           CONSTRAINT "adaptive_manifest_purpose_check" CHECK(length("purpose") > 0),
           CONSTRAINT "adaptive_manifest_estimated_tokens_check" CHECK("estimated_tokens" >= 0),
           CONSTRAINT "adaptive_manifest_request_hash_check" CHECK(length("request_hash") > 0)
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`adaptive_detail\` (
+          \`task_id\` text NOT NULL,
+          \`key\` text NOT NULL,
+          \`version\` integer NOT NULL,
+          \`node_id\` text NOT NULL,
+          \`kind\` text NOT NULL,
+          \`status\` text NOT NULL,
+          \`body\` text NOT NULL,
+          \`content_hash\` text NOT NULL,
+          \`source_agent_id\` text NOT NULL,
+          \`source_generation\` integer NOT NULL,
+          \`time_created\` integer NOT NULL,
+          CONSTRAINT \`adaptive_detail_pk\` PRIMARY KEY(\`task_id\`, \`key\`, \`version\`),
+          CONSTRAINT \`fk_adaptive_detail_task_id_adaptive_task_id_fk\` FOREIGN KEY (\`task_id\`) REFERENCES \`adaptive_task\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT \`fk_adaptive_detail_source_agent_id_adaptive_agent_process_id_fk\` FOREIGN KEY (\`source_agent_id\`) REFERENCES \`adaptive_agent_process\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT "adaptive_detail_key_check" CHECK(length("key") > 0),
+          CONSTRAINT "adaptive_detail_version_check" CHECK("version" >= 0),
+          CONSTRAINT "adaptive_detail_kind_check" CHECK("kind" IN ('requirements', 'contracts', 'decisions', 'validation')),
+          CONSTRAINT "adaptive_detail_status_check" CHECK("status" IN ('unresolved', 'draft', 'ready', 'superseded')),
+          CONSTRAINT "adaptive_detail_hash_check" CHECK(length("content_hash") = 71 AND substr("content_hash", 1, 7) = 'sha256:' AND substr("content_hash", 8) NOT GLOB '*[^0-9a-f]*'),
+          CONSTRAINT "adaptive_detail_source_generation_check" CHECK("source_generation" > 0)
         );
       `)
       yield* tx.run(`
@@ -156,6 +249,26 @@ export default {
           CONSTRAINT "adaptive_model_request_input_tokens_check" CHECK("input_tokens" IS NULL OR "input_tokens" >= 0),
           CONSTRAINT "adaptive_model_request_output_tokens_check" CHECK("output_tokens" IS NULL OR "output_tokens" >= 0),
           CONSTRAINT "adaptive_model_request_completion_check" CHECK(("status" IN ('admitted', 'streaming') AND "time_completed" IS NULL) OR ("status" IN ('succeeded', 'failed', 'interrupted') AND "time_completed" IS NOT NULL))
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`adaptive_roadmap_revision\` (
+          \`task_id\` text NOT NULL,
+          \`revision\` integer NOT NULL,
+          \`requirement\` text NOT NULL,
+          \`roadmap\` text NOT NULL,
+          \`content_hash\` text NOT NULL,
+          \`source_agent_id\` text NOT NULL,
+          \`source_generation\` integer NOT NULL,
+          \`event_sequence\` integer NOT NULL,
+          \`time_created\` integer NOT NULL,
+          CONSTRAINT \`adaptive_roadmap_revision_pk\` PRIMARY KEY(\`task_id\`, \`revision\`),
+          CONSTRAINT \`fk_adaptive_roadmap_revision_task_id_adaptive_task_id_fk\` FOREIGN KEY (\`task_id\`) REFERENCES \`adaptive_task\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT \`fk_adaptive_roadmap_revision_source_agent_id_adaptive_agent_process_id_fk\` FOREIGN KEY (\`source_agent_id\`) REFERENCES \`adaptive_agent_process\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT "adaptive_roadmap_revision_check" CHECK("revision" > 0),
+          CONSTRAINT "adaptive_roadmap_hash_check" CHECK(length("content_hash") = 71 AND substr("content_hash", 1, 7) = 'sha256:' AND substr("content_hash", 8) NOT GLOB '*[^0-9a-f]*'),
+          CONSTRAINT "adaptive_roadmap_source_generation_check" CHECK("source_generation" > 0),
+          CONSTRAINT "adaptive_roadmap_event_sequence_check" CHECK("event_sequence" >= 0)
         );
       `)
       yield* tx.run(`
@@ -374,13 +487,26 @@ export default {
         `CREATE INDEX \`adaptive_agent_task_state_idx\` ON \`adaptive_agent_process\` (\`task_id\`,\`state\`);`,
       )
       yield* tx.run(
+        `CREATE INDEX \`adaptive_assignment_task_node_idx\` ON \`adaptive_assignment\` (\`task_id\`,\`node_id\`);`,
+      )
+      yield* tx.run(
+        `CREATE UNIQUE INDEX \`adaptive_assignment_worker_generation_idx\` ON \`adaptive_assignment\` (\`worker_id\`,\`generation\`);`,
+      )
+      yield* tx.run(
+        `CREATE INDEX \`adaptive_checkpoint_assignment_idx\` ON \`adaptive_checkpoint\` (\`assignment_id\`,\`sequence\`);`,
+      )
+      yield* tx.run(
         `CREATE INDEX \`adaptive_manifest_agent_time_idx\` ON \`adaptive_context_manifest\` (\`agent_id\`,\`time_created\`);`,
       )
+      yield* tx.run(`CREATE INDEX \`adaptive_detail_task_node_idx\` ON \`adaptive_detail\` (\`task_id\`,\`node_id\`);`)
       yield* tx.run(
         `CREATE INDEX \`adaptive_model_request_task_idx\` ON \`adaptive_model_request\` (\`task_id\`,\`time_created\`);`,
       )
       yield* tx.run(
         `CREATE INDEX \`adaptive_model_request_agent_idx\` ON \`adaptive_model_request\` (\`agent_id\`,\`generation\`);`,
+      )
+      yield* tx.run(
+        `CREATE UNIQUE INDEX \`adaptive_roadmap_task_event_idx\` ON \`adaptive_roadmap_revision\` (\`task_id\`,\`event_sequence\`);`,
       )
       yield* tx.run(`CREATE INDEX \`adaptive_task_directory_idx\` ON \`adaptive_task\` (\`directory\`);`)
       yield* tx.run(`CREATE UNIQUE INDEX \`event_aggregate_seq_idx\` ON \`event\` (\`aggregate_id\`,\`seq\`);`)
