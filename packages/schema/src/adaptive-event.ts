@@ -18,12 +18,34 @@ const options = {
   },
 } as const
 const ToolPreview = Schema.String.check(Schema.isMaxLength(8192))
+const ToolPayloadBase = Schema.Struct({
+  hash: AdaptiveOperation.Hash,
+  preview: ToolPreview,
+  complete: Schema.Boolean,
+  blob: AdaptiveOperation.Hash.pipe(optional),
+})
+const durableToolPayload = Schema.makeFilter<Schema.Schema.Type<typeof ToolPayloadBase>>((payload) =>
+  payload.complete || payload.blob !== undefined ? undefined : "An incomplete Tool payload requires a blob reference",
+)
+
+export interface ToolPayload extends Schema.Schema.Type<typeof ToolPayload> {}
+export const ToolPayload = ToolPayloadBase.annotate({ identifier: "AdaptiveEvent.ToolPayload" }).check(
+  durableToolPayload,
+)
+
+export class DetailRecord extends Schema.Class<DetailRecord>("AdaptiveEvent.DetailRecord")({
+  nodeID: Schema.String,
+  ref: AdaptiveRoadmap.DetailRef,
+  body: Schema.String,
+  contentHash: AdaptiveOperation.Hash,
+}) {}
 
 export const TaskCreated = Event.define({
   type: "adaptive.task.created",
   ...options,
   schema: { ...Base, task: AdaptiveTask.Summary },
 })
+export type TaskCreated = typeof TaskCreated.Type
 
 export const RoadmapCommitted = Event.define({
   type: "adaptive.roadmap.committed",
@@ -31,31 +53,32 @@ export const RoadmapCommitted = Event.define({
   schema: {
     ...Base,
     roadmap: AdaptiveRoadmap.Info,
+    details: Schema.Array(DetailRecord),
     contentHash: AdaptiveOperation.Hash,
     sourceAgentID: AdaptiveTask.AgentID,
     sourceGeneration: PositiveInt,
   },
 })
+export type RoadmapCommitted = typeof RoadmapCommitted.Type
 
 export const DetailCommitted = Event.define({
   type: "adaptive.detail.committed",
   ...options,
   schema: {
     ...Base,
-    nodeID: Schema.String,
-    detail: AdaptiveRoadmap.DetailRef,
-    body: Schema.String,
-    contentHash: AdaptiveOperation.Hash,
+    detail: DetailRecord,
     sourceAgentID: AdaptiveTask.AgentID,
     sourceGeneration: PositiveInt,
   },
 })
+export type DetailCommitted = typeof DetailCommitted.Type
 
 export const AssignmentCreated = Event.define({
   type: "adaptive.assignment.created",
   ...options,
   schema: { ...Base, assignment: AdaptiveOperation.Assignment },
 })
+export type AssignmentCreated = typeof AssignmentCreated.Type
 
 export const AgentGenerationStarted = Event.define({
   type: "adaptive.agent.generation.started",
@@ -70,6 +93,7 @@ export const AgentGenerationStarted = Event.define({
     reason: Schema.String.pipe(optional),
   },
 })
+export type AgentGenerationStarted = typeof AgentGenerationStarted.Type
 
 export const AgentGenerationLost = Event.define({
   type: "adaptive.agent.generation.lost",
@@ -84,12 +108,14 @@ export const AgentGenerationLost = Event.define({
     reason: Schema.String,
   },
 })
+export type AgentGenerationLost = typeof AgentGenerationLost.Type
 
 export const RecoveryVerified = Event.define({
   type: "adaptive.recovery.verified",
   ...options,
   schema: { ...Base, verification: AdaptiveOperation.RecoveryVerification },
 })
+export type RecoveryVerified = typeof RecoveryVerified.Type
 
 export const ToolCalled = Event.define({
   type: "adaptive.tool.called",
@@ -101,10 +127,10 @@ export const ToolCalled = Event.define({
     assignmentID: AdaptiveOperation.AssignmentID.pipe(optional),
     tool: Schema.String,
     callID: Schema.String,
-    inputPreview: ToolPreview.pipe(optional),
-    inputBlob: AdaptiveOperation.Hash.pipe(optional),
+    input: ToolPayload,
   },
 })
+export type ToolCalled = typeof ToolCalled.Type
 
 export const ToolSettled = Event.define({
   type: "adaptive.tool.settled",
@@ -117,11 +143,11 @@ export const ToolSettled = Event.define({
     tool: Schema.String,
     callID: Schema.String,
     status: Schema.Literals(["succeeded", "failed", "denied", "interrupted"]),
-    outputPreview: ToolPreview.pipe(optional),
-    outputBlob: AdaptiveOperation.Hash.pipe(optional),
+    output: ToolPayload,
     errorCode: Schema.String.pipe(optional),
   },
 })
+export type ToolSettled = typeof ToolSettled.Type
 
 export const DecisionRecorded = Event.define({
   type: "adaptive.decision.recorded",
@@ -137,6 +163,7 @@ export const DecisionRecorded = Event.define({
     evidence: Schema.Array(AdaptiveOperation.EvidenceRef),
   },
 })
+export type DecisionRecorded = typeof DecisionRecorded.Type
 
 export const DependencyReported = Event.define({
   type: "adaptive.dependency.reported",
@@ -153,18 +180,21 @@ export const DependencyReported = Event.define({
     blocksCorrectness: Schema.Boolean,
   },
 })
+export type DependencyReported = typeof DependencyReported.Type
 
 export const CheckpointSaved = Event.define({
   type: "adaptive.checkpoint.saved",
   ...options,
   schema: { ...Base, checkpoint: AdaptiveOperation.Checkpoint },
 })
+export type CheckpointSaved = typeof CheckpointSaved.Type
 
 export const CandidateSubmitted = Event.define({
   type: "adaptive.candidate.submitted",
   ...options,
   schema: { ...Base, report: AdaptiveOperation.CandidateReport },
 })
+export type CandidateSubmitted = typeof CandidateSubmitted.Type
 
 export const ContextSplitRequired = Event.define({
   type: "adaptive.context.split.required",
@@ -181,6 +211,7 @@ export const ContextSplitRequired = Event.define({
     inputBudget: NonNegativeInt,
   },
 })
+export type ContextSplitRequired = typeof ContextSplitRequired.Type
 
 export const DurableDefinitions = Event.inventory(
   TaskCreated,

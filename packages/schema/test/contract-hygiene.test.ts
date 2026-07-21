@@ -11,7 +11,6 @@ import { Project } from "../src/project"
 import { Pty } from "../src/pty"
 import { Question } from "../src/question"
 import { Session } from "../src/session"
-import { SessionEvent } from "../src/session-event"
 import { SessionTodo } from "../src/session-todo"
 import { optional } from "../src/schema"
 
@@ -40,9 +39,13 @@ describe("contract hygiene", () => {
   test("reusable public identifiers are stable and unique", () => {
     const identifiers = [
       AdaptiveEvent.Durable,
+      AdaptiveEvent.ToolPayload,
+      AdaptiveEvent.DetailRecord,
       AdaptiveOperation.AssignmentID,
       AdaptiveOperation.Hash,
       AdaptiveOperation.EvidenceRef,
+      AdaptiveOperation.RepositoryPath,
+      AdaptiveOperation.RepositoryGlob,
       AdaptiveOperation.Assignment,
       AdaptiveOperation.Checkpoint,
       AdaptiveOperation.RecoveryVerification,
