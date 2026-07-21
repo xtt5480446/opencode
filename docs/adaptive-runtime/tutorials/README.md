@@ -58,6 +58,12 @@ Tutorial 与实现位于同一个 Task、Issue 和 PR 中，是 Definition of Do
 | S01-T09 | [Controller bootstrap 与 CLI runtime 隔离](./s01-t09-controller-bootstrap.md) | Adaptive 分支、管理命令与 Coordinator bootstrap 基础                | 已完成，随任务 PR 交付 |
 | S01-T10 | [Packaged binary smoke 与 G1 验收入口](./s01-t10-packaged-g1-evidence.md)     | 构建产物自检、隔离环境、G1 台账与用户试跑入口                       | 已完成，G1 已验收      |
 
+## Stage 2：G2 State, Context, and Recovery
+
+| Task    | 教程                                                        | 产出                                                            | 状态                   |
+| ------- | ----------------------------------------------------------- | --------------------------------------------------------------- | ---------------------- |
+| S02-T01 | [可恢复开发状态的公共契约](./s02-t01-recovery-contracts.md) | Roadmap、Assignment、Checkpoint、恢复核验与 Task durable events | 已完成，随任务 PR 交付 |
+
 后续教程会继续按依赖顺序加入本索引，而不是按文档创建时间排列。
 
 ## 阅读建议

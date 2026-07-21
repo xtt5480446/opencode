@@ -1,4 +1,7 @@
 export { Agent } from "./agent"
+export { AdaptiveEvent } from "./adaptive-event"
+export { AdaptiveOperation } from "./adaptive-operation"
+export { AdaptiveRoadmap } from "./adaptive-roadmap"
 export { AdaptiveTask } from "./adaptive-task"
 export { Command } from "./command"
 export { Connection } from "./connection"
