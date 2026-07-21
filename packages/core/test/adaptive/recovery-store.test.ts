@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { sql } from "drizzle-orm"
 import { Effect } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import path from "path"
@@ -233,6 +234,12 @@ describe("AdaptiveRecoveryStore", () => {
       const failure = yield* state.recovery.getCheckpoint(state.worker.id, first.sequence).pipe(Effect.flip)
 
       expect(failure._tag).toBe("AdaptiveRecoveryStore.CorruptCheckpoint")
+
+      yield* db.run(
+        sql`UPDATE adaptive_checkpoint SET checkpoint = '{' WHERE worker_id = ${state.worker.id} AND sequence = ${first.sequence}`,
+      )
+      const malformed = yield* state.recovery.getCheckpoint(state.worker.id, first.sequence).pipe(Effect.flip)
+      expect(malformed._tag).toBe("AdaptiveRecoveryStore.CorruptCheckpoint")
     }),
   )
 })

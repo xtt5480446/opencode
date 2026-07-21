@@ -1,6 +1,6 @@
 export * as AdaptiveRoadmapStore from "./roadmap-store"
 
-import { and, eq } from "drizzle-orm"
+import { and, eq, getTableColumns, sql } from "drizzle-orm"
 import { Cause, Clock, Context, Effect, Layer, Schema } from "effect"
 import { AdaptiveEvent } from "@opencode-ai/schema/adaptive-event"
 import { AdaptiveOperation } from "@opencode-ai/schema/adaptive-operation"
@@ -124,8 +124,8 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/AdaptiveRoadmapStore") {}
 
 const encodeRoadmap = Schema.encodeUnknownSync(AdaptiveRoadmap.Info)
-const decodeRoadmap = Schema.decodeUnknownSync(AdaptiveRoadmap.Info)
-const decodeRequirement = Schema.decodeUnknownSync(AdaptiveRoadmap.RequirementBaseline)
+const decodeRoadmap = Schema.decodeUnknownSync(Schema.fromJsonString(AdaptiveRoadmap.Info))
+const decodeRequirement = Schema.decodeUnknownSync(Schema.fromJsonString(AdaptiveRoadmap.RequirementBaseline))
 const decodeDetailRef = Schema.decodeUnknownSync(AdaptiveRoadmap.DetailRef)
 
 const layer = Layer.effect(
@@ -139,7 +139,11 @@ const layer = Layer.effect(
       revision: number,
     ) {
       const row = yield* db
-        .select()
+        .select({
+          ...getTableColumns(AdaptiveRoadmapRevisionTable),
+          requirement: sql<string>`${AdaptiveRoadmapRevisionTable.requirement}`,
+          roadmap: sql<string>`${AdaptiveRoadmapRevisionTable.roadmap}`,
+        })
         .from(AdaptiveRoadmapRevisionTable)
         .where(
           and(
@@ -423,7 +427,12 @@ function validateInput(input: CommitInput): CommitError | undefined {
   return undefined
 }
 
-const decodeRoadmapRecord = (row: typeof AdaptiveRoadmapRevisionTable.$inferSelect) =>
+type RoadmapRow = Omit<typeof AdaptiveRoadmapRevisionTable.$inferSelect, "requirement" | "roadmap"> & {
+  readonly requirement: string
+  readonly roadmap: string
+}
+
+const decodeRoadmapRecord = (row: RoadmapRow) =>
   Effect.try({
     try: (): RoadmapRecord => {
       const roadmap = decodeRoadmap(row.roadmap)

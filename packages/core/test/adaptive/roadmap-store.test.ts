@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { count, eq } from "drizzle-orm"
+import { count, eq, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { AdaptiveModelPolicy } from "@opencode-ai/core/adaptive/model-policy"
@@ -232,6 +232,10 @@ describe("AdaptiveRoadmapStore", () => {
 
       expect(corruptRoadmap._tag).toBe("AdaptiveRoadmapStore.CorruptRoadmap")
       expect(corruptDetail._tag).toBe("AdaptiveRoadmapStore.CorruptDetail")
+
+      yield* db.run(sql`UPDATE adaptive_roadmap_revision SET roadmap = '{' WHERE task_id = ${state.task.id}`)
+      const malformedRoadmap = yield* store.getRevision(state.task.id, 1).pipe(Effect.flip)
+      expect(malformedRoadmap._tag).toBe("AdaptiveRoadmapStore.CorruptRoadmap")
     }),
   )
 })

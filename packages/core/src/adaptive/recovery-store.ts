@@ -1,6 +1,6 @@
 export * as AdaptiveRecoveryStore from "./recovery-store"
 
-import { and, eq } from "drizzle-orm"
+import { and, eq, getTableColumns, sql } from "drizzle-orm"
 import { Cause, Context, Effect, Layer, Schema } from "effect"
 import { AdaptiveEvent } from "@opencode-ai/schema/adaptive-event"
 import { AdaptiveOperation } from "@opencode-ai/schema/adaptive-operation"
@@ -126,7 +126,7 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/AdaptiveRecoveryStore") {}
 
 const decodeAssignment = Schema.decodeUnknownSync(AdaptiveOperation.Assignment)
-const decodeCheckpoint = Schema.decodeUnknownSync(AdaptiveOperation.Checkpoint)
+const decodeCheckpoint = Schema.decodeUnknownSync(Schema.fromJsonString(AdaptiveOperation.Checkpoint))
 const decodeRoadmap = Schema.decodeUnknownSync(AdaptiveRoadmap.Info)
 
 const layer = Layer.effect(
@@ -153,7 +153,10 @@ const layer = Layer.effect(
       sequence: number,
     ) {
       const row = yield* db
-        .select()
+        .select({
+          ...getTableColumns(AdaptiveCheckpointTable),
+          checkpoint: sql<string>`${AdaptiveCheckpointTable.checkpoint}`,
+        })
         .from(AdaptiveCheckpointTable)
         .where(
           and(
@@ -473,7 +476,11 @@ function assignmentRecord(row: typeof AdaptiveAssignmentTable.$inferSelect): Ass
   }
 }
 
-const decodeCheckpointRecord = (row: typeof AdaptiveCheckpointTable.$inferSelect) =>
+type CheckpointRow = Omit<typeof AdaptiveCheckpointTable.$inferSelect, "checkpoint"> & {
+  readonly checkpoint: string
+}
+
+const decodeCheckpointRecord = (row: CheckpointRow) =>
   Effect.try({
     try: (): CheckpointRecord => {
       const checkpoint = decodeCheckpoint(row.checkpoint)
