@@ -18,6 +18,14 @@ export type { Data, Definition, Payload } from "@opencode-ai/schema/event"
 export type Subscriber<D extends Definition = Definition> = (event: Payload<D>) => Effect.Effect<void>
 export type Unsubscribe = Effect.Effect<void>
 
+export interface Projector {
+  readonly id: string
+  readonly replay: boolean
+}
+
+export const projector = (options: { readonly id: string; readonly replay?: boolean }): Projector =>
+  Object.freeze({ id: options.id, replay: options.replay ?? true })
+
 export const latestSequence = Effect.fn("EventV2.latestSequence")(function* (
   db: Database.Interface["db"],
   aggregateID: string,
@@ -120,7 +128,7 @@ export interface PublishOptions {
   readonly metadata?: Record<string, unknown>
   readonly location?: Location.Ref
   /** Local operational projection committed atomically with a new durable event. Not replayed or serialized. */
-  readonly commit?: (seq: number) => Effect.Effect<void>
+  readonly commit?: (seq: number, projected: ReadonlySet<Projector>) => Effect.Effect<void>
 }
 
 export interface Interface {
@@ -134,7 +142,11 @@ export interface Interface {
   readonly durable: (input: { readonly aggregateID: string; readonly after?: number }) => Stream.Stream<Payload>
   /** @deprecated Use `all()` and consume the returned stream. */
   readonly listen: (listener: Subscriber) => Effect.Effect<Unsubscribe>
-  readonly project: <D extends Definition>(definition: D, projector: Subscriber<D>) => Effect.Effect<void>
+  readonly project: <D extends Definition>(
+    definition: D,
+    project: Subscriber<D>,
+    projector?: Projector,
+  ) => Effect.Effect<void>
   readonly replay: (
     event: SerializedEvent,
     options?: { readonly publish?: boolean; readonly ownerID?: string; readonly strictOwner?: boolean },
@@ -176,7 +188,7 @@ export const layerWith = (options?: LayerOptions) =>
         durable: new Map<string, Set<PubSub.PubSub<void>>>(),
         typed: new Map<string, PubSub.PubSub<Payload>>(),
       }
-      const projectors = new Map<string, Subscriber[]>()
+      const projectors = new Map<string, { readonly apply: Subscriber; readonly identity?: Projector }[]>()
       // TODO: Bind durable projectors to exact type+version before supporting incompatible historical payloads.
       const listeners = new Array<Subscriber>()
       const { db } = yield* Database.Service
@@ -211,7 +223,7 @@ export const layerWith = (options?: LayerOptions) =>
           readonly ownerID?: string
           readonly strictOwner?: boolean
         },
-        commit?: (seq: number) => Effect.Effect<void>,
+        commit?: (seq: number, projected: ReadonlySet<Projector>) => Effect.Effect<void>,
       ) {
         return Effect.gen(function* () {
           const durable = definition?.durable
@@ -233,7 +245,9 @@ export const layerWith = (options?: LayerOptions) =>
                   }),
                 )
               }
-              const list = projectors.get(event.type) ?? []
+              const list = (projectors.get(event.type) ?? []).filter(
+                (projector) => !input || projector.identity?.replay !== false,
+              )
               return yield* Effect.uninterruptible(
                 Effect.gen(function* () {
                   const committed = yield* db
@@ -318,9 +332,13 @@ export const layerWith = (options?: LayerOptions) =>
                             durable: { aggregateID, seq, version: durable.version },
                           } as Payload
                           for (const projector of list) {
-                            yield* projector(committed)
+                            yield* projector.apply(committed)
                           }
-                          if (commit) yield* commit(seq)
+                          if (commit)
+                            yield* commit(
+                              seq,
+                              new Set(list.flatMap((projector) => (projector.identity ? [projector.identity] : []))),
+                            )
                           yield* db
                             .insert(EventSequenceTable)
                             .values([{ aggregate_id: aggregateID, seq, owner_id: input?.ownerID }])
@@ -612,10 +630,14 @@ export const layerWith = (options?: LayerOptions) =>
           })
         })
 
-      const project = <D extends Definition>(definition: D, projector: Subscriber<D>): Effect.Effect<void> =>
+      const project = <D extends Definition>(
+        definition: D,
+        apply: Subscriber<D>,
+        identity?: Projector,
+      ): Effect.Effect<void> =>
         Effect.sync(() => {
           const list = projectors.get(definition.type) ?? []
-          list.push((event) => projector(event as Payload<D>))
+          list.push({ apply: (event) => apply(event as Payload<D>), ...(identity ? { identity } : {}) })
           projectors.set(definition.type, list)
         })
 

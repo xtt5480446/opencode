@@ -1,4 +1,5 @@
 import { AdaptiveModelPolicy } from "@opencode-ai/core/adaptive/model-policy"
+import { AdaptiveProjector } from "@opencode-ai/core/adaptive/projector"
 import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
@@ -146,12 +147,14 @@ export interface MakeOptions {
 
 export const make = Effect.fn("AdaptiveController.make")(function* (options: MakeOptions = {}) {
   const store = yield* AdaptiveStore.Service
+  const projector = yield* AdaptiveProjector.Service
   const supervisor = yield* AdaptiveProcessSupervisor.Service
   const gateway = yield* AdaptiveModelGateway.Service
   const locations = yield* LocationServiceMap.Service
   const auth = yield* Auth.Service
 
   const makeStart = Effect.fn("AdaptiveController.start")(function* (input: Input) {
+    yield* projector.ready
     yield* validateInput(input)
     const providerID = Provider.ID.make(input.requestedModel.providerID)
     const modelID = Model.ID.make(input.requestedModel.modelID)
@@ -385,6 +388,7 @@ export const node = makeGlobalNode({
   service: Service,
   layer,
   deps: [
+    AdaptiveProjector.node,
     AdaptiveStore.node,
     AdaptiveModelGateway.node,
     AdaptiveProcessSupervisor.node,
