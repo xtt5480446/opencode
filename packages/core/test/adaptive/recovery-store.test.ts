@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { sql } from "drizzle-orm"
+import { count, eq, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import path from "path"
@@ -11,6 +11,7 @@ import { AdaptiveCheckpointTable } from "@opencode-ai/core/adaptive/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { EventTable } from "@opencode-ai/core/event/sql"
 import { AdaptiveOperation } from "@opencode-ai/schema/adaptive-operation"
 import { AdaptiveRoadmap } from "@opencode-ai/schema/adaptive-roadmap"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
@@ -244,6 +245,43 @@ describe("AdaptiveRecoveryStore", () => {
 
       expect(failure._tag).toBe("AdaptiveRecoveryStore.CheckpointCursorConflict")
       expect((yield* state.recovery.getLatestCheckpoint(state.worker.id)).checkpoint).toEqual(first)
+    }),
+  )
+
+  it.effect("rejects an exact duplicate Checkpoint without appending another durable event", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const first = checkpoint(state, 1)
+      yield* state.recovery.saveCheckpoint({
+        checkpoint: first,
+        observedHead: first.worktreeHead,
+        observedDiffHash: first.diffHash,
+      })
+      const { db } = yield* Database.Service
+      const before = yield* db
+        .select({ count: count() })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, state.task.id))
+        .get()
+        .pipe(Effect.orDie)
+
+      const failure = yield* state.recovery
+        .saveCheckpoint({
+          checkpoint: first,
+          observedHead: first.worktreeHead,
+          observedDiffHash: first.diffHash,
+        })
+        .pipe(Effect.flip)
+
+      expect(failure._tag).toBe("AdaptiveRecoveryStore.CheckpointSequenceConflict")
+      expect(
+        yield* db
+          .select({ count: count() })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, state.task.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual(before)
     }),
   )
 

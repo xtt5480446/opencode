@@ -120,7 +120,7 @@ export interface PublishOptions {
   readonly metadata?: Record<string, unknown>
   readonly location?: Location.Ref
   /** Local operational projection committed atomically with a new durable event. Not replayed or serialized. */
-  readonly commit?: (seq: number) => Effect.Effect<void>
+  readonly commit?: (seq: number, projected: boolean) => Effect.Effect<void>
 }
 
 export interface Interface {
@@ -211,7 +211,7 @@ export const layerWith = (options?: LayerOptions) =>
           readonly ownerID?: string
           readonly strictOwner?: boolean
         },
-        commit?: (seq: number) => Effect.Effect<void>,
+        commit?: (seq: number, projected: boolean) => Effect.Effect<void>,
       ) {
         return Effect.gen(function* () {
           const durable = definition?.durable
@@ -320,7 +320,7 @@ export const layerWith = (options?: LayerOptions) =>
                           for (const projector of list) {
                             yield* projector(committed)
                           }
-                          if (commit) yield* commit(seq)
+                          if (commit) yield* commit(seq, list.length > 0)
                           yield* db
                             .insert(EventSequenceTable)
                             .values([{ aggregate_id: aggregateID, seq, owner_id: input?.ownerID }])

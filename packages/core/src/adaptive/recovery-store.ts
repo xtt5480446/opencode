@@ -204,8 +204,43 @@ const layer = Layer.effect(
           AdaptiveEvent.AssignmentCreated,
           { taskID: assignment.taskID, timeCreated: assignment.timeCreated, assignment },
           {
-            commit: (eventSequence) =>
+            commit: (eventSequence, projectedByEvent) =>
               Effect.gen(function* () {
+                const projected = yield* db
+                  .select()
+                  .from(AdaptiveAssignmentTable)
+                  .where(eq(AdaptiveAssignmentTable.id, assignment.id))
+                  .get()
+                  .pipe(Effect.orDie)
+                const projectedWorker = yield* db
+                  .select({
+                    assignmentID: AdaptiveAgentProcessTable.assignment_id,
+                    nodeID: AdaptiveAgentProcessTable.node_id,
+                    eventCursor: AdaptiveAgentProcessTable.event_cursor,
+                  })
+                  .from(AdaptiveAgentProcessTable)
+                  .where(eq(AdaptiveAgentProcessTable.id, assignment.workerID))
+                  .get()
+                  .pipe(Effect.orDie)
+                if (
+                  projectedByEvent &&
+                  projected &&
+                  projected.task_id === assignment.taskID &&
+                  projected.worker_id === assignment.workerID &&
+                  projected.node_id === assignment.nodeID &&
+                  projected.generation === assignment.generation &&
+                  projected.roadmap_revision === assignment.roadmapRevision &&
+                  JSON.stringify(projected.detail_refs) === JSON.stringify(assignment.detailRefs) &&
+                  JSON.stringify(projected.permitted_paths) === JSON.stringify(assignment.permittedPaths) &&
+                  projected.base_commit === assignment.baseCommit &&
+                  JSON.stringify(projected.acceptance_commands) === JSON.stringify(assignment.acceptanceCommands) &&
+                  projected.time_created === assignment.timeCreated &&
+                  projected.superseded_at === null &&
+                  projectedWorker?.assignmentID === assignment.id &&
+                  projectedWorker.nodeID === assignment.nodeID &&
+                  projectedWorker.eventCursor === eventSequence
+                )
+                  return undefined
                 const task = yield* db
                   .select({ revision: AdaptiveTaskTable.roadmap_revision })
                   .from(AdaptiveTaskTable)
@@ -362,8 +397,43 @@ const layer = Layer.effect(
           AdaptiveEvent.CheckpointSaved,
           { taskID: assignment.taskID, timeCreated: checkpoint.timeCreated, checkpoint },
           {
-            commit: (eventSequence) =>
+            commit: (eventSequence, projectedByEvent) =>
               Effect.gen(function* () {
+                const projected = yield* db
+                  .select()
+                  .from(AdaptiveCheckpointTable)
+                  .where(
+                    and(
+                      eq(AdaptiveCheckpointTable.worker_id, checkpoint.workerID),
+                      eq(AdaptiveCheckpointTable.sequence, checkpoint.sequence),
+                    ),
+                  )
+                  .get()
+                  .pipe(Effect.orDie)
+                const projectedWorker = yield* db
+                  .select({
+                    checkpointSequence: AdaptiveAgentProcessTable.checkpoint_sequence,
+                    eventCursor: AdaptiveAgentProcessTable.event_cursor,
+                  })
+                  .from(AdaptiveAgentProcessTable)
+                  .where(eq(AdaptiveAgentProcessTable.id, checkpoint.workerID))
+                  .get()
+                  .pipe(Effect.orDie)
+                if (
+                  projectedByEvent &&
+                  projected &&
+                  projected.assignment_id === checkpoint.assignmentID &&
+                  projected.generation === checkpoint.generation &&
+                  projected.roadmap_revision === checkpoint.roadmapRevision &&
+                  JSON.stringify(projected.checkpoint) === JSON.stringify(checkpoint) &&
+                  projected.worktree_head === checkpoint.worktreeHead &&
+                  projected.diff_hash === checkpoint.diffHash &&
+                  projected.event_cursor === checkpoint.eventCursor &&
+                  projected.time_created === checkpoint.timeCreated &&
+                  projectedWorker?.checkpointSequence === checkpoint.sequence &&
+                  projectedWorker.eventCursor === checkpoint.eventCursor
+                )
+                  return undefined
                 const worker = yield* db
                   .select({
                     taskID: AdaptiveAgentProcessTable.task_id,

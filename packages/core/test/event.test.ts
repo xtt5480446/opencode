@@ -182,10 +182,10 @@ describe("EventV2", () => {
       yield* events.publish(
         SyncMessage,
         { id: aggregateID, text: "hello" },
-        { commit: (seq) => Effect.sync(() => received.push(`commit:${seq}`)) },
+        { commit: (seq, projected) => Effect.sync(() => received.push(`commit:${seq}:${projected}`)) },
       )
 
-      expect(received).toEqual(["projector", "commit:0"])
+      expect(received).toEqual(["projector", "commit:0:true"])
     }),
   )
 
