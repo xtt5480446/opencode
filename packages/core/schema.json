@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "857cbda0-d3ac-4cec-81bc-ba00d4166424",
+  "id": "c3773d22-7198-4eaa-bd6b-f445f91d8d02",
   "prevIds": [
-    "e1b9ba87-d504-44f0-a855-2fc83718a016"
+    "857cbda0-d3ac-4cec-81bc-ba00d4166424"
   ],
   "ddl": [
     {
@@ -31,7 +31,19 @@
       "entityType": "tables"
     },
     {
+      "name": "adaptive_assignment",
+      "entityType": "tables"
+    },
+    {
+      "name": "adaptive_blob",
+      "entityType": "tables"
+    },
+    {
       "name": "adaptive_bootstrap",
+      "entityType": "tables"
+    },
+    {
+      "name": "adaptive_checkpoint",
       "entityType": "tables"
     },
     {
@@ -39,7 +51,15 @@
       "entityType": "tables"
     },
     {
+      "name": "adaptive_detail",
+      "entityType": "tables"
+    },
+    {
       "name": "adaptive_model_request",
+      "entityType": "tables"
+    },
+    {
+      "name": "adaptive_roadmap_revision",
       "entityType": "tables"
     },
     {
@@ -493,6 +513,76 @@
       "table": "adaptive_agent_process"
     },
     {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "node_id",
+      "entityType": "columns",
+      "table": "adaptive_agent_process"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "tool_session_id",
+      "entityType": "columns",
+      "table": "adaptive_agent_process"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "assignment_id",
+      "entityType": "columns",
+      "table": "adaptive_agent_process"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "event_cursor",
+      "entityType": "columns",
+      "table": "adaptive_agent_process"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "checkpoint_sequence",
+      "entityType": "columns",
+      "table": "adaptive_agent_process"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'ready'",
+      "generated": null,
+      "name": "recovery_state",
+      "entityType": "columns",
+      "table": "adaptive_agent_process"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "restart_required",
+      "entityType": "columns",
+      "table": "adaptive_agent_process"
+    },
+    {
       "type": "integer",
       "notNull": true,
       "autoincrement": false,
@@ -511,6 +601,186 @@
       "name": "time_updated",
       "entityType": "columns",
       "table": "adaptive_agent_process"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "task_id",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "worker_id",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "node_id",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "generation",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "roadmap_revision",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "detail_refs",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "permitted_paths",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "base_commit",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "acceptance_commands",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "superseded_at",
+      "entityType": "columns",
+      "table": "adaptive_assignment"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "hash",
+      "entityType": "columns",
+      "table": "adaptive_blob"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "media_type",
+      "entityType": "columns",
+      "table": "adaptive_blob"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "byte_count",
+      "entityType": "columns",
+      "table": "adaptive_blob"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "relative_path",
+      "entityType": "columns",
+      "table": "adaptive_blob"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "adaptive_blob"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_last_accessed",
+      "entityType": "columns",
+      "table": "adaptive_blob"
     },
     {
       "type": "text",
@@ -581,6 +851,106 @@
       "name": "time_created",
       "entityType": "columns",
       "table": "adaptive_bootstrap"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "worker_id",
+      "entityType": "columns",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "sequence",
+      "entityType": "columns",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "assignment_id",
+      "entityType": "columns",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "generation",
+      "entityType": "columns",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "roadmap_revision",
+      "entityType": "columns",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "checkpoint",
+      "entityType": "columns",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "worktree_head",
+      "entityType": "columns",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "diff_hash",
+      "entityType": "columns",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "event_cursor",
+      "entityType": "columns",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "adaptive_checkpoint"
     },
     {
       "type": "text",
@@ -673,12 +1043,52 @@
       "table": "adaptive_context_manifest"
     },
     {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'[]'",
+      "generated": null,
+      "name": "omissions",
+      "entityType": "columns",
+      "table": "adaptive_context_manifest"
+    },
+    {
       "type": "integer",
       "notNull": true,
       "autoincrement": false,
       "default": null,
       "generated": null,
       "name": "estimated_tokens",
+      "entityType": "columns",
+      "table": "adaptive_context_manifest"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "roadmap_revision",
+      "entityType": "columns",
+      "table": "adaptive_context_manifest"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "turn",
+      "entityType": "columns",
+      "table": "adaptive_context_manifest"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "restart_reason",
       "entityType": "columns",
       "table": "adaptive_context_manifest"
     },
@@ -701,6 +1111,116 @@
       "name": "time_created",
       "entityType": "columns",
       "table": "adaptive_context_manifest"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "task_id",
+      "entityType": "columns",
+      "table": "adaptive_detail"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "key",
+      "entityType": "columns",
+      "table": "adaptive_detail"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "version",
+      "entityType": "columns",
+      "table": "adaptive_detail"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "node_id",
+      "entityType": "columns",
+      "table": "adaptive_detail"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "kind",
+      "entityType": "columns",
+      "table": "adaptive_detail"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "status",
+      "entityType": "columns",
+      "table": "adaptive_detail"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "body",
+      "entityType": "columns",
+      "table": "adaptive_detail"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "content_hash",
+      "entityType": "columns",
+      "table": "adaptive_detail"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source_agent_id",
+      "entityType": "columns",
+      "table": "adaptive_detail"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source_generation",
+      "entityType": "columns",
+      "table": "adaptive_detail"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "adaptive_detail"
     },
     {
       "type": "text",
@@ -931,6 +1451,96 @@
       "name": "time_completed",
       "entityType": "columns",
       "table": "adaptive_model_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "task_id",
+      "entityType": "columns",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "revision",
+      "entityType": "columns",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "requirement",
+      "entityType": "columns",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "roadmap",
+      "entityType": "columns",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "content_hash",
+      "entityType": "columns",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source_agent_id",
+      "entityType": "columns",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source_generation",
+      "entityType": "columns",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "event_sequence",
+      "entityType": "columns",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "adaptive_roadmap_revision"
     },
     {
       "type": "text",
@@ -2258,6 +2868,36 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "nameExplicit": false,
+      "name": "fk_adaptive_assignment_task_id_adaptive_task_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_assignment"
+    },
+    {
+      "columns": [
+        "worker_id"
+      ],
+      "tableTo": "adaptive_agent_process",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_adaptive_assignment_worker_id_adaptive_agent_process_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_assignment"
+    },
+    {
+      "columns": [
+        "task_id"
+      ],
+      "tableTo": "adaptive_task",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
       "name": "fk_adaptive_bootstrap_task_id_adaptive_task_id_fk",
       "entityType": "fks",
       "table": "adaptive_bootstrap"
@@ -2309,6 +2949,36 @@
     },
     {
       "columns": [
+        "worker_id"
+      ],
+      "tableTo": "adaptive_agent_process",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_adaptive_checkpoint_worker_id_adaptive_agent_process_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "columns": [
+        "assignment_id"
+      ],
+      "tableTo": "adaptive_assignment",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_adaptive_checkpoint_assignment_id_adaptive_assignment_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "columns": [
         "task_id"
       ],
       "tableTo": "adaptive_task",
@@ -2336,6 +3006,36 @@
       "name": "fk_adaptive_context_manifest_agent_id_adaptive_agent_process_id_fk",
       "entityType": "fks",
       "table": "adaptive_context_manifest"
+    },
+    {
+      "columns": [
+        "task_id"
+      ],
+      "tableTo": "adaptive_task",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_adaptive_detail_task_id_adaptive_task_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_detail"
+    },
+    {
+      "columns": [
+        "source_agent_id"
+      ],
+      "tableTo": "adaptive_agent_process",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_adaptive_detail_source_agent_id_adaptive_agent_process_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_detail"
     },
     {
       "columns": [
@@ -2396,6 +3096,36 @@
       "name": "adaptive_model_request_retry_fk",
       "entityType": "fks",
       "table": "adaptive_model_request"
+    },
+    {
+      "columns": [
+        "task_id"
+      ],
+      "tableTo": "adaptive_task",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_adaptive_roadmap_revision_task_id_adaptive_task_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "columns": [
+        "source_agent_id"
+      ],
+      "tableTo": "adaptive_agent_process",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_adaptive_roadmap_revision_source_agent_id_adaptive_agent_process_id_fk",
+      "entityType": "fks",
+      "table": "adaptive_roadmap_revision"
     },
     {
       "columns": [
@@ -2574,6 +3304,37 @@
     },
     {
       "columns": [
+        "worker_id",
+        "sequence"
+      ],
+      "nameExplicit": false,
+      "name": "adaptive_checkpoint_pk",
+      "entityType": "pks",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "columns": [
+        "task_id",
+        "key",
+        "version"
+      ],
+      "nameExplicit": false,
+      "name": "adaptive_detail_pk",
+      "entityType": "pks",
+      "table": "adaptive_detail"
+    },
+    {
+      "columns": [
+        "task_id",
+        "revision"
+      ],
+      "nameExplicit": false,
+      "name": "adaptive_roadmap_revision_pk",
+      "entityType": "pks",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "columns": [
         "project_id",
         "directory"
       ],
@@ -2635,6 +3396,24 @@
       "nameExplicit": false,
       "name": "adaptive_agent_process_pk",
       "table": "adaptive_agent_process",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "adaptive_assignment_pk",
+      "table": "adaptive_assignment",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "hash"
+      ],
+      "nameExplicit": false,
+      "name": "adaptive_blob_pk",
+      "table": "adaptive_blob",
       "entityType": "pks"
     },
     {
@@ -2802,6 +3581,60 @@
     {
       "columns": [
         {
+          "value": "task_id",
+          "isExpression": false
+        },
+        {
+          "value": "node_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "adaptive_assignment_task_node_idx",
+      "entityType": "indexes",
+      "table": "adaptive_assignment"
+    },
+    {
+      "columns": [
+        {
+          "value": "worker_id",
+          "isExpression": false
+        },
+        {
+          "value": "generation",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "adaptive_assignment_worker_generation_idx",
+      "entityType": "indexes",
+      "table": "adaptive_assignment"
+    },
+    {
+      "columns": [
+        {
+          "value": "assignment_id",
+          "isExpression": false
+        },
+        {
+          "value": "sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "adaptive_checkpoint_assignment_idx",
+      "entityType": "indexes",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "columns": [
+        {
           "value": "agent_id",
           "isExpression": false
         },
@@ -2816,6 +3649,24 @@
       "name": "adaptive_manifest_agent_time_idx",
       "entityType": "indexes",
       "table": "adaptive_context_manifest"
+    },
+    {
+      "columns": [
+        {
+          "value": "task_id",
+          "isExpression": false
+        },
+        {
+          "value": "node_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "adaptive_detail_task_node_idx",
+      "entityType": "indexes",
+      "table": "adaptive_detail"
     },
     {
       "columns": [
@@ -2852,6 +3703,24 @@
       "name": "adaptive_model_request_agent_idx",
       "entityType": "indexes",
       "table": "adaptive_model_request"
+    },
+    {
+      "columns": [
+        {
+          "value": "task_id",
+          "isExpression": false
+        },
+        {
+          "value": "event_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "adaptive_roadmap_task_event_idx",
+      "entityType": "indexes",
+      "table": "adaptive_roadmap_revision"
     },
     {
       "columns": [
@@ -3179,6 +4048,15 @@
     },
     {
       "columns": [
+        "relative_path"
+      ],
+      "nameExplicit": false,
+      "name": "adaptive_blob_relative_path_unique",
+      "entityType": "uniques",
+      "table": "adaptive_blob"
+    },
+    {
+      "columns": [
         "request_id"
       ],
       "nameExplicit": false,
@@ -3217,10 +4095,88 @@
       "table": "adaptive_agent_process"
     },
     {
+      "value": "length(\"node_id\") > 0",
+      "name": "adaptive_assignment_node_check",
+      "entityType": "checks",
+      "table": "adaptive_assignment"
+    },
+    {
+      "value": "\"generation\" > 0",
+      "name": "adaptive_assignment_generation_check",
+      "entityType": "checks",
+      "table": "adaptive_assignment"
+    },
+    {
+      "value": "\"roadmap_revision\" > 0",
+      "name": "adaptive_assignment_roadmap_revision_check",
+      "entityType": "checks",
+      "table": "adaptive_assignment"
+    },
+    {
+      "value": "length(\"base_commit\") > 0",
+      "name": "adaptive_assignment_base_commit_check",
+      "entityType": "checks",
+      "table": "adaptive_assignment"
+    },
+    {
+      "value": "length(\"hash\") = 71 AND substr(\"hash\", 1, 7) = 'sha256:' AND substr(\"hash\", 8) NOT GLOB '*[^0-9a-f]*'",
+      "name": "adaptive_blob_hash_check",
+      "entityType": "checks",
+      "table": "adaptive_blob"
+    },
+    {
+      "value": "length(\"media_type\") > 0",
+      "name": "adaptive_blob_media_type_check",
+      "entityType": "checks",
+      "table": "adaptive_blob"
+    },
+    {
+      "value": "\"byte_count\" >= 0",
+      "name": "adaptive_blob_byte_count_check",
+      "entityType": "checks",
+      "table": "adaptive_blob"
+    },
+    {
+      "value": "length(\"relative_path\") > 0",
+      "name": "adaptive_blob_relative_path_check",
+      "entityType": "checks",
+      "table": "adaptive_blob"
+    },
+    {
       "value": "\"generation\" >= 0",
       "name": "adaptive_bootstrap_generation_check",
       "entityType": "checks",
       "table": "adaptive_bootstrap"
+    },
+    {
+      "value": "\"sequence\" >= 0",
+      "name": "adaptive_checkpoint_sequence_check",
+      "entityType": "checks",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "value": "\"generation\" > 0",
+      "name": "adaptive_checkpoint_generation_check",
+      "entityType": "checks",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "value": "\"roadmap_revision\" > 0",
+      "name": "adaptive_checkpoint_roadmap_revision_check",
+      "entityType": "checks",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "value": "length(\"diff_hash\") = 71 AND substr(\"diff_hash\", 1, 7) = 'sha256:' AND substr(\"diff_hash\", 8) NOT GLOB '*[^0-9a-f]*'",
+      "name": "adaptive_checkpoint_diff_hash_check",
+      "entityType": "checks",
+      "table": "adaptive_checkpoint"
+    },
+    {
+      "value": "\"event_cursor\" >= 0",
+      "name": "adaptive_checkpoint_event_cursor_check",
+      "entityType": "checks",
+      "table": "adaptive_checkpoint"
     },
     {
       "value": "\"generation\" >= 0",
@@ -3245,6 +4201,42 @@
       "name": "adaptive_manifest_request_hash_check",
       "entityType": "checks",
       "table": "adaptive_context_manifest"
+    },
+    {
+      "value": "length(\"key\") > 0",
+      "name": "adaptive_detail_key_check",
+      "entityType": "checks",
+      "table": "adaptive_detail"
+    },
+    {
+      "value": "\"version\" >= 0",
+      "name": "adaptive_detail_version_check",
+      "entityType": "checks",
+      "table": "adaptive_detail"
+    },
+    {
+      "value": "\"kind\" IN ('requirements', 'contracts', 'decisions', 'validation')",
+      "name": "adaptive_detail_kind_check",
+      "entityType": "checks",
+      "table": "adaptive_detail"
+    },
+    {
+      "value": "\"status\" IN ('unresolved', 'draft', 'ready', 'superseded')",
+      "name": "adaptive_detail_status_check",
+      "entityType": "checks",
+      "table": "adaptive_detail"
+    },
+    {
+      "value": "length(\"content_hash\") = 71 AND substr(\"content_hash\", 1, 7) = 'sha256:' AND substr(\"content_hash\", 8) NOT GLOB '*[^0-9a-f]*'",
+      "name": "adaptive_detail_hash_check",
+      "entityType": "checks",
+      "table": "adaptive_detail"
+    },
+    {
+      "value": "\"source_generation\" > 0",
+      "name": "adaptive_detail_source_generation_check",
+      "entityType": "checks",
+      "table": "adaptive_detail"
     },
     {
       "value": "\"generation\" >= 0",
@@ -3311,6 +4303,30 @@
       "name": "adaptive_model_request_completion_check",
       "entityType": "checks",
       "table": "adaptive_model_request"
+    },
+    {
+      "value": "\"revision\" > 0",
+      "name": "adaptive_roadmap_revision_check",
+      "entityType": "checks",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "value": "length(\"content_hash\") = 71 AND substr(\"content_hash\", 1, 7) = 'sha256:' AND substr(\"content_hash\", 8) NOT GLOB '*[^0-9a-f]*'",
+      "name": "adaptive_roadmap_hash_check",
+      "entityType": "checks",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "value": "\"source_generation\" > 0",
+      "name": "adaptive_roadmap_source_generation_check",
+      "entityType": "checks",
+      "table": "adaptive_roadmap_revision"
+    },
+    {
+      "value": "\"event_sequence\" >= 0",
+      "name": "adaptive_roadmap_event_sequence_check",
+      "entityType": "checks",
+      "table": "adaptive_roadmap_revision"
     },
     {
       "value": "\"mode\" IN ('normal', 'benchmark')",

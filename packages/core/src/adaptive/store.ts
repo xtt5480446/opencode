@@ -97,14 +97,26 @@ export interface PutManifestInput {
   readonly messages: readonly unknown[]
   readonly tools: readonly unknown[]
   readonly components: readonly unknown[]
+  readonly omissions?: readonly unknown[]
+  readonly roadmapRevision?: number
+  readonly turn?: number
+  readonly restartReason?: string
   readonly estimatedTokens: number
   readonly requestHash: string
 }
 
-export interface ManifestRecord extends Omit<PutManifestInput, "owner" | "messages" | "tools" | "components"> {
+export interface ManifestRecord
+  extends Omit<
+    PutManifestInput,
+    "owner" | "messages" | "tools" | "components" | "omissions" | "roadmapRevision" | "turn" | "restartReason"
+  > {
   readonly messages: readonly JsonValue[]
   readonly tools: readonly JsonValue[]
   readonly components: readonly JsonValue[]
+  readonly omissions: readonly JsonValue[]
+  readonly roadmapRevision: number
+  readonly turn: number
+  readonly restartReason?: string
   readonly timeCreated: number
 }
 
@@ -407,6 +419,7 @@ const manifestValues = (input: {
   readonly messages: unknown
   readonly tools: unknown
   readonly components: unknown
+  readonly omissions?: unknown
 }) => {
   const array = (name: string, value: unknown) => {
     if (!Array.isArray(value)) throw new Error(`Manifest ${name} must be an array`)
@@ -423,17 +436,19 @@ const manifestValues = (input: {
     messages: array("messages", input.messages),
     tools: array("tools", input.tools),
     components: array("components", input.components),
+    omissions: array("omissions", input.omissions ?? []),
   }
 }
 
 type ManifestRow = Omit<
   typeof AdaptiveContextManifestTable.$inferSelect,
-  "system" | "messages" | "tools" | "components"
+  "system" | "messages" | "tools" | "components" | "omissions"
 > & {
   readonly system: unknown
   readonly messages: unknown
   readonly tools: unknown
   readonly components: unknown
+  readonly omissions: unknown
 }
 
 const manifestRecord = (row: ManifestRow): ManifestRecord => {
@@ -443,6 +458,7 @@ const manifestRecord = (row: ManifestRow): ManifestRecord => {
     messages: parse(row.messages),
     tools: parse(row.tools),
     components: parse(row.components),
+    omissions: parse(row.omissions),
   })
   return {
     id: row.id,
@@ -452,6 +468,9 @@ const manifestRecord = (row: ManifestRow): ManifestRecord => {
     purpose: row.purpose,
     ...values,
     estimatedTokens: row.estimated_tokens,
+    roadmapRevision: row.roadmap_revision,
+    turn: row.turn,
+    ...(row.restart_reason === null ? {} : { restartReason: row.restart_reason }),
     requestHash: row.request_hash,
     timeCreated: row.time_created,
   }
@@ -803,7 +822,11 @@ const layer = Layer.effect(
           messages: sql<string>`${AdaptiveContextManifestTable.messages}`,
           tools: sql<string>`${AdaptiveContextManifestTable.tools}`,
           components: sql<string>`${AdaptiveContextManifestTable.components}`,
+          omissions: sql<string>`${AdaptiveContextManifestTable.omissions}`,
           estimated_tokens: AdaptiveContextManifestTable.estimated_tokens,
+          roadmap_revision: AdaptiveContextManifestTable.roadmap_revision,
+          turn: AdaptiveContextManifestTable.turn,
+          restart_reason: AdaptiveContextManifestTable.restart_reason,
           request_hash: AdaptiveContextManifestTable.request_hash,
           time_created: AdaptiveContextManifestTable.time_created,
         })
@@ -825,6 +848,10 @@ const layer = Layer.effect(
             throw new Error("Manifest generation must be a nonnegative integer")
           if (input.estimatedTokens < 0 || !Number.isSafeInteger(input.estimatedTokens))
             throw new Error("Manifest estimated tokens must be a nonnegative integer")
+          if ((input.roadmapRevision ?? 0) < 0 || !Number.isSafeInteger(input.roadmapRevision ?? 0))
+            throw new Error("Manifest Roadmap revision must be a nonnegative integer")
+          if ((input.turn ?? 0) < 0 || !Number.isSafeInteger(input.turn ?? 0))
+            throw new Error("Manifest turn must be a nonnegative integer")
           return manifestValues(input)
         },
         catch: (cause) =>
@@ -869,6 +896,9 @@ const layer = Layer.effect(
                 purpose: input.purpose,
                 ...values,
                 estimated_tokens: input.estimatedTokens,
+                roadmap_revision: input.roadmapRevision ?? 0,
+                turn: input.turn ?? 0,
+                restart_reason: input.restartReason,
                 request_hash: input.requestHash,
                 time_created: now,
               })

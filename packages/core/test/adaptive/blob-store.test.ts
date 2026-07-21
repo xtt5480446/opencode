@@ -1,0 +1,104 @@
+import { expect, test } from "bun:test"
+import { count, eq } from "drizzle-orm"
+import { Effect } from "effect"
+import fs from "fs/promises"
+import path from "path"
+import { AdaptiveBlobStore } from "@opencode-ai/core/adaptive/blob-store"
+import { AdaptiveBlobTable } from "@opencode-ai/core/adaptive/sql"
+import { Database } from "@opencode-ai/core/database/database"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Global } from "@opencode-ai/core/global"
+import { tmpdir } from "../fixture/tmpdir"
+
+test("AdaptiveBlobStore deduplicates bytes and quarantines corrupt content", async () => {
+  await using tmp = await tmpdir()
+  const layer = AppNodeBuilder.build(LayerNode.group([AdaptiveBlobStore.node, Database.node]), [
+    [Database.node, Database.layerFromPath(path.join(tmp.path, "blob.sqlite"))],
+    [Global.node, Global.layerWith({ data: tmp.path })],
+  ])
+  const bytes = new TextEncoder().encode("bounded tool output")
+
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const blobs = yield* AdaptiveBlobStore.Service
+      const first = yield* blobs.put({ bytes, mediaType: "text/plain" })
+      const second = yield* blobs.put({ bytes, mediaType: "text/plain" })
+      const { db } = yield* Database.Service
+      const absolute = path.join(tmp.path, first.relativePath)
+
+      expect(second).toEqual(first)
+      expect(yield* blobs.read(first.hash)).toEqual(bytes)
+      expect(yield* db.select({ count: count() }).from(AdaptiveBlobTable).get()).toEqual({ count: 1 })
+      expect(yield* Effect.promise(() => fs.readdir(path.dirname(absolute)))).toEqual([path.basename(absolute)])
+
+      yield* Effect.promise(() => fs.writeFile(absolute, "corrupt"))
+      const failure = yield* blobs.read(first.hash).pipe(Effect.flip)
+      expect(failure._tag).toBe("AdaptiveBlobStore.BlobCorrupt")
+      expect(yield* Effect.promise(() => fs.readdir(path.dirname(absolute)))).toEqual([
+        expect.stringMatching(new RegExp(`^${path.basename(absolute)}\\.corrupt-`)),
+      ])
+    }).pipe(Effect.provide(layer), Effect.scoped),
+  )
+})
+
+test("AdaptiveBlobStore preserves canonical content paths when a read fails before bytes are available", async () => {
+  await using tmp = await tmpdir()
+  const layer = AppNodeBuilder.build(AdaptiveBlobStore.node, [
+    [Database.node, Database.layerFromPath(path.join(tmp.path, "blob-io.sqlite"))],
+    [Global.node, Global.layerWith({ data: tmp.path })],
+  ])
+
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const blobs = yield* AdaptiveBlobStore.Service
+      const record = yield* blobs.put({ bytes: new TextEncoder().encode("healthy"), mediaType: "text/plain" })
+      const absolute = path.join(tmp.path, record.relativePath)
+      yield* Effect.promise(() => fs.rename(absolute, `${absolute}.held`))
+      yield* Effect.promise(() => fs.mkdir(absolute))
+
+      const failure = yield* blobs.read(record.hash).pipe(Effect.flip)
+
+      expect(failure._tag).toBe("AdaptiveBlobStore.BlobIO")
+      expect((yield* Effect.promise(() => fs.stat(absolute))).isDirectory()).toBe(true)
+      expect((yield* Effect.promise(() => fs.readdir(path.dirname(absolute)))).toSorted()).toEqual([
+        path.basename(absolute),
+        `${path.basename(absolute)}.held`,
+      ].toSorted())
+    }).pipe(Effect.provide(layer), Effect.scoped),
+  )
+})
+
+test("AdaptiveBlobStore rejects external metadata paths without accessing the target", async () => {
+  await using tmp = await tmpdir()
+  await using external = await tmpdir()
+  const sentinel = path.join(external.path, "sentinel.txt")
+  await fs.writeFile(sentinel, "must remain untouched")
+  await fs.utimes(sentinel, new Date(0), new Date(0))
+  const before = await fs.stat(sentinel)
+  const layer = AppNodeBuilder.build(LayerNode.group([AdaptiveBlobStore.node, Database.node]), [
+    [Database.node, Database.layerFromPath(path.join(tmp.path, "blob-path.sqlite"))],
+    [Global.node, Global.layerWith({ data: tmp.path })],
+  ])
+
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const blobs = yield* AdaptiveBlobStore.Service
+      const record = yield* blobs.put({ bytes: new TextEncoder().encode("healthy"), mediaType: "text/plain" })
+      const { db } = yield* Database.Service
+      yield* db
+        .update(AdaptiveBlobTable)
+        .set({ relative_path: path.relative(tmp.path, sentinel) })
+        .where(eq(AdaptiveBlobTable.hash, record.hash))
+        .run()
+
+      const failure = yield* blobs.read(record.hash).pipe(Effect.flip)
+      const after = yield* Effect.promise(() => fs.stat(sentinel))
+
+      expect(failure._tag).toBe("AdaptiveBlobStore.BlobCorrupt")
+      expect(after.atimeMs).toBe(before.atimeMs)
+      expect(yield* Effect.promise(() => fs.readFile(sentinel, "utf8"))).toBe("must remain untouched")
+      expect(yield* Effect.promise(() => fs.readdir(external.path))).toEqual(["sentinel.txt"])
+    }).pipe(Effect.provide(layer), Effect.scoped),
+  )
+})
