@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { count } from "drizzle-orm"
+import { count, eq } from "drizzle-orm"
 import { Effect } from "effect"
 import fs from "fs/promises"
 import path from "path"
@@ -65,6 +65,40 @@ test("AdaptiveBlobStore preserves canonical content paths when a read fails befo
         path.basename(absolute),
         `${path.basename(absolute)}.held`,
       ].toSorted())
+    }).pipe(Effect.provide(layer), Effect.scoped),
+  )
+})
+
+test("AdaptiveBlobStore rejects external metadata paths without accessing the target", async () => {
+  await using tmp = await tmpdir()
+  await using external = await tmpdir()
+  const sentinel = path.join(external.path, "sentinel.txt")
+  await fs.writeFile(sentinel, "must remain untouched")
+  await fs.utimes(sentinel, new Date(0), new Date(0))
+  const before = await fs.stat(sentinel)
+  const layer = AppNodeBuilder.build(LayerNode.group([AdaptiveBlobStore.node, Database.node]), [
+    [Database.node, Database.layerFromPath(path.join(tmp.path, "blob-path.sqlite"))],
+    [Global.node, Global.layerWith({ data: tmp.path })],
+  ])
+
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const blobs = yield* AdaptiveBlobStore.Service
+      const record = yield* blobs.put({ bytes: new TextEncoder().encode("healthy"), mediaType: "text/plain" })
+      const { db } = yield* Database.Service
+      yield* db
+        .update(AdaptiveBlobTable)
+        .set({ relative_path: path.relative(tmp.path, sentinel) })
+        .where(eq(AdaptiveBlobTable.hash, record.hash))
+        .run()
+
+      const failure = yield* blobs.read(record.hash).pipe(Effect.flip)
+      const after = yield* Effect.promise(() => fs.stat(sentinel))
+
+      expect(failure._tag).toBe("AdaptiveBlobStore.BlobCorrupt")
+      expect(after.atimeMs).toBe(before.atimeMs)
+      expect(yield* Effect.promise(() => fs.readFile(sentinel, "utf8"))).toBe("must remain untouched")
+      expect(yield* Effect.promise(() => fs.readdir(external.path))).toEqual(["sentinel.txt"])
     }).pipe(Effect.provide(layer), Effect.scoped),
   )
 })

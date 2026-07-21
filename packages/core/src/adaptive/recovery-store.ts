@@ -58,6 +58,11 @@ export class InvalidAssignmentError extends Schema.TaggedErrorClass<InvalidAssig
   { assignmentID: AdaptiveOperation.AssignmentID, reason: Schema.String },
 ) {}
 
+export class CorruptAssignmentError extends Schema.TaggedErrorClass<CorruptAssignmentError>()(
+  "AdaptiveRecoveryStore.CorruptAssignment",
+  { assignmentID: AdaptiveOperation.AssignmentID, reason: Schema.String },
+) {}
+
 export class StaleGenerationError extends Schema.TaggedErrorClass<StaleGenerationError>()(
   "AdaptiveRecoveryStore.StaleGeneration",
   { workerID: AdaptiveTask.AgentID, expectedGeneration: Schema.Number, actualGeneration: Schema.Number },
@@ -102,6 +107,7 @@ export type AssignmentError =
 
 export type CheckpointError =
   | AssignmentNotFoundError
+  | CorruptAssignmentError
   | InvalidAssignmentError
   | StaleGenerationError
   | WorkspaceStateMismatchError
@@ -112,7 +118,7 @@ export interface Interface {
   readonly createAssignment: (input: AdaptiveOperation.Assignment) => Effect.Effect<AssignmentRecord, AssignmentError>
   readonly getAssignment: (
     id: AdaptiveOperation.AssignmentID,
-  ) => Effect.Effect<AssignmentRecord, AssignmentNotFoundError>
+  ) => Effect.Effect<AssignmentRecord, AssignmentNotFoundError | CorruptAssignmentError>
   readonly saveCheckpoint: (input: SaveCheckpointInput) => Effect.Effect<CheckpointRecord, CheckpointError>
   readonly getCheckpoint: (
     workerID: AdaptiveTask.AgentID,
@@ -126,6 +132,7 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/AdaptiveRecoveryStore") {}
 
 const decodeAssignment = Schema.decodeUnknownSync(AdaptiveOperation.Assignment)
+const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString)
 const decodeCheckpoint = Schema.decodeUnknownSync(Schema.fromJsonString(AdaptiveOperation.Checkpoint))
 const decodeRoadmap = Schema.decodeUnknownSync(AdaptiveRoadmap.Info)
 
@@ -139,13 +146,18 @@ const layer = Layer.effect(
       id: AdaptiveOperation.AssignmentID,
     ) {
       const row = yield* db
-        .select()
+        .select({
+          ...getTableColumns(AdaptiveAssignmentTable),
+          detail_refs: sql<string>`${AdaptiveAssignmentTable.detail_refs}`,
+          permitted_paths: sql<string>`${AdaptiveAssignmentTable.permitted_paths}`,
+          acceptance_commands: sql<string>`${AdaptiveAssignmentTable.acceptance_commands}`,
+        })
         .from(AdaptiveAssignmentTable)
         .where(eq(AdaptiveAssignmentTable.id, id))
         .get()
         .pipe(Effect.orDie)
       if (!row) return yield* new AssignmentNotFoundError({ assignmentID: id })
-      return assignmentRecord(row)
+      return yield* decodeAssignmentRecord(row)
     })
 
     const getCheckpoint = Effect.fn("AdaptiveRecoveryStore.getCheckpoint")(function* (
@@ -370,18 +382,12 @@ const layer = Layer.effect(
                     expectedGeneration: checkpoint.generation,
                     actualGeneration: worker?.generation ?? -1,
                   })
-                const storedAssignment = yield* db
-                  .select()
-                  .from(AdaptiveAssignmentTable)
-                  .where(eq(AdaptiveAssignmentTable.id, checkpoint.assignmentID))
-                  .get()
-                  .pipe(Effect.orDie)
+                const storedAssignment = (yield* getAssignment(checkpoint.assignmentID)).assignment
                 if (
-                  !storedAssignment ||
-                  storedAssignment.task_id !== worker.taskID ||
-                  storedAssignment.worker_id !== checkpoint.workerID ||
-                  storedAssignment.roadmap_revision !== checkpoint.roadmapRevision ||
-                  storedAssignment.node_id !== checkpoint.nodeID ||
+                  storedAssignment.taskID !== worker.taskID ||
+                  storedAssignment.workerID !== checkpoint.workerID ||
+                  storedAssignment.roadmapRevision !== checkpoint.roadmapRevision ||
+                  storedAssignment.nodeID !== checkpoint.nodeID ||
                   worker.assignmentID !== checkpoint.assignmentID
                 )
                   return yield* new InvalidAssignmentError({
@@ -457,24 +463,39 @@ const layer = Layer.effect(
   }),
 )
 
-function assignmentRecord(row: typeof AdaptiveAssignmentTable.$inferSelect): AssignmentRecord {
-  return {
-    assignment: decodeAssignment({
-      id: row.id,
-      taskID: row.task_id,
-      workerID: row.worker_id,
-      nodeID: row.node_id,
-      roadmapRevision: row.roadmap_revision,
-      detailRefs: row.detail_refs,
-      permittedPaths: row.permitted_paths,
-      baseCommit: row.base_commit,
-      acceptanceCommands: row.acceptance_commands,
-      generation: row.generation,
-      timeCreated: row.time_created,
-    }),
-    ...(row.superseded_at === null ? {} : { supersededAt: row.superseded_at }),
-  }
+type AssignmentRow = Omit<
+  typeof AdaptiveAssignmentTable.$inferSelect,
+  "detail_refs" | "permitted_paths" | "acceptance_commands"
+> & {
+  readonly detail_refs: string
+  readonly permitted_paths: string
+  readonly acceptance_commands: string
 }
+
+const decodeAssignmentRecord = (row: AssignmentRow) =>
+  Effect.try({
+    try: (): AssignmentRecord => ({
+      assignment: decodeAssignment({
+        id: row.id,
+        taskID: row.task_id,
+        workerID: row.worker_id,
+        nodeID: row.node_id,
+        roadmapRevision: row.roadmap_revision,
+        detailRefs: decodeJson(row.detail_refs),
+        permittedPaths: decodeJson(row.permitted_paths),
+        baseCommit: row.base_commit,
+        acceptanceCommands: decodeJson(row.acceptance_commands),
+        generation: row.generation,
+        timeCreated: row.time_created,
+      }),
+      ...(row.superseded_at === null ? {} : { supersededAt: row.superseded_at }),
+    }),
+    catch: (cause) =>
+      new CorruptAssignmentError({
+        assignmentID: row.id,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      }),
+  })
 
 type CheckpointRow = Omit<typeof AdaptiveCheckpointTable.$inferSelect, "checkpoint"> & {
   readonly checkpoint: string
@@ -536,6 +557,7 @@ function isAssignmentError(value: unknown): value is AssignmentError {
 function isCheckpointError(value: unknown): value is CheckpointError {
   return (
     value instanceof AssignmentNotFoundError ||
+    value instanceof CorruptAssignmentError ||
     value instanceof InvalidAssignmentError ||
     value instanceof StaleGenerationError ||
     value instanceof WorkspaceStateMismatchError ||

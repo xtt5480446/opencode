@@ -74,7 +74,13 @@ const layer = Layer.effect(
 
     const read = Effect.fn("AdaptiveBlobStore.read")(function* (hash: AdaptiveOperation.Hash) {
       const record = yield* getMetadata(hash)
-      const absolute = path.join(global.data, record.relativePath)
+      const relativePath = canonicalRelativePath(hash)
+      if (record.relativePath !== relativePath)
+        return yield* new BlobCorruptError({
+          hash,
+          reason: "Blob metadata path does not match its content address",
+        })
+      const absolute = path.join(global.data, relativePath)
       const bytes = yield* io("read", () => fs.readFile(absolute))
       if (bytes.byteLength !== record.byteCount || digest(bytes) !== hash)
         return yield* corrupt(hash, absolute, "Stored bytes do not match their content address")
@@ -107,7 +113,7 @@ const layer = Layer.effect(
           }
 
           const hex = hash.slice("sha256:".length)
-          const relativePath = `adaptive/blobs/sha256/${hex.slice(0, 2)}/${hex}`
+          const relativePath = canonicalRelativePath(hash)
           const absolute = path.join(global.data, relativePath)
           yield* io("mkdir", () => fs.mkdir(path.dirname(absolute), { recursive: true }))
 
@@ -180,6 +186,11 @@ const io = <A>(operation: string, run: () => Promise<A>) =>
   Effect.tryPromise({ try: run, catch: (cause) => new BlobIOError({ operation, cause }) })
 
 const digest = (bytes: Uint8Array) => AdaptiveOperation.Hash.make(`sha256:${Hash.sha256(Buffer.from(bytes))}`)
+
+const canonicalRelativePath = (hash: AdaptiveOperation.Hash) => {
+  const hex = hash.slice("sha256:".length)
+  return `adaptive/blobs/sha256/${hex.slice(0, 2)}/${hex}`
+}
 
 function blobRecord(row: typeof AdaptiveBlobTable.$inferSelect): BlobRecord {
   return {

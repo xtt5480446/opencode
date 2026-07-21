@@ -129,6 +129,37 @@ const checkpoint = (
   })
 
 describe("AdaptiveRecoveryStore", () => {
+  it.effect("returns typed corruption for malformed Assignment JSON", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const { db } = yield* Database.Service
+      yield* db.run(sql`UPDATE adaptive_assignment SET detail_refs = '{' WHERE id = ${state.assignment.id}`)
+
+      const failure = yield* state.recovery.getAssignment(state.assignment.id).pipe(Effect.flip)
+
+      expect(failure._tag).toBe("AdaptiveRecoveryStore.CorruptAssignment")
+    }),
+  )
+
+  it.effect("returns typed corruption for schema-invalid Assignment JSON", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const { db } = yield* Database.Service
+      yield* db.run(
+        sql`UPDATE adaptive_assignment SET permitted_paths = '["../outside"]' WHERE id = ${state.assignment.id}`,
+      )
+
+      const failure = yield* state.recovery.getAssignment(state.assignment.id).pipe(Effect.flip)
+      const next = checkpoint(state, 1)
+      const checkpointFailure = yield* state.recovery
+        .saveCheckpoint({ checkpoint: next, observedHead: next.worktreeHead, observedDiffHash: next.diffHash })
+        .pipe(Effect.flip)
+
+      expect(failure._tag).toBe("AdaptiveRecoveryStore.CorruptAssignment")
+      expect(checkpointFailure._tag).toBe("AdaptiveRecoveryStore.CorruptAssignment")
+    }),
+  )
+
   it.effect("rejects stale generation and observed workspace mismatches without advancing checkpoint state", () =>
     Effect.gen(function* () {
       const state = yield* prepare
