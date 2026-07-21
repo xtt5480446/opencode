@@ -177,15 +177,38 @@ describe("EventV2", () => {
       const events = yield* EventV2.Service
       const received = new Array<string>()
       const aggregateID = EventV2.ID.create()
-      yield* events.project(SyncMessage, () => Effect.sync(() => received.push("projector")))
+      const identity = EventV2.projector({ id: "test.sync-projector" })
+      yield* events.project(SyncMessage, () => Effect.sync(() => received.push("projector")), identity)
 
       yield* events.publish(
         SyncMessage,
         { id: aggregateID, text: "hello" },
-        { commit: (seq, projected) => Effect.sync(() => received.push(`commit:${seq}:${projected}`)) },
+        { commit: (seq, projected) => Effect.sync(() => received.push(`commit:${seq}:${projected.has(identity)}`)) },
       )
 
       expect(received).toEqual(["projector", "commit:0:true"])
+    }),
+  )
+
+  it.effect("reports only explicitly identified projectors to local commit hooks", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const identity = EventV2.projector({ id: "test.authoritative-projector" })
+      const receipts = new Array<ReadonlySet<EventV2.Projector>>()
+      yield* events.project(SyncMessage, () => Effect.void)
+      yield* events.project(SyncMessage, () => Effect.void, identity)
+
+      yield* events.publish(
+        SyncMessage,
+        { id: EventV2.ID.create(), text: "hello" },
+        {
+          commit: (_seq, projected) => Effect.sync(() => receipts.push(projected)),
+        },
+      )
+
+      expect(receipts).toHaveLength(1)
+      expect(receipts[0]?.has(identity)).toBe(true)
+      expect(receipts[0]?.size).toBe(1)
     }),
   )
 
@@ -558,6 +581,30 @@ describe("EventV2", () => {
 
       expect(received[0]?.type).toBe(DurableMessage.type)
       expect(received[0]?.data).toEqual(durableData(aggregateID, "hello"))
+    }),
+  )
+
+  it.effect("honors per-projector replay admission without disabling compatible projectors", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const received = new Array<string>()
+      yield* events.project(
+        DurableMessage,
+        () => Effect.sync(() => received.push("live-only")),
+        EventV2.projector({ id: "test.live-only-projector", replay: false }),
+      )
+      yield* events.project(DurableMessage, () => Effect.sync(() => received.push("replay-compatible")))
+      const aggregateID = Session.ID.create()
+
+      yield* events.replay({
+        id: EventV2.ID.create(),
+        aggregateID,
+        seq: 0,
+        type: EventV2.versionedType(DurableMessage.type, 1),
+        data: durableData(aggregateID, "replayed"),
+      })
+
+      expect(received).toEqual(["replay-compatible"])
     }),
   )
 

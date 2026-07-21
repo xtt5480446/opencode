@@ -9,6 +9,7 @@ import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Database } from "../database/database"
 import { makeGlobalNode } from "../effect/app-node"
 import { EventV2 } from "../event"
+import { AdaptiveProjectorIdentity } from "./projector-identity"
 import {
   AdaptiveAgentProcessTable,
   AdaptiveAssignmentTable,
@@ -223,7 +224,7 @@ const layer = Layer.effect(
                   .get()
                   .pipe(Effect.orDie)
                 if (
-                  projectedByEvent &&
+                  projectedByEvent.has(AdaptiveProjectorIdentity) &&
                   projected &&
                   projected.task_id === assignment.taskID &&
                   projected.worker_id === assignment.workerID &&
@@ -420,7 +421,7 @@ const layer = Layer.effect(
                   .get()
                   .pipe(Effect.orDie)
                 if (
-                  projectedByEvent &&
+                  projectedByEvent.has(AdaptiveProjectorIdentity) &&
                   projected &&
                   projected.assignment_id === checkpoint.assignmentID &&
                   projected.generation === checkpoint.generation &&

@@ -39,6 +39,16 @@ const root = LayerNode.group([
   Database.node,
 ])
 const it = testEffect(AppNodeBuilder.build(root, [[Database.node, Database.layerFromPath(":memory:")]]))
+const rootWithoutProjector = LayerNode.group([
+  AdaptiveRecoveryStore.node,
+  AdaptiveRoadmapStore.node,
+  AdaptiveStore.node,
+  EventV2.node,
+  Database.node,
+])
+const itWithoutProjector = testEffect(
+  AppNodeBuilder.build(rootWithoutProjector, [[Database.node, Database.layerFromPath(":memory:")]]),
+)
 const digest = (body: string) => AdaptiveOperation.Hash.make(`sha256:${Hash.sha256(body)}`)
 const encodeRoadmap = Schema.encodeUnknownSync(AdaptiveRoadmap.Info)
 const diffHash = digest("diff")
@@ -84,174 +94,177 @@ const roadmap = (taskID: AdaptiveTask.ID, revision: number, details: readonly Ad
     unresolved: [],
   })
 
-const prepare = Effect.gen(function* () {
-  const foundation = yield* AdaptiveStore.Service
-  const roadmaps = yield* AdaptiveRoadmapStore.Service
-  const recovery = yield* AdaptiveRecoveryStore.Service
-  const events = yield* EventV2.Service
-  const task = yield* foundation.createTask({
-    id: AdaptiveTask.ID.create(),
-    directory: "/workspace/project",
-    mode: "normal",
-    status: "running",
-    requirement: "Implement bounded retry",
-    modelPolicy: AdaptiveModelPolicy.create({
-      providerID: Provider.ID.make("test"),
-      modelID: Model.ID.make("test-model"),
-      effectiveContextLimit: 262_144,
-      outputReserve: 16_384,
-      safetyReserve: 8_192,
-    }),
-    roadmapRevision: 0,
-    baseSnapshotHash: "git:base",
-  })
-  const coordinator = yield* foundation.createAgent({
-    id: AdaptiveTask.AgentID.create(),
-    taskID: task.id,
-    role: "coordinator",
-  })
-  const worker = yield* foundation.createAgent({
-    id: AdaptiveTask.AgentID.create(),
-    taskID: task.id,
-    role: "implementation",
-  })
-  const claimedCoordinator = yield* foundation.claimAgent({
-    agentID: coordinator.id,
-    expectedGeneration: 0,
-    owner: "controller",
-    pid: 101,
-    leaseDurationMs: 60_000,
-  })
-  const claimedWorker = yield* foundation.claimAgent({
-    agentID: worker.id,
-    expectedGeneration: 0,
-    owner: "controller",
-    pid: 202,
-    leaseDurationMs: 60_000,
-  })
+const prepareState = (options?: { readonly storeOnly?: boolean }) =>
+  Effect.gen(function* () {
+    const foundation = yield* AdaptiveStore.Service
+    const roadmaps = yield* AdaptiveRoadmapStore.Service
+    const recovery = yield* AdaptiveRecoveryStore.Service
+    const events = yield* EventV2.Service
+    const task = yield* foundation.createTask({
+      id: AdaptiveTask.ID.create(),
+      directory: "/workspace/project",
+      mode: "normal",
+      status: "running",
+      requirement: "Implement bounded retry",
+      modelPolicy: AdaptiveModelPolicy.create({
+        providerID: Provider.ID.make("test"),
+        modelID: Model.ID.make("test-model"),
+        effectiveContextLimit: 262_144,
+        outputReserve: 16_384,
+        safetyReserve: 8_192,
+      }),
+      roadmapRevision: 0,
+      baseSnapshotHash: "git:base",
+    })
+    const coordinator = yield* foundation.createAgent({
+      id: AdaptiveTask.AgentID.create(),
+      taskID: task.id,
+      role: "coordinator",
+    })
+    const worker = yield* foundation.createAgent({
+      id: AdaptiveTask.AgentID.create(),
+      taskID: task.id,
+      role: "implementation",
+    })
+    const claimedCoordinator = yield* foundation.claimAgent({
+      agentID: coordinator.id,
+      expectedGeneration: 0,
+      owner: "controller",
+      pid: 101,
+      leaseDurationMs: 60_000,
+    })
+    const claimedWorker = yield* foundation.claimAgent({
+      agentID: worker.id,
+      expectedGeneration: 0,
+      owner: "controller",
+      pid: 202,
+      leaseDurationMs: 60_000,
+    })
 
-  yield* events.publish(AdaptiveEvent.TaskCreated, {
-    taskID: task.id,
-    timeCreated: task.timeCreated,
-    task: {
-      id: task.id,
-      directory: AbsolutePath.make(task.directory),
-      mode: task.mode,
-      status: task.status,
-      requirement: task.requirement,
-      modelPolicy: task.modelPolicy,
-      roadmapRevision: task.roadmapRevision,
+    yield* events.publish(AdaptiveEvent.TaskCreated, {
+      taskID: task.id,
       timeCreated: task.timeCreated,
-      timeUpdated: task.timeUpdated,
-    },
-  })
-  yield* roadmaps.commit({
-    expectedRevision: 0,
-    roadmap: roadmap(task.id, 1, [contractDetail.ref]),
-    details: [contractDetail],
-    sourceAgentID: claimedCoordinator.id,
-    sourceGeneration: claimedCoordinator.generation,
-  })
-  yield* events.publish(AdaptiveEvent.DetailCommitted, {
-    taskID: task.id,
-    timeCreated: 200,
-    detail: decisionDetail,
-    sourceAgentID: claimedCoordinator.id,
-    sourceGeneration: claimedCoordinator.generation,
-  })
-  yield* roadmaps.commit({
-    expectedRevision: 1,
-    roadmap: roadmap(task.id, 2, [contractDetail.ref, decisionDetail.ref]),
-    details: [],
-    sourceAgentID: claimedCoordinator.id,
-    sourceGeneration: claimedCoordinator.generation,
-  })
-  const assignment = new AdaptiveOperation.Assignment({
-    id: AdaptiveOperation.AssignmentID.create(),
-    taskID: task.id,
-    workerID: claimedWorker.id,
-    nodeID: "retry-core",
-    roadmapRevision: 2,
-    detailRefs: [contractDetail.ref, decisionDetail.ref],
-    permittedPaths: [AdaptiveOperation.RepositoryGlob.make("src/**")],
-    baseCommit: "base123",
-    acceptanceCommands: ["bun test"],
-    generation: claimedWorker.generation,
-    timeCreated: 300,
-  })
-  yield* recovery.createAssignment(assignment)
-  const checkpoint = new AdaptiveOperation.Checkpoint({
-    assignmentID: assignment.id,
-    workerID: claimedWorker.id,
-    generation: claimedWorker.generation,
-    sequence: 1,
-    eventCursor: 5,
-    roadmapRevision: 2,
-    nodeID: "retry-core",
-    completed: ["implemented retry loop"],
-    decisions: [new AdaptiveOperation.VersionRef({ key: decisionDetail.ref.key, version: 1 })],
-    modifiedPaths: [AdaptiveOperation.RepositoryPath.make("src/retry.ts")],
-    evidence: ["aev_test"],
-    remaining: ["run cancellation test"],
-    nextAction: "run tests",
-    worktreeHead: "head123",
-    diffHash,
-    timeCreated: 400,
-  })
-  yield* recovery.saveCheckpoint({ checkpoint, observedHead: checkpoint.worktreeHead, observedDiffHash: diffHash })
-  yield* events.publish(AdaptiveEvent.DecisionRecorded, {
-    taskID: task.id,
-    timeCreated: 500,
-    agentID: claimedWorker.id,
-    generation: claimedWorker.generation,
-    nodeID: assignment.nodeID,
-    detail: decisionDetail.ref,
-    summary: "Use one timer",
-    reason: "Cancellation stays deterministic",
-    evidence: ["aev_test"],
-  })
-  yield* events.publish(AdaptiveEvent.CandidateSubmitted, {
-    taskID: task.id,
-    timeCreated: 600,
-    report: new AdaptiveOperation.CandidateReport({
+      task: {
+        id: task.id,
+        directory: AbsolutePath.make(task.directory),
+        mode: task.mode,
+        status: task.status,
+        requirement: task.requirement,
+        modelPolicy: task.modelPolicy,
+        roadmapRevision: task.roadmapRevision,
+        timeCreated: task.timeCreated,
+        timeUpdated: task.timeUpdated,
+      },
+    })
+    yield* roadmaps.commit({
+      expectedRevision: 0,
+      roadmap: roadmap(task.id, 1, [contractDetail.ref]),
+      details: [contractDetail],
+      sourceAgentID: claimedCoordinator.id,
+      sourceGeneration: claimedCoordinator.generation,
+    })
+    if (!options?.storeOnly)
+      yield* events.publish(AdaptiveEvent.DetailCommitted, {
+        taskID: task.id,
+        timeCreated: 200,
+        detail: decisionDetail,
+        sourceAgentID: claimedCoordinator.id,
+        sourceGeneration: claimedCoordinator.generation,
+      })
+    yield* roadmaps.commit({
+      expectedRevision: 1,
+      roadmap: roadmap(task.id, 2, [contractDetail.ref, decisionDetail.ref]),
+      details: options?.storeOnly ? [decisionDetail] : [],
+      sourceAgentID: claimedCoordinator.id,
+      sourceGeneration: claimedCoordinator.generation,
+    })
+    const assignment = new AdaptiveOperation.Assignment({
+      id: AdaptiveOperation.AssignmentID.create(),
+      taskID: task.id,
+      workerID: claimedWorker.id,
+      nodeID: "retry-core",
+      roadmapRevision: 2,
+      detailRefs: [contractDetail.ref, decisionDetail.ref],
+      permittedPaths: [AdaptiveOperation.RepositoryGlob.make("src/**")],
+      baseCommit: "base123",
+      acceptanceCommands: ["bun test"],
+      generation: claimedWorker.generation,
+      timeCreated: 300,
+    })
+    yield* recovery.createAssignment(assignment)
+    const checkpoint = new AdaptiveOperation.Checkpoint({
       assignmentID: assignment.id,
       workerID: claimedWorker.id,
       generation: claimedWorker.generation,
-      nodeID: assignment.nodeID,
-      headCommit: "head123",
-      diffHash,
+      sequence: 1,
+      eventCursor: options?.storeOnly ? 3 : 5,
+      roadmapRevision: 2,
+      nodeID: "retry-core",
+      completed: ["implemented retry loop"],
+      decisions: [new AdaptiveOperation.VersionRef({ key: decisionDetail.ref.key, version: 1 })],
       modifiedPaths: [AdaptiveOperation.RepositoryPath.make("src/retry.ts")],
       evidence: ["aev_test"],
-      remainingRisks: [],
-      detailRefs: [decisionDetail.ref],
+      remaining: ["run cancellation test"],
+      nextAction: "run tests",
+      worktreeHead: "head123",
+      diffHash,
+      timeCreated: 400,
+    })
+    yield* recovery.saveCheckpoint({ checkpoint, observedHead: checkpoint.worktreeHead, observedDiffHash: diffHash })
+    yield* events.publish(AdaptiveEvent.DecisionRecorded, {
+      taskID: task.id,
+      timeCreated: 500,
+      agentID: claimedWorker.id,
+      generation: claimedWorker.generation,
+      nodeID: assignment.nodeID,
+      detail: decisionDetail.ref,
+      summary: "Use one timer",
+      reason: "Cancellation stays deterministic",
+      evidence: ["aev_test"],
+    })
+    yield* events.publish(AdaptiveEvent.CandidateSubmitted, {
+      taskID: task.id,
       timeCreated: 600,
-    }),
+      report: new AdaptiveOperation.CandidateReport({
+        assignmentID: assignment.id,
+        workerID: claimedWorker.id,
+        generation: claimedWorker.generation,
+        nodeID: assignment.nodeID,
+        headCommit: "head123",
+        diffHash,
+        modifiedPaths: [AdaptiveOperation.RepositoryPath.make("src/retry.ts")],
+        evidence: ["aev_test"],
+        remainingRisks: [],
+        detailRefs: [decisionDetail.ref],
+        timeCreated: 600,
+      }),
+    })
+    const latestCheckpoint = new AdaptiveOperation.Checkpoint({
+      assignmentID: assignment.id,
+      workerID: claimedWorker.id,
+      generation: claimedWorker.generation,
+      sequence: 2,
+      eventCursor: 7,
+      roadmapRevision: 2,
+      nodeID: "retry-core",
+      completed: ["implemented retry loop", "ran cancellation test"],
+      decisions: [new AdaptiveOperation.VersionRef({ key: decisionDetail.ref.key, version: 1 })],
+      modifiedPaths: [AdaptiveOperation.RepositoryPath.make("src/retry.ts")],
+      evidence: ["aev_test", "aev_cancel"],
+      remaining: [],
+      nextAction: "submit candidate",
+      worktreeHead: "head123",
+      diffHash,
+      timeCreated: 700,
+    })
+    yield* recovery.saveCheckpoint({
+      checkpoint: latestCheckpoint,
+      observedHead: latestCheckpoint.worktreeHead,
+      observedDiffHash: diffHash,
+    })
+    return { task, coordinator: claimedCoordinator, worker: claimedWorker, assignment, checkpoint: latestCheckpoint }
   })
-  const latestCheckpoint = new AdaptiveOperation.Checkpoint({
-    assignmentID: assignment.id,
-    workerID: claimedWorker.id,
-    generation: claimedWorker.generation,
-    sequence: 2,
-    eventCursor: 8,
-    roadmapRevision: 2,
-    nodeID: "retry-core",
-    completed: ["implemented retry loop", "ran cancellation test"],
-    decisions: [new AdaptiveOperation.VersionRef({ key: decisionDetail.ref.key, version: 1 })],
-    modifiedPaths: [AdaptiveOperation.RepositoryPath.make("src/retry.ts")],
-    evidence: ["aev_test", "aev_cancel"],
-    remaining: [],
-    nextAction: "submit candidate",
-    worktreeHead: "head123",
-    diffHash,
-    timeCreated: 700,
-  })
-  yield* recovery.saveCheckpoint({
-    checkpoint: latestCheckpoint,
-    observedHead: latestCheckpoint.worktreeHead,
-    observedDiffHash: diffHash,
-  })
-  return { task, coordinator: claimedCoordinator, worker: claimedWorker, assignment, checkpoint: latestCheckpoint }
-})
+const prepare = prepareState()
 
 const snapshot = Effect.gen(function* () {
   const { db } = yield* Database.Service
@@ -296,6 +309,349 @@ const snapshot = Effect.gen(function* () {
 })
 
 describe("AdaptiveProjector", () => {
+  it.effect("keeps generic replay durable without projecting Adaptive rows that have no preserved roots", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const rows = yield* db
+        .select()
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, state.task.id))
+        .orderBy(asc(EventTable.seq))
+        .all()
+        .pipe(Effect.orDie)
+      yield* events.remove(state.task.id)
+      yield* db.delete(AdaptiveTaskTable).where(eq(AdaptiveTaskTable.id, state.task.id)).run().pipe(Effect.orDie)
+
+      yield* events.replayAll(
+        rows.map((row) => ({
+          id: row.id,
+          aggregateID: row.aggregate_id,
+          seq: row.seq,
+          type: row.type,
+          data: row.data,
+        })),
+      )
+
+      expect(
+        yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, state.task.id)).all().pipe(Effect.orDie),
+      ).toHaveLength(rows.length)
+      expect(
+        yield* db
+          .select({ id: AdaptiveTaskTable.id })
+          .from(AdaptiveTaskTable)
+          .where(eq(AdaptiveTaskTable.id, state.task.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toBeUndefined()
+    }),
+  )
+
+  itWithoutProjector.effect("does not trust an unrelated Checkpoint projector as the Adaptive Store handoff", () =>
+    Effect.gen(function* () {
+      const state = yield* prepareState({ storeOnly: true })
+      const recovery = yield* AdaptiveRecoveryStore.Service
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      yield* events.project(AdaptiveEvent.CheckpointSaved, () => Effect.void)
+      const before = yield* db
+        .select({ count: count() })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, state.task.id))
+        .get()
+        .pipe(Effect.orDie)
+
+      const failure = yield* recovery
+        .saveCheckpoint({
+          checkpoint: state.checkpoint,
+          observedHead: state.checkpoint.worktreeHead,
+          observedDiffHash: state.checkpoint.diffHash,
+        })
+        .pipe(Effect.flip)
+
+      expect(failure._tag).toBe("AdaptiveRecoveryStore.CheckpointSequenceConflict")
+      expect(
+        yield* db
+          .select({ count: count() })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, state.task.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual(before)
+    }),
+  )
+
+  it.effect("clears Agent node and Assignment pointers for a pointerless generation start", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+
+      const started = yield* events.publish(AdaptiveEvent.AgentGenerationStarted, {
+        taskID: state.task.id,
+        timeCreated: 800,
+        agentID: state.worker.id,
+        role: state.worker.role,
+        generation: state.worker.generation,
+        reason: "resume without an active assignment",
+      })
+      if (!started.durable) throw new Error("AgentGenerationStarted was not committed durably")
+
+      expect(
+        yield* db
+          .select({
+            nodeID: AdaptiveAgentProcessTable.node_id,
+            assignmentID: AdaptiveAgentProcessTable.assignment_id,
+            eventCursor: AdaptiveAgentProcessTable.event_cursor,
+          })
+          .from(AdaptiveAgentProcessTable)
+          .where(eq(AdaptiveAgentProcessTable.id, state.worker.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual({ nodeID: null, assignmentID: null, eventCursor: started.durable.seq })
+    }),
+  )
+
+  it.effect("rebuilds later historical generation pointers when the preserved root generation is newer", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const projector = yield* AdaptiveProjector.Service
+      const foundation = yield* AdaptiveStore.Service
+      const events = yield* EventV2.Service
+      yield* events.publish(AdaptiveEvent.AgentGenerationStarted, {
+        taskID: state.task.id,
+        timeCreated: 800,
+        agentID: state.worker.id,
+        role: state.worker.role,
+        generation: state.worker.generation,
+        reason: "resume without an active assignment",
+      })
+      yield* foundation.settleAgent({
+        agentID: state.worker.id,
+        generation: state.worker.generation,
+        owner: "controller",
+        state: "lost",
+        exitReason: "replace generation after durable start",
+      })
+      yield* foundation.claimAgent({
+        agentID: state.worker.id,
+        expectedGeneration: state.worker.generation,
+        owner: "replacement",
+        pid: 303,
+        leaseDurationMs: 60_000,
+      })
+      const before = yield* snapshot
+
+      yield* projector.rebuild(state.task.id)
+
+      expect(yield* snapshot).toEqual(before)
+      expect(before.agentPointers.find((agent) => agent.id === state.worker.id)).toMatchObject({
+        nodeID: null,
+        assignmentID: null,
+        eventCursor: 9,
+        checkpointSequence: state.checkpoint.sequence,
+      })
+    }),
+  )
+
+  it.effect("preserves first-writer Detail provenance when active projection sees equal logical content", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const roadmaps = yield* AdaptiveRoadmapStore.Service
+      const original = yield* roadmaps.getDetail(state.task.id, contractDetail.ref.key, contractDetail.ref.version)
+
+      yield* roadmaps.commit({
+        expectedRevision: 2,
+        roadmap: roadmap(state.task.id, 3, [contractDetail.ref, decisionDetail.ref]),
+        details: [contractDetail],
+        sourceAgentID: state.worker.id,
+        sourceGeneration: state.worker.generation,
+      })
+
+      expect(yield* roadmaps.getDetail(state.task.id, contractDetail.ref.key, contractDetail.ref.version)).toEqual(
+        original,
+      )
+    }),
+  )
+
+  it.effect("preserves first-writer Detail provenance across a full rebuild", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const projector = yield* AdaptiveProjector.Service
+      const roadmaps = yield* AdaptiveRoadmapStore.Service
+      yield* roadmaps.commit({
+        expectedRevision: 2,
+        roadmap: roadmap(state.task.id, 3, [contractDetail.ref, decisionDetail.ref]),
+        details: [contractDetail],
+        sourceAgentID: state.worker.id,
+        sourceGeneration: state.worker.generation,
+      })
+      const before = yield* snapshot
+
+      yield* projector.rebuild(state.task.id)
+
+      expect(yield* snapshot).toEqual(before)
+    }),
+  )
+
+  it.effect("repairs exact Assignment pointers without regressing a newer Agent cursor", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const projector = yield* AdaptiveProjector.Service
+      const { db } = yield* Database.Service
+      const page = yield* EventV2.readAggregate(db, {
+        aggregateID: state.task.id,
+        limit: 100,
+        manifest: AdaptiveDurable,
+      })
+      const event = page.events.find((event) => event.type === AdaptiveEvent.AssignmentCreated.type)
+      if (!event) throw new Error("missing AssignmentCreated fixture event")
+      if (!event.durable) throw new Error("AssignmentCreated fixture event is not durable")
+      yield* db
+        .update(AdaptiveAgentProcessTable)
+        .set({ node_id: null, assignment_id: null, event_cursor: 0 })
+        .where(eq(AdaptiveAgentProcessTable.id, state.worker.id))
+        .run()
+        .pipe(Effect.orDie)
+
+      yield* projector.reproject(event)
+
+      expect(
+        yield* db
+          .select({
+            nodeID: AdaptiveAgentProcessTable.node_id,
+            assignmentID: AdaptiveAgentProcessTable.assignment_id,
+            eventCursor: AdaptiveAgentProcessTable.event_cursor,
+          })
+          .from(AdaptiveAgentProcessTable)
+          .where(eq(AdaptiveAgentProcessTable.id, state.worker.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual({
+        nodeID: state.assignment.nodeID,
+        assignmentID: state.assignment.id,
+        eventCursor: event.durable.seq,
+      })
+
+      yield* db
+        .update(AdaptiveAgentProcessTable)
+        .set({ node_id: null, assignment_id: null, event_cursor: 99 })
+        .where(eq(AdaptiveAgentProcessTable.id, state.worker.id))
+        .run()
+        .pipe(Effect.orDie)
+      yield* projector.reproject(event)
+
+      expect(
+        yield* db
+          .select({
+            nodeID: AdaptiveAgentProcessTable.node_id,
+            assignmentID: AdaptiveAgentProcessTable.assignment_id,
+            eventCursor: AdaptiveAgentProcessTable.event_cursor,
+          })
+          .from(AdaptiveAgentProcessTable)
+          .where(eq(AdaptiveAgentProcessTable.id, state.worker.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual({ nodeID: null, assignmentID: null, eventCursor: 99 })
+    }),
+  )
+
+  it.effect("repairs exact Checkpoint pointers without regressing newer cursor or sequence pointers", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const projector = yield* AdaptiveProjector.Service
+      const { db } = yield* Database.Service
+      const page = yield* EventV2.readAggregate(db, {
+        aggregateID: state.task.id,
+        limit: 100,
+        manifest: AdaptiveDurable,
+      })
+      const event = page.events.findLast((event) => event.type === AdaptiveEvent.CheckpointSaved.type)
+      if (!event) throw new Error("missing CheckpointSaved fixture event")
+      if (!event.durable) throw new Error("CheckpointSaved fixture event is not durable")
+      yield* db
+        .update(AdaptiveAgentProcessTable)
+        .set({ checkpoint_sequence: null, event_cursor: 0 })
+        .where(eq(AdaptiveAgentProcessTable.id, state.worker.id))
+        .run()
+        .pipe(Effect.orDie)
+
+      yield* projector.reproject(event)
+
+      expect(
+        yield* db
+          .select({
+            checkpointSequence: AdaptiveAgentProcessTable.checkpoint_sequence,
+            eventCursor: AdaptiveAgentProcessTable.event_cursor,
+          })
+          .from(AdaptiveAgentProcessTable)
+          .where(eq(AdaptiveAgentProcessTable.id, state.worker.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual({ checkpointSequence: state.checkpoint.sequence, eventCursor: state.checkpoint.eventCursor })
+
+      yield* db
+        .update(AdaptiveAgentProcessTable)
+        .set({ checkpoint_sequence: state.checkpoint.sequence + 1, event_cursor: event.durable.seq })
+        .where(eq(AdaptiveAgentProcessTable.id, state.worker.id))
+        .run()
+        .pipe(Effect.orDie)
+      yield* projector.reproject(event)
+
+      expect(
+        yield* db
+          .select({
+            checkpointSequence: AdaptiveAgentProcessTable.checkpoint_sequence,
+            eventCursor: AdaptiveAgentProcessTable.event_cursor,
+          })
+          .from(AdaptiveAgentProcessTable)
+          .where(eq(AdaptiveAgentProcessTable.id, state.worker.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual({ checkpointSequence: state.checkpoint.sequence + 1, eventCursor: event.durable.seq })
+    }),
+  )
+
+  it.effect("preserves the Roadmap Store source-generation error through active projection", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const roadmaps = yield* AdaptiveRoadmapStore.Service
+      const { db } = yield* Database.Service
+      const before = yield* db
+        .select({ count: count() })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, state.task.id))
+        .get()
+        .pipe(Effect.orDie)
+
+      const failure = yield* roadmaps
+        .commit({
+          expectedRevision: 2,
+          roadmap: roadmap(state.task.id, 3, [contractDetail.ref, decisionDetail.ref]),
+          details: [],
+          sourceAgentID: state.coordinator.id,
+          sourceGeneration: state.coordinator.generation + 1,
+        })
+        .pipe(Effect.flip)
+
+      expect(failure._tag).toBe("AdaptiveRoadmapStore.SourceGenerationMismatch")
+      expect(failure).toMatchObject({
+        agentID: state.coordinator.id,
+        expectedGeneration: state.coordinator.generation + 1,
+        actualGeneration: state.coordinator.generation,
+      })
+      expect(
+        yield* db
+          .select({ count: count() })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, state.task.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual(before)
+    }),
+  )
+
   it.effect("rebuilds exact recovery projections from the existing durable aggregate", () =>
     Effect.gen(function* () {
       const projector = yield* AdaptiveProjector.Service

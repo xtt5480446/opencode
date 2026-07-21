@@ -10,6 +10,7 @@ import { Database } from "../database/database"
 import { makeGlobalNode } from "../effect/app-node"
 import { EventV2 } from "../event"
 import { Hash } from "../util/hash"
+import { AdaptiveProjectorIdentity } from "./projector-identity"
 import {
   AdaptiveAgentProcessTable,
   AdaptiveDetailTable,
@@ -235,7 +236,7 @@ const layer = Layer.effect(
                 // Event projectors run before local commit callbacks. An exact row at this event sequence
                 // means the authoritative projector already performed this transaction's state transition.
                 if (
-                  projectedByEvent &&
+                  projectedByEvent.has(AdaptiveProjectorIdentity) &&
                   task.revision === input.roadmap.revision &&
                   projected?.eventSequence === eventSequence &&
                   projected.contentHash === contentHash

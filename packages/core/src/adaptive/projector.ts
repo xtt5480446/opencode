@@ -13,6 +13,7 @@ import { EventV2 } from "../event"
 import { Hash } from "../util/hash"
 import { AdaptiveRecoveryStore } from "./recovery-store"
 import { AdaptiveRoadmapStore } from "./roadmap-store"
+import { AdaptiveProjectorIdentity } from "./projector-identity"
 import {
   AdaptiveAgentProcessTable,
   AdaptiveAssignmentTable,
@@ -23,7 +24,7 @@ import {
 } from "./sql"
 
 type DatabaseService = Database.Interface["db"]
-type ProjectionMode = "live" | "rebuild"
+type ProjectionMode = "live" | "reproject" | "rebuild"
 
 export class ProjectionConflictError extends Schema.TaggedErrorClass<ProjectionConflictError>()(
   "AdaptiveProjector.ProjectionConflict",
@@ -68,24 +69,24 @@ const layer = Layer.effect(
     const events = yield* EventV2.Service
     const applyLive = (event: AdaptiveEvent.DurableEvent) => apply(db, event, "live").pipe(Effect.orDie)
 
-    yield* events.project(AdaptiveEvent.TaskCreated, applyLive)
-    yield* events.project(AdaptiveEvent.RoadmapCommitted, applyLive)
-    yield* events.project(AdaptiveEvent.DetailCommitted, applyLive)
-    yield* events.project(AdaptiveEvent.AssignmentCreated, applyLive)
-    yield* events.project(AdaptiveEvent.AgentGenerationStarted, applyLive)
-    yield* events.project(AdaptiveEvent.AgentGenerationLost, applyLive)
-    yield* events.project(AdaptiveEvent.RecoveryVerified, applyLive)
-    yield* events.project(AdaptiveEvent.ToolCalled, applyLive)
-    yield* events.project(AdaptiveEvent.ToolSettled, applyLive)
-    yield* events.project(AdaptiveEvent.DecisionRecorded, applyLive)
-    yield* events.project(AdaptiveEvent.DependencyReported, applyLive)
-    yield* events.project(AdaptiveEvent.CheckpointSaved, applyLive)
-    yield* events.project(AdaptiveEvent.CandidateSubmitted, applyLive)
-    yield* events.project(AdaptiveEvent.ContextSplitRequired, applyLive)
+    yield* events.project(AdaptiveEvent.TaskCreated, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.RoadmapCommitted, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.DetailCommitted, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.AssignmentCreated, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.AgentGenerationStarted, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.AgentGenerationLost, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.RecoveryVerified, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.ToolCalled, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.ToolSettled, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.DecisionRecorded, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.DependencyReported, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.CheckpointSaved, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.CandidateSubmitted, applyLive, AdaptiveProjectorIdentity)
+    yield* events.project(AdaptiveEvent.ContextSplitRequired, applyLive, AdaptiveProjectorIdentity)
 
     const reproject = Effect.fn("AdaptiveProjector.reproject")((event: AdaptiveEvent.DurableEvent) =>
       db
-        .transaction(() => apply(db, event, "rebuild"), { behavior: "immediate" })
+        .transaction(() => apply(db, event, "reproject"), { behavior: "immediate" })
         .pipe(Effect.catchTag("SqlError", Effect.die)),
     )
     const rebuild = Effect.fn("AdaptiveProjector.rebuild")(function* (taskID: AdaptiveTask.ID) {
@@ -266,7 +267,7 @@ const projectRoadmap = (db: DatabaseService, event: AdaptiveEvent.RoadmapCommitt
       return yield* invalid(event, data.taskID, "Roadmap taskID does not match the aggregate")
     if (data.contentHash !== digest(JSON.stringify(encodeRoadmap(roadmap))))
       return yield* invalid(event, data.taskID, "Roadmap content hash does not match its encoded body")
-    yield* requireAgent(db, event, data.sourceAgentID, data.sourceGeneration, mode)
+    yield* requireRoadmapSource(db, event, mode)
     const nodeIDs = new Set(roadmap.nodes.map((node) => node.id))
     if (nodeIDs.size !== roadmap.nodes.length)
       return yield* invalid(event, data.taskID, "Roadmap node IDs must be unique")
@@ -397,10 +398,7 @@ const insertDetail = (
         existing.kind === detail.ref.kind &&
         existing.status === detail.ref.status &&
         existing.body === detail.body &&
-        existing.content_hash === detail.contentHash &&
-        existing.source_agent_id === sourceAgentID &&
-        existing.source_generation === sourceGeneration &&
-        existing.time_created === event.data.timeCreated
+        existing.content_hash === detail.contentHash
       )
         return undefined
       if (mode === "live")
@@ -489,7 +487,24 @@ const projectAssignment = (db: DatabaseService, event: AdaptiveEvent.AssignmentC
         same(existing.acceptance_commands, assignment.acceptanceCommands) &&
         existing.time_created === assignment.timeCreated &&
         existing.superseded_at === null
-      if (exact && mode === "rebuild") return undefined
+      if (exact && mode !== "live") {
+        if (
+          mode === "reproject" &&
+          worker.generation === assignment.generation &&
+          event.durable!.seq >= worker.event_cursor
+        )
+          yield* db
+            .update(AdaptiveAgentProcessTable)
+            .set({
+              node_id: assignment.nodeID,
+              assignment_id: assignment.id,
+              event_cursor: event.durable!.seq,
+            })
+            .where(eq(AdaptiveAgentProcessTable.id, assignment.workerID))
+            .run()
+            .pipe(Effect.orDie)
+        return undefined
+      }
       if (mode === "live")
         return yield* new AdaptiveRecoveryStore.DuplicateAssignmentError({ assignmentID: assignment.id })
       return yield* conflict(event.data.taskID, `Assignment ${assignment.id}`, "Stored normalized row diverged")
@@ -571,7 +586,28 @@ const projectCheckpoint = (db: DatabaseService, event: AdaptiveEvent.CheckpointS
         existing.diff_hash === checkpoint.diffHash &&
         existing.event_cursor === checkpoint.eventCursor &&
         existing.time_created === checkpoint.timeCreated
-      if (exact && mode === "rebuild") return undefined
+      if (exact && mode !== "live") {
+        if (
+          mode === "reproject" &&
+          worker.generation === checkpoint.generation &&
+          event.durable!.seq >= worker.event_cursor
+        ) {
+          const repairSequence =
+            worker.checkpoint_sequence === null || worker.checkpoint_sequence <= checkpoint.sequence
+          const repairCursor = worker.event_cursor <= checkpoint.eventCursor
+          if (repairSequence || repairCursor)
+            yield* db
+              .update(AdaptiveAgentProcessTable)
+              .set({
+                ...(repairSequence ? { checkpoint_sequence: checkpoint.sequence } : {}),
+                ...(repairCursor ? { event_cursor: checkpoint.eventCursor } : {}),
+              })
+              .where(eq(AdaptiveAgentProcessTable.id, checkpoint.workerID))
+              .run()
+              .pipe(Effect.orDie)
+        }
+        return undefined
+      }
       if (exact && mode === "live") {
         const worker = yield* requireAgent(db, event, checkpoint.workerID, checkpoint.generation, mode)
         return yield* new AdaptiveRecoveryStore.CheckpointSequenceConflictError({
@@ -638,10 +674,15 @@ const projectGenerationStarted = (
       if (assignment.worker_id !== agent.id || assignment.node_id !== event.data.nodeID)
         return yield* invalid(event, event.data.taskID, "Generation pointer does not match its Assignment")
     }
-    if (agent.generation !== event.data.generation || event.durable!.seq < agent.event_cursor) return undefined
+    if (mode !== "rebuild" && (agent.generation !== event.data.generation || event.durable!.seq < agent.event_cursor))
+      return undefined
     yield* db
       .update(AdaptiveAgentProcessTable)
-      .set({ node_id: event.data.nodeID, assignment_id: event.data.assignmentID, event_cursor: event.durable!.seq })
+      .set({
+        node_id: event.data.nodeID ?? null,
+        assignment_id: event.data.assignmentID ?? null,
+        event_cursor: event.durable!.seq,
+      })
       .where(eq(AdaptiveAgentProcessTable.id, event.data.agentID))
       .run()
       .pipe(Effect.orDie)
@@ -738,6 +779,28 @@ const requireTask = (db: DatabaseService, taskID: AdaptiveTask.ID) =>
       .pipe(Effect.orDie)
     if (!task) return yield* new TaskNotFoundError({ taskID })
     return task
+  })
+
+const requireRoadmapSource = (db: DatabaseService, event: AdaptiveEvent.RoadmapCommitted, mode: ProjectionMode) =>
+  Effect.gen(function* () {
+    const agent = yield* db
+      .select({ taskID: AdaptiveAgentProcessTable.task_id, generation: AdaptiveAgentProcessTable.generation })
+      .from(AdaptiveAgentProcessTable)
+      .where(eq(AdaptiveAgentProcessTable.id, event.data.sourceAgentID))
+      .get()
+      .pipe(Effect.orDie)
+    if (
+      !agent ||
+      agent.taskID !== event.data.taskID ||
+      (mode === "live" && agent.generation !== event.data.sourceGeneration) ||
+      (mode !== "live" && agent.generation < event.data.sourceGeneration)
+    )
+      return yield* new AdaptiveRoadmapStore.SourceGenerationMismatchError({
+        agentID: event.data.sourceAgentID,
+        expectedGeneration: event.data.sourceGeneration,
+        actualGeneration: agent?.generation ?? -1,
+      })
+    return agent
   })
 
 const requireAgent = (

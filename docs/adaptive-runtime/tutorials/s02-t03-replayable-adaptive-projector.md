@@ -20,7 +20,7 @@ S02-T01 recovery contracts + S02-T02 normalized stores
 
 ## OpenCode baseline 与复用边界
 
-修改前，`EventV2.publish()` 已经提供 durable aggregate sequence、单事务 projector、local `commit(seq)` callback，以及外部事件 replay。一次 S02-T02 写入走的是：
+修改前，`EventV2.publish()` 已经提供 durable aggregate sequence、单事务 projector、local `commit(seq)` callback，以及外部事件 replay。最终实现又为 projector registration 加入稳定 identity 与逐 projector replay policy。一次 S02-T02 写入走的是：
 
 ```text
 AdaptiveRoadmapStore / AdaptiveRecoveryStore
@@ -35,7 +35,7 @@ AdaptiveRoadmapStore / AdaptiveRecoveryStore
 - `Database` transaction：让“清空派生边界 + 全量重放”要么整体成功，要么整体回滚。
 - S02-T02 的表和 store API：Projector 写回同一套 `adaptive_roadmap_revision`、`adaptive_detail`、`adaptive_assignment`、`adaptive_checkpoint` 与 Agent 指针，没有建立第二套恢复数据库。
 
-`EventV2.replay()` 只借鉴 envelope 解码和顺序语义，不能直接承担 rebuild：当同一个 event 已经存在于 `EventTable` 时，exact replay 会有意跳过 projector，以保证事件导入幂等；而本任务恰好要求保留 Event rows、仅删除 projections。因此 rebuild 必须显式读取已有 aggregate 并调用相同的确定性 projection handlers。
+`EventV2.replay()` 只借鉴 envelope 解码和顺序语义，不能直接承担 rebuild：generic sync 必须能够在没有 `adaptive_task` / `adaptive_agent_process` roots 的目标 Workspace 中先持久导入 Adaptive rows，不能根据 payload 发明缺失的根事实。因此 Adaptive projector registration 明确设置 `replay: false`，而原有未设置 policy 的 Session projectors 继续参与 replay。Adaptive rebuild 则显式读取本地已有 aggregate 并调用相同的确定性 projection handlers。
 
 Session projector 只提供了“durable event 可同步派生查询表”的工程范式。本任务没有复用 Session transcript、message projection 或 compaction 语义，因为它们不是 Adaptive recovery state 的权威来源。
 
@@ -44,7 +44,7 @@ Session projector 只提供了“durable event 可同步派生查询表”的工
 `AdaptiveProjector.Service` 暴露三个清晰入口：
 
 - `ready`：只有所有 Adaptive live projectors 注册完成后，service 才能被构造。`AdaptiveController.make()` 解析该 service，`start()` 把等待 `ready` 作为第一步，因此输入校验和 Task admission 都不能越过 projector registration。
-- `reproject(event)`：对一个已解码的 durable Adaptive event 重新执行 projection，不写 Event row。一次 reproject 使用 immediate transaction；exact normalized state 是 no-op，divergent state 返回 `ProjectionConflictError`，而失败的 Roadmap reference validation 不会留下先前插入的 Details。
+- `reproject(event)`：对一个已解码的 durable Adaptive event 重新执行 projection，不写 Event row。一次 reproject 使用 immediate transaction；exact normalized state 通常是 no-op，但如果对应 Assignment / Checkpoint row 完整而 Agent 派生指针被清空，且该 event 不旧于当前 cursor，它会修复指针。较旧 event 永不回退更新的 cursor 或 checkpoint pointer；divergent normalized row 返回 `ProjectionConflictError`。
 - `rebuild(taskID)`：分页读取既有 aggregate，在一个 immediate transaction 中清理 owned projection boundary、重置 Task/Agent 派生指针，再逐事件调用 `apply(..., "rebuild")`。
 
 生产 runtime 直接把 `AdaptiveProjector.node` 放入 `AppLayer`，同时 `AdaptiveController.node` 也声明它为依赖。因此 admission 控制流是：
@@ -87,25 +87,29 @@ Task ID
 
 每个 handler 先校验 event envelope 的 aggregate 与 `taskID` 一致，再按事件类型检查：
 
-- source Agent 必须属于同一 Task；live generation 必须精确匹配，historical rebuild generation 不得超过 preserved current generation。
+- source Agent 必须属于同一 Task；live generation 必须精确匹配，historical rebuild generation 不得超过 preserved current generation。Roadmap Store 发起的错误 source generation 保留公开的 `SourceGenerationMismatch`，不会泄漏成 projector defect。
 - Roadmap revision 必须连续，payload hash 必须匹配 canonical encoded Roadmap，所有 node ID 唯一，所有 Detail/Interface reference 必须精确解析到 `key + version + kind + status`。
+- immutable Detail 的逻辑 identity 是 Task、key/version、node、kind/status、body 与 content hash；后续 event 重用完全相同内容时保留 first writer 的 source Agent、generation 与 time provenance。
 - Assignment 必须指向当前 Roadmap 中存在的 node 和 Details，Worker 必须是同一 Task 的 implementation Agent。
 - Checkpoint 必须匹配 active Assignment tuple，sequence 单调递增，`eventCursor` 不得回退或超过保存该 Checkpoint 的 aggregate sequence。
+- pointerless `AgentGenerationStarted` 明确把 Agent node / Assignment 写成 SQL `NULL`。full rebuild 按 event sequence 应用历史 generation pointer，即使 preserved root 已经进入更高 generation；single-event reproject 仍保留 anti-regression fence。
 - Decision、Candidate 等没有专属 projection table 的事件仍然参与 aggregate 顺序和引用校验，所以它们不会被静默当成无意义的空洞。
 
-exact reprojection 不执行 upsert overwrite：已存在行的 normalized columns 和完整 JSON 必须一致，才允许 no-op；任何不同都返回 `AdaptiveProjector.ProjectionConflict`。旧 Assignment event 在最新 Checkpoint 之后再次 reproject，也不会把 Agent cursor 降回 Assignment 的旧 sequence。
+exact reprojection 不执行 upsert overwrite：已存在行的 normalized columns 和完整 JSON 必须一致，才允许 no-op 或受约束的指针修复；任何不同都返回 `AdaptiveProjector.ProjectionConflict`。旧 Assignment event 在最新 Checkpoint 之后再次 reproject，也不会把 Agent cursor 降回 Assignment 的旧 sequence。
 
 ### 与 S02-T02 commit callback 的并存
 
 `EventV2` 的顺序是 registered projector 先运行、store `commit` callback 后运行。如果两边都盲目 `insert`，正常写入会在同一个事务里 double-write。
 
-最终采用 exact handoff：`EventV2` 把“本事务是否实际运行过 registered projector”作为第二个参数传给 local commit callback；live projector 是启用 projector node 时的权威写路径，S02-T02 callback 只有在这个 bit 为真、并且当前 event sequence 已经产生完全一致的 row 和 Agent pointers 时才 no-op。若 projector node 未加入 runtime graph，bit 为假，原 callback 仍按原逻辑校验和写入。新的第二个 durable duplicate 不会借 callback handoff 假装成当前事务的 exact result。
+最终采用 capability receipt handoff：`EventV2.projector()` 创建稳定 identity，`project()` 注册 handler 时携带它，local commit callback 收到本事务实际运行过的 identity `ReadonlySet`。S02-T02 callback 只有在 receipt set 包含 `AdaptiveProjectorIdentity`、并且当前 event sequence 已经产生完全一致的 row 和 Agent pointers 时才 no-op。没有 Adaptive projector 时原 callback 仍按原逻辑校验和写入；仅注册一个无关的 `CheckpointSaved` projector 不会伪造 Adaptive handoff，也不能把 duplicate save 当成成功。
+
+同一 registration 还携带 replay policy。Adaptive identity 使用 `replay: false`，所以 Workspace generic sync 只落 durable Event rows，不调用依赖 preserved roots 的 projection；Session 和其他未声明 policy 的既有 projector 默认 `replay: true`，兼容原行为。权威派生重建仍只由显式 `AdaptiveProjector.rebuild(taskID)` 触发。
 
 ## 推荐代码阅读路线
 
 1. `AdaptiveProjector.Interface` 与 `AdaptiveProjector.layer`：先看公开的 readiness、single-event reprojection、aggregate rebuild，以及所有 durable definitions 的注册位置。
 2. `packages/opencode/src/effect/app-runtime.ts` 和 `AdaptiveController.make()`：确认 projector node 在 production AppLayer 中，并且 `start()` 在 validation/admission 前等待 readiness。
-3. `apply()`、`projectRoadmap()`、`projectAssignment()`、`projectCheckpoint()`：理解事件分派、三类核心派生写入和 live/rebuild generation 规则。
+3. `apply()`、`projectRoadmap()`、`projectAssignment()`、`projectCheckpoint()`：理解事件分派、三类核心派生写入和 live/reproject/rebuild generation 规则。
 4. `requireAgent()`、`requireRoadmapNode()`、`requireDetail()`：理解 Task/Agent/revision/reference 的共同验证边界。
 5. `AdaptiveRoadmapStore.commit()` 和 `AdaptiveRecoveryStore.createAssignment()/saveCheckpoint()` 中的 exact callback handoff：确认 projector active 与 inactive 两种 runtime graph 都不会 double-write。
 6. `packages/core/test/adaptive/projector.test.ts`：最后从 parity、idempotency、invalid relationship 与 atomic integration 四条真实路径反查实现。
@@ -117,7 +121,7 @@ exact reprojection 不执行 upsert overwrite：已存在行的 normalized colum
 - **Reprojection / rebuild**：直觉上是“删掉缓存再算一遍”。工程上要求输入事件相同就得到完全相同的 normalized state；这里不调用 `EventV2.replay()`，而是读取既有 Event rows 后直接运行 projection handlers。
 - **Idempotency**：直觉上是“重复执行不改变结果”。这里 exact event + exact projection 是 no-op，不新增 row、不推进 cursor；同一 identity 下的 divergent normalized state 不是幂等重试，而是 corruption/conflict。
 - **Projection boundary**：直觉上是“哪些列可以从事件重新算出来”。这里明确排除没有完整 payload 依据的 Task/Agent root 与 process-control facts，避免恢复代码发明数据。
-- **Exact handoff**：projector 已在当前 event transaction 中完成写入时，后置 commit callback 通过 row、pointer 和 event sequence 的完全一致性确认接手结果，而不是再次写入。
+- **Capability receipt handoff**：projector 已在当前 event transaction 中完成写入时，后置 commit callback 先以同一 identity object 的 receipt 证明权威 projector 确实运行，再通过 row、pointer 和 event sequence 的完全一致性确认结果，而不是再次写入。
 
 ## 测试看护逻辑
 
@@ -132,6 +136,13 @@ exact reprojection 不执行 upsert overwrite：已存在行的 normalized colum
 | 无派生表事件破坏顺序                         | parity fixture 加入 `TaskCreated`、`DecisionRecorded`、`CandidateSubmitted`              | Event seq 保持连续且最终 projection parity                     | no-row events 被读取和校验，不会改变派生 cursor                                         |
 | 关系错误污染 event log                       | `rejects invalid generation, revision, and Detail references...`                         | 三类 publish 均失败且 Event count 不变                         | projector validation 与 Event write 同事务回滚                                          |
 | projector 与 T02 callback double-write       | `keeps projector-backed normal store writes atomic...`，以及 fixture 的正常 store writes | 正常写成功；失败 Roadmap 的 Detail、revision、Event 全部不落盘 | projector node active 时 live store 的成功与失败路径仍原子                              |
+| 无关 projector 伪造 handoff                  | `does not trust an unrelated Checkpoint projector as the Adaptive Store handoff`         | duplicate 返回 typed sequence conflict，Event count 不增加     | Store 只信任 Adaptive identity receipt                                                  |
+| generic sync 缺少 Adaptive roots             | `keeps generic replay durable without projecting Adaptive rows...`                       | 全部 Event rows 导入、Task root 仍不存在                       | sync 保留事实但不调用 root-dependent Adaptive projector                                 |
+| pointerless generation 留下旧 Assignment     | `clears Agent node and Assignment pointers...`                                           | node / Assignment 为 `NULL`，cursor 前进                       | optional payload 字段不会被 Drizzle 当作“忽略更新”                                      |
+| preserved generation 使 rebuild 跳过历史指针 | `rebuilds later historical generation pointers...`                                       | newer root 下 rebuild snapshot parity                          | full rebuild ordering 与 single-event anti-regression 分离                              |
+| 相同 Detail 重用改写 first-writer provenance | 两条 `preserves first-writer Detail provenance...`                                       | active write 与 rebuild 后 source/generation/time 不变         | immutable equality 不包含 later provenance                                              |
+| exact row 存在但 Agent pointer 被清空        | 两条 `repairs exact Assignment/Checkpoint pointers...`                                   | 当前 event 修复；cursor 99 / sequence 3 不回退                 | repair 与 anti-regression 同时成立                                                      |
+| Store validation 泄漏 projector defect       | `preserves the Roadmap Store source-generation error...`                                 | typed `SourceGenerationMismatch` 且 Event count 不变           | Store API 的 advertised error taxonomy 保持稳定                                         |
 | controller 先 admission 后 projector ready   | `does not validate or admit a task until the projector is ready`                         | ready Deferred 释放前 0 次、释放后 1 次 `createTask`           | production Controller 对 injector projector readiness 的真实 admission gate             |
 
 这些测试没有证明跨进程并发 rebuild fencing、远程数据库支持或自动执行 rebuild；它们也不声称可以从当前事件契约重建被明确排除的 root/process facts。
@@ -146,7 +157,7 @@ bun test test/adaptive/projector.test.ts test/event.test.ts test/adaptive/roadma
 bun typecheck
 ```
 
-预期观察：两个命令都以 exit code `0` 结束；projector suite 中五条测试通过，组合测试没有 duplicate row、stale cursor、partial Detail 或未回滚 Event。若 parity 失败，先比较 `snapshot` 中的 Roadmap `event_sequence`、Detail `time_created` 和 Agent pointers；若 publish 失败但 Event count 增加，应立即检查 `EventV2.commitDurableEvent()` 的 transaction 边界。
+预期观察：两个命令都以 exit code `0` 结束；projector suite 中十四条测试通过，组合测试没有 duplicate row、stale cursor、partial Detail、provenance 改写或未回滚 Event。若 parity 失败，先比较 `snapshot` 中的 Roadmap `event_sequence`、Detail `time_created` 和 Agent pointers；若 publish 失败但 Event count 增加，应立即检查 `EventV2.commitDurableEvent()` 的 transaction 边界。
 
 本任务没有修改 schema，仍应验证 migration drift：
 
