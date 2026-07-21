@@ -84,7 +84,9 @@ const layer = Layer.effect(
     yield* events.project(AdaptiveEvent.ContextSplitRequired, applyLive)
 
     const reproject = Effect.fn("AdaptiveProjector.reproject")((event: AdaptiveEvent.DurableEvent) =>
-      apply(db, event, "rebuild"),
+      db
+        .transaction(() => apply(db, event, "rebuild"), { behavior: "immediate" })
+        .pipe(Effect.catchTag("SqlError", Effect.die)),
     )
     const rebuild = Effect.fn("AdaptiveProjector.rebuild")(function* (taskID: AdaptiveTask.ID) {
       yield* db

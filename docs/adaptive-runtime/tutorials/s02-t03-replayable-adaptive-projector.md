@@ -43,9 +43,19 @@ Session projector 只提供了“durable event 可同步派生查询表”的工
 
 `AdaptiveProjector.Service` 暴露三个清晰入口：
 
-- `ready`：只有所有 Adaptive live projectors 注册完成后，service 才能被构造；未来 Controller 可以在接受工作前显式等待它，但本任务不提前接入 Stage 3 Coordinator。
-- `reproject(event)`：对一个已解码的 durable Adaptive event 重新执行 projection，不写 Event row。exact normalized state 是 no-op，divergent state 返回 `ProjectionConflictError`。
+- `ready`：只有所有 Adaptive live projectors 注册完成后，service 才能被构造。`AdaptiveController.make()` 解析该 service，`start()` 把等待 `ready` 作为第一步，因此输入校验和 Task admission 都不能越过 projector registration。
+- `reproject(event)`：对一个已解码的 durable Adaptive event 重新执行 projection，不写 Event row。一次 reproject 使用 immediate transaction；exact normalized state 是 no-op，divergent state 返回 `ProjectionConflictError`，而失败的 Roadmap reference validation 不会留下先前插入的 Details。
 - `rebuild(taskID)`：分页读取既有 aggregate，在一个 immediate transaction 中清理 owned projection boundary、重置 Task/Agent 派生指针，再逐事件调用 `apply(..., "rebuild")`。
+
+生产 runtime 直接把 `AdaptiveProjector.node` 放入 `AppLayer`，同时 `AdaptiveController.node` 也声明它为依赖。因此 admission 控制流是：
+
+```text
+AppRuntime builds AdaptiveProjector.node
+  → registers every live Adaptive event projector
+  → AdaptiveController.start awaits AdaptiveProjector.ready
+  → validate input and resolve model
+  → AdaptiveStore.createTask admits the Task
+```
 
 一次 rebuild 的控制流是：
 
@@ -94,10 +104,11 @@ exact reprojection 不执行 upsert overwrite：已存在行的 normalized colum
 ## 推荐代码阅读路线
 
 1. `AdaptiveProjector.Interface` 与 `AdaptiveProjector.layer`：先看公开的 readiness、single-event reprojection、aggregate rebuild，以及所有 durable definitions 的注册位置。
-2. `apply()`、`projectRoadmap()`、`projectAssignment()`、`projectCheckpoint()`：理解事件分派、三类核心派生写入和 live/rebuild generation 规则。
-3. `requireAgent()`、`requireRoadmapNode()`、`requireDetail()`：理解 Task/Agent/revision/reference 的共同验证边界。
-4. `AdaptiveRoadmapStore.commit()` 和 `AdaptiveRecoveryStore.createAssignment()/saveCheckpoint()` 中的 exact callback handoff：确认 projector active 与 inactive 两种 runtime graph 都不会 double-write。
-5. `packages/core/test/adaptive/projector.test.ts`：最后从 parity、idempotency、invalid relationship 与 atomic integration 四条真实路径反查实现。
+2. `packages/opencode/src/effect/app-runtime.ts` 和 `AdaptiveController.make()`：确认 projector node 在 production AppLayer 中，并且 `start()` 在 validation/admission 前等待 readiness。
+3. `apply()`、`projectRoadmap()`、`projectAssignment()`、`projectCheckpoint()`：理解事件分派、三类核心派生写入和 live/rebuild generation 规则。
+4. `requireAgent()`、`requireRoadmapNode()`、`requireDetail()`：理解 Task/Agent/revision/reference 的共同验证边界。
+5. `AdaptiveRoadmapStore.commit()` 和 `AdaptiveRecoveryStore.createAssignment()/saveCheckpoint()` 中的 exact callback handoff：确认 projector active 与 inactive 两种 runtime graph 都不会 double-write。
+6. `packages/core/test/adaptive/projector.test.ts`：最后从 parity、idempotency、invalid relationship 与 atomic integration 四条真实路径反查实现。
 
 ## 术语释义
 
@@ -117,11 +128,13 @@ exact reprojection 不执行 upsert overwrite：已存在行的 normalized colum
 | EventV2 exact replay 不触发 projector        | 同一 parity 测试直接调用 `rebuild(taskID)`                                               | Event rows 保持原样而 projections 恢复                         | 显式 rebuild path 不依赖重新插入事件                                                    |
 | 重复 reproject 产生 duplicate 或 cursor 回退 | `accepts exact reprojection...`                                                          | 两次 exact 后 snapshot 不变、cursor/checkpoint pointer 不变    | single-event idempotency 与旧 event 不回退指针                                          |
 | corruption 被 upsert 覆盖                    | 同一 idempotency 测试                                                                    | 修改 Assignment normalized column 后返回 `ProjectionConflict`  | divergent row 被拒绝，不被 event payload 静默覆盖                                       |
+| 单 event reproject 留下部分 Detail           | `rolls back partial Details when Roadmap reprojection rejects a missing reference`       | typed `MissingDetailReference` 后完整 snapshot 不变            | reproject 的 immediate transaction 回滚所有已写 projection                              |
 | 无派生表事件破坏顺序                         | parity fixture 加入 `TaskCreated`、`DecisionRecorded`、`CandidateSubmitted`              | Event seq 保持连续且最终 projection parity                     | no-row events 被读取和校验，不会改变派生 cursor                                         |
 | 关系错误污染 event log                       | `rejects invalid generation, revision, and Detail references...`                         | 三类 publish 均失败且 Event count 不变                         | projector validation 与 Event write 同事务回滚                                          |
 | projector 与 T02 callback double-write       | `keeps projector-backed normal store writes atomic...`，以及 fixture 的正常 store writes | 正常写成功；失败 Roadmap 的 Detail、revision、Event 全部不落盘 | projector node active 时 live store 的成功与失败路径仍原子                              |
+| controller 先 admission 后 projector ready   | `does not validate or admit a task until the projector is ready`                         | ready Deferred 释放前 0 次、释放后 1 次 `createTask`           | production Controller 对 injector projector readiness 的真实 admission gate             |
 
-这些测试没有证明跨进程并发 rebuild fencing、远程数据库支持或 Stage 3 Controller 已经等待 readiness；它们也不声称可以从当前事件契约重建被明确排除的 root/process facts。
+这些测试没有证明跨进程并发 rebuild fencing、远程数据库支持或自动执行 rebuild；它们也不声称可以从当前事件契约重建被明确排除的 root/process facts。
 
 ## 亲手验证
 
@@ -133,7 +146,7 @@ bun test test/adaptive/projector.test.ts test/event.test.ts test/adaptive/roadma
 bun typecheck
 ```
 
-预期观察：两个命令都以 exit code `0` 结束；projector suite 中四条测试通过，组合测试没有 duplicate row、stale cursor 或未回滚 Event。若 parity 失败，先比较 `snapshot` 中的 Roadmap `event_sequence`、Detail `time_created` 和 Agent pointers；若 publish 失败但 Event count 增加，应立即检查 `EventV2.commitDurableEvent()` 的 transaction 边界。
+预期观察：两个命令都以 exit code `0` 结束；projector suite 中五条测试通过，组合测试没有 duplicate row、stale cursor、partial Detail 或未回滚 Event。若 parity 失败，先比较 `snapshot` 中的 Roadmap `event_sequence`、Detail `time_created` 和 Agent pointers；若 publish 失败但 Event count 增加，应立即检查 `EventV2.commitDurableEvent()` 的 transaction 边界。
 
 本任务没有修改 schema，仍应验证 migration drift：
 
@@ -155,7 +168,7 @@ bun test adaptive-tutorial-check.test.ts
 
 ## 当前边界与下一步
 
-本任务只提供 Core projector service 和可表示的 readiness；它没有把 rebuild 自动挂到启动流程，也没有实现 Controller/Coordinator 的 work admission。这个接线应由真正拥有恢复编排语义的后续任务完成，避免在 S02-T03 提前制造 Stage 3 行为。
+本任务已经把 Core projector readiness 接入 production Controller admission；它仍然没有把 rebuild 自动挂到启动流程。何时选择、fence 并执行 rebuild 仍属于后续恢复编排任务，避免把启动 admission 与恢复策略混为一谈。
 
 当前 rebuild 假设单一进程在事务内独占同一 SQLite Task projection。跨进程 rebuild lease/fencing、在线增量 catch-up 和运维 CLI 也不在本任务范围内。
 

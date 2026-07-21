@@ -54,6 +54,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppNodeBuilderV1 } from "./app-node-builder-v1"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { AdaptiveProjector } from "@opencode-ai/core/adaptive/projector"
 import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
 import { AdaptiveModelAudit } from "@opencode-ai/core/adaptive/model-audit"
 import { AdaptiveModelGateway } from "@/adaptive/model-gateway"
@@ -67,6 +68,7 @@ export const AppLayer = AppNodeBuilderV1.build(
     AppProcess.node,
     FSUtil.node,
     Database.node,
+    AdaptiveProjector.node,
     AdaptiveStore.node,
     AdaptiveModelAudit.node,
     AdaptiveModelGateway.node,

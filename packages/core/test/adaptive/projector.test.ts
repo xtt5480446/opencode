@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { asc, count, eq } from "drizzle-orm"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { AdaptiveModelPolicy } from "@opencode-ai/core/adaptive/model-policy"
 import { AdaptiveProjector } from "@opencode-ai/core/adaptive/projector"
 import { AdaptiveRecoveryStore } from "@opencode-ai/core/adaptive/recovery-store"
@@ -40,6 +40,7 @@ const root = LayerNode.group([
 ])
 const it = testEffect(AppNodeBuilder.build(root, [[Database.node, Database.layerFromPath(":memory:")]]))
 const digest = (body: string) => AdaptiveOperation.Hash.make(`sha256:${Hash.sha256(body)}`)
+const encodeRoadmap = Schema.encodeUnknownSync(AdaptiveRoadmap.Info)
 const diffHash = digest("diff")
 
 const contractDetail = new AdaptiveEvent.DetailRecord({
@@ -433,6 +434,53 @@ describe("AdaptiveProjector", () => {
         eventCursor: state.checkpoint.eventCursor,
         checkpointSequence: state.checkpoint.sequence,
       })
+    }),
+  )
+
+  it.effect("rolls back partial Details when Roadmap reprojection rejects a missing reference", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const projector = yield* AdaptiveProjector.Service
+      const { db } = yield* Database.Service
+      const page = yield* EventV2.readAggregate(db, {
+        aggregateID: state.task.id,
+        limit: 100,
+        manifest: AdaptiveDurable,
+      })
+      const committed = page.events.find((event) => event.type === AdaptiveEvent.RoadmapCommitted.type)
+      if (!committed) throw new Error("missing RoadmapCommitted fixture event")
+      const partial = new AdaptiveEvent.DetailRecord({
+        nodeID: "retry-core",
+        ref: new AdaptiveRoadmap.DetailRef({ key: "contract:partial", kind: "contracts", version: 1, status: "ready" }),
+        body: "must not persist",
+        contentHash: digest("must not persist"),
+      })
+      const missing = new AdaptiveRoadmap.DetailRef({
+        key: "contract:missing",
+        kind: "contracts",
+        version: 1,
+        status: "ready",
+      })
+      const invalidRoadmap = roadmap(state.task.id, 3, [contractDetail.ref, decisionDetail.ref, partial.ref, missing])
+      const invalidEvent: AdaptiveEvent.RoadmapCommitted = {
+        ...committed,
+        type: AdaptiveEvent.RoadmapCommitted.type,
+        data: {
+          taskID: state.task.id,
+          timeCreated: 800,
+          roadmap: invalidRoadmap,
+          details: [partial],
+          contentHash: digest(JSON.stringify(encodeRoadmap(invalidRoadmap))),
+          sourceAgentID: state.coordinator.id,
+          sourceGeneration: state.coordinator.generation,
+        },
+      }
+      const before = yield* snapshot
+
+      const failure = yield* projector.reproject(invalidEvent).pipe(Effect.flip)
+
+      expect(failure._tag).toBe("AdaptiveRoadmapStore.MissingDetailReference")
+      expect(yield* snapshot).toEqual(before)
     }),
   )
 
