@@ -9,13 +9,13 @@ import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginInternal } from "@opencode-ai/core/plugin/internal"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { Hash } from "@opencode-ai/core/util/hash"
 import { LLMEvent } from "@opencode-ai/llm"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Model } from "@opencode-ai/schema/model"
 import { Provider } from "@opencode-ai/schema/provider"
 import { Context, Deferred, Duration, Effect, Layer, Option, Ref, Schema, Scope, Stream } from "effect"
 import { Auth } from "@/auth"
+import { AdaptiveContextRequest } from "./context/request"
 import { AdaptiveModelGateway } from "./model-gateway"
 import { AdaptiveModelResolver } from "./model-resolver"
 import { AgentProcessProtocol } from "./process/protocol"
@@ -213,7 +213,14 @@ export const make = Effect.fn("AdaptiveController.make")(function* (options: Mak
     const modelRequested = yield* Ref.make(false)
     const requestID = AdaptiveTask.RequestID.create()
     const messages = [{ role: "user", content: [{ type: "text", text: requirement }] }]
-    const requestHash = `sha256:${Hash.sha256(JSON.stringify({ system: [BOOTSTRAP_SYSTEM], messages, tools: [] }))}`
+    const contextRequest = AdaptiveContextRequest.prepare({
+      taskID: task.id,
+      modelPolicy: task.modelPolicy,
+      roadmapRevision: 0,
+      system: [BOOTSTRAP_SYSTEM],
+      messages,
+      tools: [],
+    })
 
     const handle = yield* supervisor
       .start({
@@ -231,8 +238,8 @@ export const make = Effect.fn("AdaptiveController.make")(function* (options: Mak
               messages,
               tools: [],
               components: [],
-              estimatedTokens: Math.ceil((BOOTSTRAP_SYSTEM.length + requirement.length) / 4),
-              requestHash,
+              estimatedTokens: contextRequest.estimatedTokens,
+              requestHash: contextRequest.requestHash,
             })
             .pipe(
               Effect.flatMap((record) => Deferred.succeed(manifest, record)),

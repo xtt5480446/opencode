@@ -2,6 +2,7 @@ export * as AdaptiveStore from "./store"
 
 import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm"
 import { Clock, Context, Effect, Layer, Schema } from "effect"
+import { AdaptiveOperation } from "@opencode-ai/schema/adaptive-operation"
 import { AdaptiveTask } from "@opencode-ai/schema/adaptive-task"
 import { Model } from "@opencode-ai/schema/model"
 import { Provider } from "@opencode-ai/schema/provider"
@@ -16,7 +17,9 @@ import {
   AdaptiveTaskTable,
   type AdaptiveAgentState,
   type AdaptiveModelRequestStatus,
+  type AdaptiveRecoveryState,
 } from "./sql"
+import { EventSequenceTable } from "../event/sql"
 
 export interface CreateTaskInput {
   readonly id: AdaptiveTask.ID
@@ -48,6 +51,12 @@ export interface AgentRecord extends CreateAgentInput {
   readonly leaseExpiresAt?: number
   readonly exitCode?: number
   readonly exitReason?: string
+  readonly nodeID?: string
+  readonly assignmentID?: AdaptiveOperation.AssignmentID
+  readonly eventCursor: number
+  readonly checkpointSequence?: number
+  readonly recoveryState: AdaptiveRecoveryState
+  readonly restartRequired: boolean
   readonly timeCreated: number
   readonly timeUpdated: number
 }
@@ -86,6 +95,81 @@ export interface QuarantineAgentInput {
 
 export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue }
 
+export interface ManifestSource {
+  readonly roadmapRevision: number
+  readonly assignmentID: AdaptiveOperation.AssignmentID | null
+  readonly checkpointSequence: number | null
+  readonly eventCursor: number
+  readonly taskEventSequence: number
+}
+
+export const sourceMatches = Effect.fn("AdaptiveStore.sourceMatches")(function* (
+  db: Database.Interface["db"],
+  input: {
+    readonly taskID: AdaptiveTask.ID
+    readonly agentID: AdaptiveTask.AgentID
+    readonly expected: ManifestSource
+  },
+) {
+  const task = yield* db
+    .select({ roadmapRevision: AdaptiveTaskTable.roadmap_revision })
+    .from(AdaptiveTaskTable)
+    .where(eq(AdaptiveTaskTable.id, input.taskID))
+    .get()
+    .pipe(Effect.orDie)
+  const agent = yield* db
+    .select({
+      assignmentID: AdaptiveAgentProcessTable.assignment_id,
+      checkpointSequence: AdaptiveAgentProcessTable.checkpoint_sequence,
+      eventCursor: AdaptiveAgentProcessTable.event_cursor,
+    })
+    .from(AdaptiveAgentProcessTable)
+    .where(and(eq(AdaptiveAgentProcessTable.id, input.agentID), eq(AdaptiveAgentProcessTable.task_id, input.taskID)))
+    .get()
+    .pipe(Effect.orDie)
+  const event = yield* db
+    .select({ sequence: EventSequenceTable.seq })
+    .from(EventSequenceTable)
+    .where(eq(EventSequenceTable.aggregate_id, input.taskID))
+    .get()
+    .pipe(Effect.orDie)
+  return (
+    task?.roadmapRevision === input.expected.roadmapRevision &&
+    agent?.assignmentID === input.expected.assignmentID &&
+    agent?.checkpointSequence === input.expected.checkpointSequence &&
+    agent?.eventCursor === input.expected.eventCursor &&
+    (event?.sequence ?? -1) === input.expected.taskEventSequence
+  )
+})
+
+export const ownsActiveAgent = Effect.fn("AdaptiveStore.ownsActiveAgent")(function* (
+  db: Database.Interface["db"],
+  input: {
+    readonly taskID: AdaptiveTask.ID
+    readonly agentID: AdaptiveTask.AgentID
+    readonly generation: number
+    readonly owner: string
+    readonly now: number
+  },
+) {
+  const row = yield* db
+    .select({ id: AdaptiveAgentProcessTable.id })
+    .from(AdaptiveAgentProcessTable)
+    .where(
+      and(
+        eq(AdaptiveAgentProcessTable.id, input.agentID),
+        eq(AdaptiveAgentProcessTable.task_id, input.taskID),
+        eq(AdaptiveAgentProcessTable.generation, input.generation),
+        eq(AdaptiveAgentProcessTable.owner, input.owner),
+        inArray(AdaptiveAgentProcessTable.state, ["starting", "running"]),
+        gt(AdaptiveAgentProcessTable.lease_expires_at, input.now),
+      ),
+    )
+    .get()
+    .pipe(Effect.orDie)
+  return row !== undefined
+})
+
 export interface PutManifestInput {
   readonly id: AdaptiveTask.ContextManifestID
   readonly taskID: AdaptiveTask.ID
@@ -103,6 +187,11 @@ export interface PutManifestInput {
   readonly restartReason?: string
   readonly estimatedTokens: number
   readonly requestHash: string
+  /**
+   * The durable facts read by the assembler. The insert aborts when any changes
+   * before the Manifest is committed, forcing the caller to assemble again.
+   */
+  readonly expectedSource?: ManifestSource
 }
 
 export interface ManifestRecord
@@ -240,6 +329,15 @@ export class ManifestOwnershipMismatchError extends Schema.TaggedErrorClass<Mani
   },
 ) {}
 
+export class ManifestSourceChangedError extends Schema.TaggedErrorClass<ManifestSourceChangedError>()(
+  "AdaptiveStore.ManifestSourceChanged",
+  {
+    manifestID: AdaptiveTask.ContextManifestID,
+    taskID: AdaptiveTask.ID,
+    agentID: AdaptiveTask.AgentID,
+  },
+) {}
+
 export class InvalidRequestError extends Schema.TaggedErrorClass<InvalidRequestError>()(
   "AdaptiveStore.InvalidRequest",
   {
@@ -303,7 +401,10 @@ export interface Interface {
   ) => Effect.Effect<AgentRecord, AgentNotFoundError | AgentOwnershipConflictError>
   readonly putManifest: (
     input: PutManifestInput,
-  ) => Effect.Effect<ManifestRecord, InvalidManifestError | DuplicateManifestError | ManifestOwnershipMismatchError>
+  ) => Effect.Effect<
+    ManifestRecord,
+    InvalidManifestError | DuplicateManifestError | ManifestOwnershipMismatchError | ManifestSourceChangedError
+  >
   readonly getManifest: (
     id: AdaptiveTask.ContextManifestID,
   ) => Effect.Effect<ManifestRecord, InvalidManifestError | ManifestNotFoundError>
@@ -373,6 +474,12 @@ const agentRecord = (row: typeof AdaptiveAgentProcessTable.$inferSelect): AgentR
   ...(row.lease_expires_at === null ? {} : { leaseExpiresAt: row.lease_expires_at }),
   ...(row.exit_code === null ? {} : { exitCode: row.exit_code }),
   ...(row.exit_reason === null ? {} : { exitReason: row.exit_reason }),
+  ...(row.node_id === null ? {} : { nodeID: row.node_id }),
+  ...(row.assignment_id === null ? {} : { assignmentID: row.assignment_id }),
+  eventCursor: row.event_cursor,
+  ...(row.checkpoint_sequence === null ? {} : { checkpointSequence: row.checkpoint_sequence }),
+  recoveryState: row.recovery_state,
+  restartRequired: row.restart_required,
   timeCreated: row.time_created,
   timeUpdated: row.time_updated,
 })
@@ -886,6 +993,48 @@ const layer = Layer.effect(
                 generation: input.generation,
                 owner: input.owner,
               })
+            if (input.expectedSource) {
+              const task = yield* tx
+                .select({ roadmapRevision: AdaptiveTaskTable.roadmap_revision })
+                .from(AdaptiveTaskTable)
+                .where(eq(AdaptiveTaskTable.id, input.taskID))
+                .get()
+                .pipe(Effect.orDie)
+              const agent = yield* tx
+                .select({
+                  assignmentID: AdaptiveAgentProcessTable.assignment_id,
+                  checkpointSequence: AdaptiveAgentProcessTable.checkpoint_sequence,
+                  eventCursor: AdaptiveAgentProcessTable.event_cursor,
+                })
+                .from(AdaptiveAgentProcessTable)
+                .where(
+                  and(
+                    eq(AdaptiveAgentProcessTable.id, input.agentID),
+                    eq(AdaptiveAgentProcessTable.task_id, input.taskID),
+                  ),
+                )
+                .get()
+                .pipe(Effect.orDie)
+              const event = yield* tx
+                .select({ sequence: EventSequenceTable.seq })
+                .from(EventSequenceTable)
+                .where(eq(EventSequenceTable.aggregate_id, input.taskID))
+                .get()
+                .pipe(Effect.orDie)
+              const source = input.expectedSource
+              if (
+                task?.roadmapRevision !== source.roadmapRevision ||
+                agent?.assignmentID !== source.assignmentID ||
+                agent?.checkpointSequence !== source.checkpointSequence ||
+                agent?.eventCursor !== source.eventCursor ||
+                (event?.sequence ?? -1) !== source.taskEventSequence
+              )
+                return yield* new ManifestSourceChangedError({
+                  manifestID: input.id,
+                  taskID: input.taskID,
+                  agentID: input.agentID,
+                })
+            }
             const row = yield* tx
               .insert(AdaptiveContextManifestTable)
               .values({
@@ -907,8 +1056,34 @@ const layer = Layer.effect(
               .get()
               .pipe(Effect.orDie)
             if (!row) return yield* new DuplicateManifestError({ manifestID: input.id })
+            if (input.restartReason) {
+              const restarted = yield* tx
+                .update(AdaptiveAgentProcessTable)
+                .set({ restart_required: true, time_updated: now })
+                .where(
+                  and(
+                    eq(AdaptiveAgentProcessTable.id, input.agentID),
+                    eq(AdaptiveAgentProcessTable.task_id, input.taskID),
+                    eq(AdaptiveAgentProcessTable.generation, input.generation),
+                    eq(AdaptiveAgentProcessTable.owner, input.owner),
+                    inArray(AdaptiveAgentProcessTable.state, ["starting", "running"]),
+                    gt(AdaptiveAgentProcessTable.lease_expires_at, now),
+                  ),
+                )
+                .returning({ id: AdaptiveAgentProcessTable.id })
+                .get()
+                .pipe(Effect.orDie)
+              if (!restarted)
+                return yield* new ManifestOwnershipMismatchError({
+                  manifestID: input.id,
+                  agentID: input.agentID,
+                  generation: input.generation,
+                  owner: input.owner,
+                })
+            }
             return yield* decodeManifest(row)
           }),
+          { behavior: "immediate" },
         )
         .pipe(Effect.catchTag("SqlError", (cause) => Effect.die(cause)))
     })

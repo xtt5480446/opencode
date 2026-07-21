@@ -66,6 +66,7 @@ Tutorial 与实现位于同一个 Task、Issue 和 PR 中，是 Definition of Do
 | S02-T02 | [可恢复开发状态的持久化底座](./s02-t02-durable-recovery-storage.md)       | 不可变 Roadmap/Detail/Assignment/Checkpoint、verified Blob 与升级保真    | 已完成，随任务 PR 交付 |
 | S02-T03 | [可重放的 Adaptive Projector](./s02-t03-replayable-adaptive-projector.md) | existing durable aggregate 的确定性重建、幂等校验与 projection readiness | 已完成，随任务 PR 交付 |
 | S02-T04 | [确定性上下文部件与渲染](./s02-t04-deterministic-context-rendering.md)   | byte-stable Roadmap/Assignment/Detail/Checkpoint 文本与 ContextComponent | 已完成，随任务 PR 交付 |
+| S02-T05 | [有预算的 ContextManifest 重建](./s02-t05-bounded-context-manifest.md) | 由 durable 事实确定性组装、审计并持久化有界模型上下文                  | 已完成，随任务 PR 交付 |
 
 后续教程会继续按依赖顺序加入本索引，而不是按文档创建时间排列。
 

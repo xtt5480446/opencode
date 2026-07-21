@@ -16,12 +16,12 @@ import {
   LLMEvent,
   Message,
   Model as ResolvedModel,
-  SystemPart,
   ToolDefinition,
   type Usage,
 } from "@opencode-ai/llm"
 import { Cause, Context, Effect, Exit, Layer, Schema, Scope, Stream } from "effect"
 import { Auth } from "@/auth"
+import { AdaptiveContextRequest } from "./context/request"
 import { AdaptiveModelResolver } from "./model-resolver"
 
 export interface StreamInput {
@@ -350,15 +350,6 @@ const layer = Layer.effect(
           ),
           (effect) => safeDefects(effect, invalidManifest(input, "Manifest content invalid")),
         )
-        if (
-          manifest.estimatedTokens + task.modelPolicy.outputReserve + task.modelPolicy.safetyReserve >
-          state.effectiveContextLimit
-        )
-          return yield* new RoutePolicyMismatchError({
-            requestID: input.requestID,
-            reason: "authoritative Manifest exceeds the effective context budget",
-          })
-
         const messages = yield* Schema.decodeUnknownEffect(Schema.Array(Message))(manifest.messages).pipe(
           Effect.mapError(() => invalidManifest(input, "Manifest content invalid")),
           (effect) => safeDefects(effect, invalidManifest(input, "Manifest content invalid")),
@@ -367,14 +358,33 @@ const layer = Layer.effect(
           Effect.mapError(() => invalidManifest(input, "Manifest content invalid")),
           (effect) => safeDefects(effect, invalidManifest(input, "Manifest content invalid")),
         )
+        const contextRequest = AdaptiveContextRequest.prepare({
+          taskID: input.taskID,
+          modelPolicy: task.modelPolicy,
+          roadmapRevision: manifest.roadmapRevision,
+          system: manifest.system,
+          messages,
+          tools,
+        })
+        if (
+          contextRequest.estimatedTokens !== manifest.estimatedTokens ||
+          contextRequest.requestHash !== manifest.requestHash
+        )
+          return yield* invalidManifest(input, "Manifest content invalid")
+        if (contextRequest.estimatedTokens + task.modelPolicy.outputReserve + task.modelPolicy.safetyReserve > state.effectiveContextLimit)
+          return yield* new RoutePolicyMismatchError({
+            requestID: input.requestID,
+            reason: "authoritative Manifest exceeds the effective context budget",
+          })
         const request = yield* Effect.try({
           try: () =>
             LLM.request({
               model,
-              system: manifest.system.map(SystemPart.make),
-              messages,
-              tools,
-              generation: { maxTokens: task.modelPolicy.outputReserve },
+              system: contextRequest.system,
+              messages: contextRequest.messages,
+              tools: contextRequest.tools,
+              providerOptions: contextRequest.providerOptions,
+              generation: contextRequest.generation,
             }),
           catch: () => invalidManifest(input, "Manifest content invalid"),
         })
