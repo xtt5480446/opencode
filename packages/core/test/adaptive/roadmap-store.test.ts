@@ -5,7 +5,11 @@ import * as TestClock from "effect/testing/TestClock"
 import { AdaptiveModelPolicy } from "@opencode-ai/core/adaptive/model-policy"
 import { AdaptiveRoadmapStore } from "@opencode-ai/core/adaptive/roadmap-store"
 import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
-import { AdaptiveTaskTable } from "@opencode-ai/core/adaptive/sql"
+import {
+  AdaptiveDetailTable,
+  AdaptiveRoadmapRevisionTable,
+  AdaptiveTaskTable,
+} from "@opencode-ai/core/adaptive/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -194,6 +198,40 @@ describe("AdaptiveRoadmapStore", () => {
           .where(eq(AdaptiveTaskTable.id, state.task.id))
           .get(),
       ).toEqual({ revision: 0 })
+    }),
+  )
+
+  it.effect("returns typed corruption errors when stored Roadmap or Detail content no longer matches its hash", () =>
+    Effect.gen(function* () {
+      const state = yield* setup
+      const store = yield* AdaptiveRoadmapStore.Service
+      const originalDetail = detail("retry v1")
+      yield* store.commit({
+        expectedRevision: 0,
+        roadmap: roadmap(state.task.id, 1),
+        details: [originalDetail],
+        sourceAgentID: state.agent.id,
+        sourceGeneration: state.agent.generation,
+      })
+      const { db } = yield* Database.Service
+      yield* db
+        .update(AdaptiveRoadmapRevisionTable)
+        .set({ roadmap: roadmap(state.task.id, 1, [originalDetail.ref], "Tampered but schema-valid") })
+        .where(eq(AdaptiveRoadmapRevisionTable.task_id, state.task.id))
+        .run()
+      yield* db
+        .update(AdaptiveDetailTable)
+        .set({ body: "tampered body" })
+        .where(eq(AdaptiveDetailTable.task_id, state.task.id))
+        .run()
+
+      const corruptRoadmap = yield* store.getRevision(state.task.id, 1).pipe(Effect.flip)
+      const corruptDetail = yield* store
+        .getDetail(state.task.id, originalDetail.ref.key, originalDetail.ref.version)
+        .pipe(Effect.flip)
+
+      expect(corruptRoadmap._tag).toBe("AdaptiveRoadmapStore.CorruptRoadmap")
+      expect(corruptDetail._tag).toBe("AdaptiveRoadmapStore.CorruptDetail")
     }),
   )
 })

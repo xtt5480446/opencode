@@ -79,6 +79,21 @@ export class CheckpointSequenceConflictError extends Schema.TaggedErrorClass<Che
   { workerID: AdaptiveTask.AgentID, expectedSequence: Schema.Number, actualSequence: Schema.Number },
 ) {}
 
+export class CheckpointCursorConflictError extends Schema.TaggedErrorClass<CheckpointCursorConflictError>()(
+  "AdaptiveRecoveryStore.CheckpointCursorConflict",
+  {
+    workerID: AdaptiveTask.AgentID,
+    currentCursor: Schema.Number,
+    checkpointCursor: Schema.Number,
+    eventSequence: Schema.Number,
+  },
+) {}
+
+export class CorruptCheckpointError extends Schema.TaggedErrorClass<CorruptCheckpointError>()(
+  "AdaptiveRecoveryStore.CorruptCheckpoint",
+  { workerID: AdaptiveTask.AgentID, sequence: Schema.Number, reason: Schema.String },
+) {}
+
 export type AssignmentError =
   | TaskNotFoundError
   | DuplicateAssignmentError
@@ -91,6 +106,7 @@ export type CheckpointError =
   | StaleGenerationError
   | WorkspaceStateMismatchError
   | CheckpointSequenceConflictError
+  | CheckpointCursorConflictError
 
 export interface Interface {
   readonly createAssignment: (input: AdaptiveOperation.Assignment) => Effect.Effect<AssignmentRecord, AssignmentError>
@@ -101,10 +117,10 @@ export interface Interface {
   readonly getCheckpoint: (
     workerID: AdaptiveTask.AgentID,
     sequence: number,
-  ) => Effect.Effect<CheckpointRecord, CheckpointNotFoundError>
+  ) => Effect.Effect<CheckpointRecord, CheckpointNotFoundError | CorruptCheckpointError>
   readonly getLatestCheckpoint: (
     workerID: AdaptiveTask.AgentID,
-  ) => Effect.Effect<CheckpointRecord, CheckpointNotFoundError>
+  ) => Effect.Effect<CheckpointRecord, CheckpointNotFoundError | CorruptCheckpointError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/AdaptiveRecoveryStore") {}
@@ -148,7 +164,7 @@ const layer = Layer.effect(
         .get()
         .pipe(Effect.orDie)
       if (!row) return yield* new CheckpointNotFoundError({ workerID, sequence })
-      return checkpointRecord(row)
+      return yield* decodeCheckpointRecord(row)
     })
 
     const getLatestCheckpoint = Effect.fn("AdaptiveRecoveryStore.getLatestCheckpoint")(function* (
@@ -339,6 +355,7 @@ const layer = Layer.effect(
                     generation: AdaptiveAgentProcessTable.generation,
                     assignmentID: AdaptiveAgentProcessTable.assignment_id,
                     checkpointSequence: AdaptiveAgentProcessTable.checkpoint_sequence,
+                    eventCursor: AdaptiveAgentProcessTable.event_cursor,
                   })
                   .from(AdaptiveAgentProcessTable)
                   .where(eq(AdaptiveAgentProcessTable.id, checkpoint.workerID))
@@ -360,7 +377,6 @@ const layer = Layer.effect(
                   !storedAssignment ||
                   storedAssignment.task_id !== worker.taskID ||
                   storedAssignment.worker_id !== checkpoint.workerID ||
-                  storedAssignment.generation !== checkpoint.generation ||
                   storedAssignment.roadmap_revision !== checkpoint.roadmapRevision ||
                   storedAssignment.node_id !== checkpoint.nodeID ||
                   worker.assignmentID !== checkpoint.assignmentID
@@ -386,6 +402,13 @@ const layer = Layer.effect(
                     workerID: checkpoint.workerID,
                     expectedSequence,
                     actualSequence: checkpoint.sequence,
+                  })
+                if (checkpoint.eventCursor < worker.eventCursor || checkpoint.eventCursor > eventSequence)
+                  return yield* new CheckpointCursorConflictError({
+                    workerID: checkpoint.workerID,
+                    currentCursor: worker.eventCursor,
+                    checkpointCursor: checkpoint.eventCursor,
+                    eventSequence,
                   })
 
                 yield* db
@@ -419,11 +442,6 @@ const layer = Layer.effect(
                   .run()
                   .pipe(Effect.orDie)
 
-                if (eventSequence < checkpoint.eventCursor)
-                  return yield* new InvalidAssignmentError({
-                    assignmentID: checkpoint.assignmentID,
-                    reason: `Checkpoint cursor ${checkpoint.eventCursor} is ahead of committed event ${eventSequence}`,
-                  })
                 return undefined
               }).pipe(Effect.orDie),
           },
@@ -455,9 +473,31 @@ function assignmentRecord(row: typeof AdaptiveAssignmentTable.$inferSelect): Ass
   }
 }
 
-function checkpointRecord(row: typeof AdaptiveCheckpointTable.$inferSelect): CheckpointRecord {
-  return { checkpoint: decodeCheckpoint(row.checkpoint) }
-}
+const decodeCheckpointRecord = (row: typeof AdaptiveCheckpointTable.$inferSelect) =>
+  Effect.try({
+    try: (): CheckpointRecord => {
+      const checkpoint = decodeCheckpoint(row.checkpoint)
+      if (
+        checkpoint.workerID !== row.worker_id ||
+        checkpoint.sequence !== row.sequence ||
+        checkpoint.assignmentID !== row.assignment_id ||
+        checkpoint.generation !== row.generation ||
+        checkpoint.roadmapRevision !== row.roadmap_revision ||
+        checkpoint.worktreeHead !== row.worktree_head ||
+        checkpoint.diffHash !== row.diff_hash ||
+        checkpoint.eventCursor !== row.event_cursor ||
+        checkpoint.timeCreated !== row.time_created
+      )
+        throw new Error("Checkpoint JSON disagrees with normalized columns")
+      return { checkpoint }
+    },
+    catch: (cause) =>
+      new CorruptCheckpointError({
+        workerID: row.worker_id,
+        sequence: row.sequence,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      }),
+  })
 
 const recoverAssignmentError = <A>(effect: Effect.Effect<A>) =>
   effect.pipe(
@@ -492,7 +532,8 @@ function isCheckpointError(value: unknown): value is CheckpointError {
     value instanceof InvalidAssignmentError ||
     value instanceof StaleGenerationError ||
     value instanceof WorkspaceStateMismatchError ||
-    value instanceof CheckpointSequenceConflictError
+    value instanceof CheckpointSequenceConflictError ||
+    value instanceof CheckpointCursorConflictError
   )
 }
 

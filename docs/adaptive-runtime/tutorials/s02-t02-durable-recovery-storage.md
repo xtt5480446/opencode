@@ -74,6 +74,10 @@ model-proposed Checkpoint + Controller-observed HEAD/diff
 
 `adaptive_checkpoint` 的主键是 `(worker_id, sequence)`，因此 Checkpoint 1 不会在保存 Checkpoint 2 后消失。`getCheckpoint(worker, 1)` 能读取旧交接点，`getLatestCheckpoint(worker)` 通过 Agent 的 durable pointer 返回最新交接点。测试关闭第一个 Database layer 后重新打开同一个 SQLite 文件，确认这两个读取语义仍成立。
 
+Assignment 上的 generation 表示首次派发它的 generation，而 Agent 当前 `assignment_id` 才表示谁在继续执行这张工作单。Agent lease 过期并被 generation 2 接管时，`claimAgent` 会保留 Assignment、Checkpoint 和 cursor pointer；generation 2 可以在先完成恢复核验后继续同一 Assignment，不需要篡改旧 Assignment 或丢掉 generation 1 的历史 Checkpoint。保存新 Checkpoint 时检查的是当前 Agent generation 和 active Assignment ID，而不是错误地要求 immutable Assignment 的初始 generation 永远等于替代进程。
+
+Checkpoint cursor 也不能倒退。新 cursor 必须大于等于 Agent 已持久化的 cursor，并且不能超过正在提交的 `CheckpointSaved` event sequence；违反任一边界都会返回 `CheckpointCursorConflictError`，transaction 不会留下 row、pointer 或 event。读取时还会把 JSON 内的 Worker、sequence、Assignment、generation、Roadmap revision、HEAD、diff、cursor、timestamp 与 normalized columns 逐项比较，不一致返回 typed `CorruptCheckpointError`。
+
 ### Blob：内容就是地址，读取时再次验真
 
 `AdaptiveBlobStore.put` 对完整 bytes 计算 SHA-256，并写入：
@@ -85,6 +89,8 @@ model-proposed Checkpoint + Controller-observed HEAD/diff
 文件先在目标目录创建临时文件、写入并 `fsync`，再 rename 到 content-addressed 路径，最后写 `adaptive_blob` metadata。同一 bytes 重复 `put` 会得到同一 hash 和同一 metadata row，不会制造第二份文件；前一次崩溃若留下“有文件但无 metadata”的 orphan，后一次提交会先验 hash 再补 metadata。
 
 `read` 不因为路径来自数据库就直接信任文件。它会重新比较 byte count 和 SHA-256；不匹配时把文件 rename 为 `.corrupt-<time>`，返回 `BlobCorruptError`，绝不会把损坏内容送入恢复上下文。
+
+文件系统还没能返回 bytes 时则不能武断地宣布“内容损坏”。例如 path 暂时不可读、文件描述符耗尽或 canonical path 意外变成目录时，`read` 保留原路径并返回 `BlobIOError`；只有实际读到 bytes 后确认长度/hash 不匹配，才进入 quarantine。这给上层重试临时 I/O 故障留下了正确空间。
 
 ### Migration 与 ContextManifest 恢复字段
 
@@ -125,8 +131,12 @@ Agent process 新增 node、tool Session、Assignment、event cursor、Checkpoin
 | Roadmap 引用不存在 Detail | 引用缺失 `contract:x@2` | 无 Roadmap row、无 event、Task 仍为 r0 | 证明 exact reference 原子门禁 |
 | 旧 Worker 保存 Checkpoint | 使用 stale generation | `StaleGenerationError`；latest sequence 不变 | 证明 generation CAS，不证明 OS 进程已经被杀死 |
 | 模型伪报工作区状态 | Controller observed HEAD/diff 与 Checkpoint 不同 | `WorkspaceStateMismatchError`；无新 Checkpoint/event | 证明 Store 拒绝不一致输入，真实 Git 检查由 T06/T08 接入 |
+| replacement generation 无法接班 | generation 1 保存 Checkpoint 后让 lease 过期，由 generation 2 接管同一 Agent | immutable Assignment 不变；generation 2 成功保存下一个 Checkpoint | 证明持久状态接班路径可达，T08 再证明真实进程强杀 |
+| 新 Checkpoint 让 event cursor 倒退 | sequence 2 提交小于当前值的 cursor | `CheckpointCursorConflictError`；latest 仍为 sequence 1 | 证明事件消费边界单调且 transaction 回滚 |
 | 重启后只剩最新摘要 | 保存 sequence 1、2，关闭并重开数据库 | latest 是 2，sequence 1 仍可按号读取 | 证明 durable version history |
+| JSON 与 normalized recovery columns 分叉 | 修改 Roadmap/Detail body 或 Checkpoint JSON，不同步 hash/normalized columns | typed `CorruptRoadmap`、`CorruptDetail`、`CorruptCheckpoint` | 证明读取不会静默信任有效但矛盾的 JSON |
 | 大输出重复占空间或被破坏 | 相同 bytes put 两次，再手工修改文件 | 同 hash、单 row/单文件；read 返回 `BlobCorruptError` 并 quarantine | 证明单 Controller 下的 dedup 与 verified read；Stage 6 再补 quota/retention |
+| 暂时 I/O 故障被误判为内容损坏 | 让 canonical path 在 read 前不可作为普通文件读取 | 返回 `BlobIOError`；路径未被 quarantine | 证明只有已读取 bytes 的 hash mismatch 才判 corrupt |
 | 升级破坏 Stage 1 状态 | 在旧 schema 插入 Agent/Manifest/Request/Bootstrap 后运行 migration | 所有旧行保持，新增列为安全默认，FK check 为空 | 证明该 migration 的升级保真 |
 | 新列没有进入 Store API | Manifest 写入 recovery fields 后立即读取并重开读取 | omissions/revision/turn/reason 完整往返 | 证明 Manifest 存储，不证明 Context Assembler 已使用它们 |
 
@@ -157,7 +167,7 @@ cd packages/core
 bun test
 ```
 
-本任务实现时的完整回归结果是 1142 个测试通过、0 失败。这个数字是该提交的历史证据；未来仓库增加测试后应以当次命令的实际输出为准，而不是要求数字永远相同。
+本任务实现时的完整回归结果是 1147 个测试通过、0 失败。这个数字是该提交的历史证据；未来仓库增加测试后应以当次命令的实际输出为准，而不是要求数字永远相同。
 
 ## 当前边界与下一步
 

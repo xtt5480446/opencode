@@ -75,11 +75,7 @@ const layer = Layer.effect(
     const read = Effect.fn("AdaptiveBlobStore.read")(function* (hash: AdaptiveOperation.Hash) {
       const record = yield* getMetadata(hash)
       const absolute = path.join(global.data, record.relativePath)
-      const bytes = yield* io("read", () => fs.readFile(absolute)).pipe(
-        Effect.catchTag("AdaptiveBlobStore.BlobIO", (error) =>
-          corrupt(hash, absolute, `Blob file is unavailable: ${String(error.cause)}`),
-        ),
-      )
+      const bytes = yield* io("read", () => fs.readFile(absolute))
       if (bytes.byteLength !== record.byteCount || digest(bytes) !== hash)
         return yield* corrupt(hash, absolute, "Stored bytes do not match their content address")
       const now = yield* Clock.currentTimeMillis

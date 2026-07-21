@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import path from "path"
 import { AdaptiveModelPolicy } from "@opencode-ai/core/adaptive/model-policy"
 import { AdaptiveRecoveryStore } from "@opencode-ai/core/adaptive/recovery-store"
 import { AdaptiveRoadmapStore } from "@opencode-ai/core/adaptive/roadmap-store"
 import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
+import { AdaptiveCheckpointTable } from "@opencode-ai/core/adaptive/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -16,7 +18,7 @@ import { Provider } from "@opencode-ai/schema/provider"
 import { testEffect } from "../lib/effect"
 import { tmpdir } from "../fixture/tmpdir"
 
-const root = LayerNode.group([AdaptiveRecoveryStore.node, AdaptiveRoadmapStore.node, AdaptiveStore.node])
+const root = LayerNode.group([AdaptiveRecoveryStore.node, AdaptiveRoadmapStore.node, AdaptiveStore.node, Database.node])
 const it = testEffect(AppNodeBuilder.build(root, [[Database.node, Database.layerFromPath(":memory:")]]))
 const diff = (value: string) => AdaptiveOperation.Hash.make(`sha256:${value.repeat(64).slice(0, 64)}`)
 
@@ -104,14 +106,14 @@ const prepare = Effect.gen(function* () {
 const checkpoint = (
   state: Effect.Success<typeof prepare>,
   sequence: number,
-  input: { generation?: number; head?: string; diffHash?: AdaptiveOperation.Hash } = {},
+  input: { generation?: number; eventCursor?: number; head?: string; diffHash?: AdaptiveOperation.Hash } = {},
 ) =>
   new AdaptiveOperation.Checkpoint({
     assignmentID: state.assignment.id,
     workerID: state.worker.id,
     generation: input.generation ?? state.worker.generation,
     sequence,
-    eventCursor: sequence + 1,
+    eventCursor: input.eventCursor ?? sequence + 1,
     roadmapRevision: 1,
     nodeID: "retry-core",
     completed: [`step ${sequence}`],
@@ -154,6 +156,83 @@ describe("AdaptiveRecoveryStore", () => {
       expect(stale._tag).toBe("AdaptiveRecoveryStore.StaleGeneration")
       expect(mismatched._tag).toBe("AdaptiveRecoveryStore.WorkspaceStateMismatch")
       expect(yield* state.recovery.getLatestCheckpoint(state.worker.id)).toMatchObject({ checkpoint: first })
+    }),
+  )
+
+  it.effect("lets a replacement generation continue the same immutable Assignment", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(0)
+      const state = yield* prepare
+      const first = checkpoint(state, 1)
+      yield* state.recovery.saveCheckpoint({
+        checkpoint: first,
+        observedHead: first.worktreeHead,
+        observedDiffHash: first.diffHash,
+      })
+      yield* TestClock.setTime(60_000)
+      const foundation = yield* AdaptiveStore.Service
+      const replacement = yield* foundation.claimAgent({
+        agentID: state.worker.id,
+        expectedGeneration: state.worker.generation,
+        owner: "replacement-controller",
+        pid: 303,
+        leaseDurationMs: 60_000,
+      })
+      const second = checkpoint(state, 2, { generation: replacement.generation })
+
+      yield* state.recovery.saveCheckpoint({
+        checkpoint: second,
+        observedHead: second.worktreeHead,
+        observedDiffHash: second.diffHash,
+      })
+
+      expect((yield* state.recovery.getAssignment(state.assignment.id)).assignment).toEqual(state.assignment)
+      expect((yield* state.recovery.getLatestCheckpoint(state.worker.id)).checkpoint).toEqual(second)
+    }),
+  )
+
+  it.effect("rejects a newer Checkpoint whose event cursor moves backward", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const first = checkpoint(state, 1)
+      yield* state.recovery.saveCheckpoint({
+        checkpoint: first,
+        observedHead: first.worktreeHead,
+        observedDiffHash: first.diffHash,
+      })
+      const regressed = checkpoint(state, 2, { eventCursor: first.eventCursor - 1 })
+
+      const failure = yield* state.recovery
+        .saveCheckpoint({
+          checkpoint: regressed,
+          observedHead: regressed.worktreeHead,
+          observedDiffHash: regressed.diffHash,
+        })
+        .pipe(Effect.flip)
+
+      expect(failure._tag).toBe("AdaptiveRecoveryStore.CheckpointCursorConflict")
+      expect((yield* state.recovery.getLatestCheckpoint(state.worker.id)).checkpoint).toEqual(first)
+    }),
+  )
+
+  it.effect("returns a typed corruption error when Checkpoint JSON diverges from normalized columns", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const first = checkpoint(state, 1)
+      yield* state.recovery.saveCheckpoint({
+        checkpoint: first,
+        observedHead: first.worktreeHead,
+        observedDiffHash: first.diffHash,
+      })
+      const { db } = yield* Database.Service
+      yield* db
+        .update(AdaptiveCheckpointTable)
+        .set({ checkpoint: checkpoint(state, 1, { head: "tampered-head" }) })
+        .run()
+
+      const failure = yield* state.recovery.getCheckpoint(state.worker.id, first.sequence).pipe(Effect.flip)
+
+      expect(failure._tag).toBe("AdaptiveRecoveryStore.CorruptCheckpoint")
     }),
   )
 })

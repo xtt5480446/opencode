@@ -86,6 +86,16 @@ export class SourceGenerationMismatchError extends Schema.TaggedErrorClass<Sourc
   { agentID: AdaptiveTask.AgentID, expectedGeneration: Schema.Number, actualGeneration: Schema.Number },
 ) {}
 
+export class CorruptRoadmapError extends Schema.TaggedErrorClass<CorruptRoadmapError>()(
+  "AdaptiveRoadmapStore.CorruptRoadmap",
+  { taskID: AdaptiveTask.ID, revision: Schema.Number, reason: Schema.String },
+) {}
+
+export class CorruptDetailError extends Schema.TaggedErrorClass<CorruptDetailError>()(
+  "AdaptiveRoadmapStore.CorruptDetail",
+  { taskID: AdaptiveTask.ID, key: Schema.String, version: Schema.Number, reason: Schema.String },
+) {}
+
 export type CommitError =
   | TaskNotFoundError
   | StaleRevisionError
@@ -99,16 +109,16 @@ export interface Interface {
   readonly commit: (input: CommitInput) => Effect.Effect<RoadmapRecord, CommitError>
   readonly getCurrent: (
     taskID: AdaptiveTask.ID,
-  ) => Effect.Effect<RoadmapRecord, TaskNotFoundError | RoadmapNotFoundError>
+  ) => Effect.Effect<RoadmapRecord, TaskNotFoundError | RoadmapNotFoundError | CorruptRoadmapError>
   readonly getRevision: (
     taskID: AdaptiveTask.ID,
     revision: number,
-  ) => Effect.Effect<RoadmapRecord, RoadmapNotFoundError>
+  ) => Effect.Effect<RoadmapRecord, RoadmapNotFoundError | CorruptRoadmapError>
   readonly getDetail: (
     taskID: AdaptiveTask.ID,
     key: string,
     version: number,
-  ) => Effect.Effect<DetailRecord, DetailNotFoundError>
+  ) => Effect.Effect<DetailRecord, DetailNotFoundError | CorruptDetailError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/AdaptiveRoadmapStore") {}
@@ -140,7 +150,7 @@ const layer = Layer.effect(
         .get()
         .pipe(Effect.orDie)
       if (!row) return yield* new RoadmapNotFoundError({ taskID, revision })
-      return roadmapRecord(row)
+      return yield* decodeRoadmapRecord(row)
     })
 
     const getCurrent = Effect.fn("AdaptiveRoadmapStore.getCurrent")(function* (taskID: AdaptiveTask.ID) {
@@ -172,7 +182,7 @@ const layer = Layer.effect(
         .get()
         .pipe(Effect.orDie)
       if (!row) return yield* new DetailNotFoundError({ taskID, key, version })
-      return detailRecord(row)
+      return yield* decodeDetailRecord(row)
     })
 
     const commit = Effect.fn("AdaptiveRoadmapStore.commit")(function* (input: CommitInput) {
@@ -413,33 +423,57 @@ function validateInput(input: CommitInput): CommitError | undefined {
   return undefined
 }
 
-function roadmapRecord(row: typeof AdaptiveRoadmapRevisionTable.$inferSelect): RoadmapRecord {
-  const roadmap = decodeRoadmap(row.roadmap)
-  const requirement = decodeRequirement(row.requirement)
-  if (JSON.stringify(roadmap.requirement) !== JSON.stringify(requirement))
-    throw new Error(`Adaptive Roadmap requirement copy is corrupt for ${row.task_id}@${row.revision}`)
-  return {
-    roadmap,
-    contentHash: row.content_hash,
-    sourceAgentID: row.source_agent_id,
-    sourceGeneration: row.source_generation,
-    eventSequence: row.event_sequence,
-    timeCreated: row.time_created,
-  }
-}
+const decodeRoadmapRecord = (row: typeof AdaptiveRoadmapRevisionTable.$inferSelect) =>
+  Effect.try({
+    try: (): RoadmapRecord => {
+      const roadmap = decodeRoadmap(row.roadmap)
+      const requirement = decodeRequirement(row.requirement)
+      if (roadmap.taskID !== row.task_id || roadmap.revision !== row.revision)
+        throw new Error("Roadmap identity disagrees with normalized columns")
+      if (JSON.stringify(roadmap.requirement) !== JSON.stringify(requirement))
+        throw new Error("Roadmap Requirement disagrees with its normalized copy")
+      if (digest(JSON.stringify(encodeRoadmap(roadmap))) !== row.content_hash)
+        throw new Error("Roadmap content does not match its SHA-256")
+      return {
+        roadmap,
+        contentHash: row.content_hash,
+        sourceAgentID: row.source_agent_id,
+        sourceGeneration: row.source_generation,
+        eventSequence: row.event_sequence,
+        timeCreated: row.time_created,
+      }
+    },
+    catch: (cause) =>
+      new CorruptRoadmapError({
+        taskID: row.task_id,
+        revision: row.revision,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      }),
+  })
 
-function detailRecord(row: typeof AdaptiveDetailTable.$inferSelect): DetailRecord {
-  return {
-    taskID: row.task_id,
-    nodeID: row.node_id,
-    ref: decodeDetailRef({ key: row.key, version: row.version, kind: row.kind, status: row.status }),
-    body: row.body,
-    contentHash: row.content_hash,
-    sourceAgentID: row.source_agent_id,
-    sourceGeneration: row.source_generation,
-    timeCreated: row.time_created,
-  }
-}
+const decodeDetailRecord = (row: typeof AdaptiveDetailTable.$inferSelect) =>
+  Effect.try({
+    try: (): DetailRecord => {
+      if (digest(row.body) !== row.content_hash) throw new Error("Detail body does not match its SHA-256")
+      return {
+        taskID: row.task_id,
+        nodeID: row.node_id,
+        ref: decodeDetailRef({ key: row.key, version: row.version, kind: row.kind, status: row.status }),
+        body: row.body,
+        contentHash: row.content_hash,
+        sourceAgentID: row.source_agent_id,
+        sourceGeneration: row.source_generation,
+        timeCreated: row.time_created,
+      }
+    },
+    catch: (cause) =>
+      new CorruptDetailError({
+        taskID: row.task_id,
+        key: row.key,
+        version: row.version,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      }),
+  })
 
 const digest = (value: string) => AdaptiveOperation.Hash.make(`sha256:${Hash.sha256(value)}`)
 

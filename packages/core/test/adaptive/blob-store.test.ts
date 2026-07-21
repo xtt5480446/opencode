@@ -41,3 +41,30 @@ test("AdaptiveBlobStore deduplicates bytes and quarantines corrupt content", asy
     }).pipe(Effect.provide(layer), Effect.scoped),
   )
 })
+
+test("AdaptiveBlobStore preserves canonical content paths when a read fails before bytes are available", async () => {
+  await using tmp = await tmpdir()
+  const layer = AppNodeBuilder.build(AdaptiveBlobStore.node, [
+    [Database.node, Database.layerFromPath(path.join(tmp.path, "blob-io.sqlite"))],
+    [Global.node, Global.layerWith({ data: tmp.path })],
+  ])
+
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const blobs = yield* AdaptiveBlobStore.Service
+      const record = yield* blobs.put({ bytes: new TextEncoder().encode("healthy"), mediaType: "text/plain" })
+      const absolute = path.join(tmp.path, record.relativePath)
+      yield* Effect.promise(() => fs.rename(absolute, `${absolute}.held`))
+      yield* Effect.promise(() => fs.mkdir(absolute))
+
+      const failure = yield* blobs.read(record.hash).pipe(Effect.flip)
+
+      expect(failure._tag).toBe("AdaptiveBlobStore.BlobIO")
+      expect((yield* Effect.promise(() => fs.stat(absolute))).isDirectory()).toBe(true)
+      expect((yield* Effect.promise(() => fs.readdir(path.dirname(absolute)))).toSorted()).toEqual([
+        path.basename(absolute),
+        `${path.basename(absolute)}.held`,
+      ].toSorted())
+    }).pipe(Effect.provide(layer), Effect.scoped),
+  )
+})
