@@ -819,7 +819,7 @@ const requireAgent = (
       .pipe(Effect.orDie)
     if (!agent || agent.task_id !== event.data.taskID)
       return yield* invalid(event, event.data.taskID, `Agent ${agentID} is not rooted in this Task`)
-    if ((mode === "live" && agent.generation !== generation) || (mode === "rebuild" && agent.generation < generation))
+    if ((mode === "live" && agent.generation !== generation) || (mode !== "live" && agent.generation < generation))
       return yield* invalid(
         event,
         event.data.taskID,

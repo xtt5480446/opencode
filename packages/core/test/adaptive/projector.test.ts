@@ -793,6 +793,58 @@ describe("AdaptiveProjector", () => {
     }),
   )
 
+  it.effect("rejects future-generation Detail reprojection without mutating projection or event state", () =>
+    Effect.gen(function* () {
+      const state = yield* prepare
+      const projector = yield* AdaptiveProjector.Service
+      const { db } = yield* Database.Service
+      const detail = new AdaptiveEvent.DetailRecord({
+        nodeID: state.assignment.nodeID,
+        ref: new AdaptiveRoadmap.DetailRef({
+          key: "contract:future-generation",
+          kind: "contracts",
+          version: 1,
+          status: "ready",
+        }),
+        body: "must not be projected from a future generation",
+        contentHash: digest("must not be projected from a future generation"),
+      })
+      const event: AdaptiveEvent.DetailCommitted = {
+        id: EventV2.ID.create(),
+        type: AdaptiveEvent.DetailCommitted.type,
+        durable: { aggregateID: state.task.id, seq: 9, version: 1 },
+        data: {
+          taskID: state.task.id,
+          timeCreated: 800,
+          detail,
+          sourceAgentID: state.coordinator.id,
+          sourceGeneration: state.coordinator.generation + 1,
+        },
+      }
+      const before = yield* snapshot
+      const eventRows = yield* db
+        .select({ count: count() })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, state.task.id))
+        .get()
+        .pipe(Effect.orDie)
+
+      const exit = yield* projector.reproject(event).pipe(Effect.exit)
+
+      expect(yield* snapshot).toEqual(before)
+      expect(exit._tag).toBe("Failure")
+      expect(String(exit)).toContain("AdaptiveProjector.InvalidRelationship")
+      expect(
+        yield* db
+          .select({ count: count() })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, state.task.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual(eventRows)
+    }),
+  )
+
   it.effect("rolls back partial Details when Roadmap reprojection rejects a missing reference", () =>
     Effect.gen(function* () {
       const state = yield* prepare

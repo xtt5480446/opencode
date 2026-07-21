@@ -87,7 +87,7 @@ Task ID
 
 每个 handler 先校验 event envelope 的 aggregate 与 `taskID` 一致，再按事件类型检查：
 
-- source Agent 必须属于同一 Task；live generation 必须精确匹配，historical rebuild generation 不得超过 preserved current generation。Roadmap Store 发起的错误 source generation 保留公开的 `SourceGenerationMismatch`，不会泄漏成 projector defect。
+- source Agent 必须属于同一 Task；live generation 必须精确匹配，historical rebuild 或 single-event reproject 的 event generation 都不得超过 preserved current generation。Roadmap Store 发起的错误 source generation 保留公开的 `SourceGenerationMismatch`，不会泄漏成 projector defect。
 - Roadmap revision 必须连续，payload hash 必须匹配 canonical encoded Roadmap，所有 node ID 唯一，所有 Detail/Interface reference 必须精确解析到 `key + version + kind + status`。
 - immutable Detail 的逻辑 identity 是 Task、key/version、node、kind/status、body 与 content hash；后续 event 重用完全相同内容时保留 first writer 的 source Agent、generation 与 time provenance。
 - Assignment 必须指向当前 Roadmap 中存在的 node 和 Details，Worker 必须是同一 Task 的 implementation Agent。
