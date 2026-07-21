@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
+import { AdaptiveEvent } from "../src/adaptive-event"
+import { AdaptiveOperation } from "../src/adaptive-operation"
+import { AdaptiveRoadmap } from "../src/adaptive-roadmap"
 import { AdaptiveTask } from "../src/adaptive-task"
 import { Agent } from "../src/agent"
 import { FileSystem } from "../src/filesystem"
@@ -36,6 +39,24 @@ describe("contract hygiene", () => {
 
   test("reusable public identifiers are stable and unique", () => {
     const identifiers = [
+      AdaptiveEvent.Durable,
+      AdaptiveOperation.AssignmentID,
+      AdaptiveOperation.Hash,
+      AdaptiveOperation.EvidenceRef,
+      AdaptiveOperation.Assignment,
+      AdaptiveOperation.Checkpoint,
+      AdaptiveOperation.RecoveryVerification,
+      AdaptiveOperation.CandidateReport,
+      AdaptiveRoadmap.NodeStatus,
+      AdaptiveRoadmap.DependencyKind,
+      AdaptiveRoadmap.DetailKind,
+      AdaptiveRoadmap.DetailStatus,
+      AdaptiveRoadmap.RequirementBaseline,
+      AdaptiveRoadmap.DetailRef,
+      AdaptiveRoadmap.InterfaceRef,
+      AdaptiveRoadmap.Dependency,
+      AdaptiveRoadmap.Node,
+      AdaptiveRoadmap.Info,
       AdaptiveTask.ID,
       AdaptiveTask.AgentID,
       AdaptiveTask.RequestID,

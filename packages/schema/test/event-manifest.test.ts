@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { FileSystem, Integration, Permission, Project, Reference, Session, Workspace } from "../src"
+import { AdaptiveEvent } from "../src/adaptive-event"
+import { DurableEventManifest } from "../src/durable-event-manifest"
+import { Event } from "../src/event"
 import { EventManifest } from "../src/event-manifest"
 import { IdeEvent } from "../src/ide-event"
 import { SessionEvent } from "../src/session-event"
@@ -10,7 +13,7 @@ import { WorkspaceEvent } from "../src/workspace-event"
 describe("public event manifest", () => {
   test("owns the complete public event surface", () => {
     expect(EventManifest.ServerDefinitions.length).toBe(58)
-    expect(EventManifest.Definitions.length).toBe(88)
+    expect(EventManifest.Definitions.length).toBe(88 + AdaptiveEvent.Definitions.length)
     expect(SessionV1.Event.Definitions).toEqual([
       SessionV1.Event.Created,
       SessionV1.Event.Updated,
@@ -23,8 +26,8 @@ describe("public event manifest", () => {
       SessionV1.Event.Diff,
       SessionV1.Event.Error,
     ])
-    expect(EventManifest.Latest.size).toBe(88)
-    expect(EventManifest.Durable.size).toBe(35)
+    expect(EventManifest.Latest.size).toBe(88 + AdaptiveEvent.Definitions.length)
+    expect(EventManifest.Durable.size).toBe(35 + AdaptiveEvent.DurableDefinitions.length)
   })
 
   test("uses canonical definitions for current public events", () => {
@@ -60,5 +63,19 @@ describe("public event manifest", () => {
     expect(EventManifest.Durable.get("session.next.revert.committed.1")).toBe(SessionEvent.RevertEvent.Committed)
     expect(EventManifest.Durable.has("session.next.step.ended.1")).toBe(false)
     expect(EventManifest.Durable.get("session.next.step.ended.2")).toBe(SessionEvent.Step.Ended)
+  })
+
+  test("registers every Adaptive event in latest and versioned durable manifests", () => {
+    expect(AdaptiveEvent.Definitions).toEqual(AdaptiveEvent.DurableDefinitions)
+    expect(DurableEventManifest.AdaptiveDurable.schema).toBe(AdaptiveEvent.Durable)
+
+    for (const definition of AdaptiveEvent.DurableDefinitions) {
+      expect(definition.durable).toEqual({ aggregate: "taskID", version: 1 })
+      expect(EventManifest.Latest.get(definition.type)).toBe(definition)
+      expect(EventManifest.Durable.get(Event.versionedType(definition.type, 1))).toBe(definition)
+      expect(DurableEventManifest.AdaptiveDurable.definitions.get(Event.versionedType(definition.type, 1))).toBe(
+        definition,
+      )
+    }
   })
 })

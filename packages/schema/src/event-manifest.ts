@@ -1,6 +1,7 @@
 export * as EventManifest from "./event-manifest"
 
 import { Catalog } from "./catalog"
+import { AdaptiveEvent } from "./adaptive-event"
 import { Durable } from "./durable-event-manifest"
 import { Event } from "./event"
 import { FileSystem } from "./filesystem"
@@ -63,6 +64,7 @@ export const ServerDefinitions = Event.inventory(
 export const Definitions = Event.inventory(
   ...foundationDefinitions,
   ...sessionV1LiveDefinitions,
+  ...AdaptiveEvent.Definitions,
   ...InstallationEvent.Definitions,
   ...featureDefinitions,
   ...SessionTodo.Event.Definitions,
