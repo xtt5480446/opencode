@@ -28,6 +28,7 @@ import { Provider } from "@opencode-ai/schema/provider"
 import { eq, sql } from "drizzle-orm"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Stream } from "effect"
 import { AdaptiveModelGateway } from "@/adaptive/model-gateway"
+import { AdaptiveContextRequest } from "@/adaptive/context/request"
 import { Auth } from "@/auth"
 import { testEffect } from "../lib/effect"
 
@@ -179,6 +180,20 @@ const seed = Effect.gen(function* () {
     pid: 101,
     leaseDurationMs: 60_000,
   })
+  const contextRequest = AdaptiveContextRequest.prepare({
+    taskID: task.id,
+    modelPolicy: task.modelPolicy,
+    roadmapRevision: 0,
+    system: ["authoritative system"],
+    messages: [{ role: "user", content: [{ type: "text", text: "authoritative text" }] }],
+    tools: [
+      {
+        name: "inspect",
+        description: "Inspect authoritative state",
+        inputSchema: { type: "object", properties: {}, required: [] },
+      },
+    ],
+  })
   const manifest = yield* store.putManifest({
     id: AdaptiveTask.ContextManifestID.create(),
     taskID: task.id,
@@ -196,8 +211,8 @@ const seed = Effect.gen(function* () {
       },
     ],
     components: [],
-    estimatedTokens: 100,
-    requestHash: "sha256:authoritative",
+    estimatedTokens: contextRequest.estimatedTokens,
+    requestHash: contextRequest.requestHash,
   })
   return { store, task, agent, claimed, manifest }
 })
@@ -266,6 +281,7 @@ describe("AdaptiveModelGateway", () => {
         messages: [{ role: "user", content: [{ type: "text", text: "authoritative text" }] }],
         tools: [{ name: "inspect", description: "Inspect authoritative state" }],
         generation: { maxTokens: 16_384 },
+        providerOptions: { openai: { promptCacheKey: `adaptive:${state.task.id}:roadmap:0` } },
       })
       expect(JSON.stringify(requests[0])).not.toContain("attacker")
       expect(JSON.stringify(requests[0])).not.toContain("untrusted text")
@@ -289,6 +305,29 @@ describe("AdaptiveModelGateway", () => {
         policyHash: state.task.modelPolicy.hash,
         requests: 1,
       })
+    }),
+  )
+
+  it.live("rejects a Manifest whose budget evidence does not match the exact provider request envelope", () =>
+    Effect.gen(function* () {
+      const state = yield* seed
+      const database = yield* Database.Service
+      yield* database.db
+        .update(AdaptiveContextManifestTable)
+        .set({ estimated_tokens: 0, request_hash: "sha256:tampered" })
+        .where(eq(AdaptiveContextManifestTable.id, state.manifest.id))
+        .run()
+        .pipe(Effect.orDie)
+      const request = input(state)
+
+      const failure = yield* Stream.runDrain((yield* AdaptiveModelGateway.Service).stream(request)).pipe(Effect.flip)
+
+      expect(failure).toMatchObject({
+        _tag: "AdaptiveModelGateway.InvalidManifestContent",
+        requestID: request.requestID,
+        manifestID: state.manifest.id,
+      })
+      expect(requests).toHaveLength(0)
     }),
   )
 

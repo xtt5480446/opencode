@@ -5,7 +5,7 @@ import * as TestClock from "effect/testing/TestClock"
 import path from "path"
 import { AdaptiveModelPolicy } from "@opencode-ai/core/adaptive/model-policy"
 import { AdaptiveStore } from "@opencode-ai/core/adaptive/store"
-import { AdaptiveTaskTable } from "@opencode-ai/core/adaptive/sql"
+import { AdaptiveAgentProcessTable, AdaptiveTaskTable } from "@opencode-ai/core/adaptive/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -124,6 +124,9 @@ describe("AdaptiveStore Agent ownership", () => {
         ...input,
         generation: 0,
         state: "idle",
+        eventCursor: 0,
+        recoveryState: "ready",
+        restartRequired: false,
         timeCreated: 2_000,
         timeUpdated: 2_000,
       })
@@ -464,6 +467,68 @@ describe("AdaptiveStore Manifest and Request", () => {
         restartReason: "local_tail_limit",
       })
       expect(yield* store.getManifest(manifest.id)).toEqual(manifest)
+      const { db } = yield* Database.Service
+      expect(
+        yield* db
+          .select({ restartRequired: AdaptiveAgentProcessTable.restart_required })
+          .from(AdaptiveAgentProcessTable)
+          .where(eq(AdaptiveAgentProcessTable.id, agent.id))
+          .get(),
+      ).toEqual({ restartRequired: true })
+    }),
+  )
+
+  it.effect("rejects a Manifest when its durable source state changed before persistence", () =>
+    Effect.gen(function* () {
+      const store = yield* AdaptiveStore.Service
+      const createdTask = yield* store.createTask(task())
+      const agent = yield* store.createAgent({
+        id: AdaptiveTask.AgentID.create(),
+        taskID: createdTask.id,
+        role: "implementation",
+      })
+      const claimed = yield* store.claimAgent({
+        agentID: agent.id,
+        expectedGeneration: 0,
+        owner: "controller-a",
+        pid: 406,
+        leaseDurationMs: 1_000,
+      })
+      const { db } = yield* Database.Service
+      yield* db
+        .update(AdaptiveTaskTable)
+        .set({ roadmap_revision: 1 })
+        .where(eq(AdaptiveTaskTable.id, createdTask.id))
+        .run()
+        .pipe(Effect.orDie)
+      const failure = yield* store
+        .putManifest({
+          id: AdaptiveTask.ContextManifestID.create(),
+          taskID: createdTask.id,
+          agentID: agent.id,
+          generation: claimed.generation,
+          owner: "controller-a",
+          purpose: "stale source state",
+          system: ["system"],
+          messages: [],
+          tools: [],
+          components: [],
+          estimatedTokens: 10,
+          requestHash: "sha256:manifest",
+          expectedSource: {
+            roadmapRevision: 0,
+            assignmentID: null,
+            checkpointSequence: null,
+            eventCursor: 0,
+            taskEventSequence: -1,
+          },
+        } as AdaptiveStore.PutManifestInput)
+        .pipe(Effect.flip)
+
+      expect(failure).toMatchObject({
+        _tag: "AdaptiveStore.ManifestSourceChanged",
+        manifestID: expect.any(String),
+      })
     }),
   )
 

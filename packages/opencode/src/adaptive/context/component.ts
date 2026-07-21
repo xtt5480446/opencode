@@ -8,6 +8,7 @@ export type Kind =
   | "role-instructions"
   | "requirement"
   | "roadmap"
+  | "coordinator-cycle"
   | "assignment"
   | "contract"
   | "detail"
