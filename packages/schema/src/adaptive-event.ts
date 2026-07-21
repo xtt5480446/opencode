@@ -24,9 +24,13 @@ const ToolPayloadBase = Schema.Struct({
   complete: Schema.Boolean,
   blob: AdaptiveOperation.Hash.pipe(optional),
 })
-const durableToolPayload = Schema.makeFilter<Schema.Schema.Type<typeof ToolPayloadBase>>((payload) =>
-  payload.complete || payload.blob !== undefined ? undefined : "An incomplete Tool payload requires a blob reference",
-)
+const durableToolPayload = Schema.makeFilter<Schema.Schema.Type<typeof ToolPayloadBase>>((payload) => {
+  if (!payload.complete && payload.blob === undefined) return "An incomplete Tool payload requires a blob reference"
+  if (payload.blob !== undefined && payload.blob !== payload.hash) {
+    return "Tool payload blob and canonical hash must identify the same content"
+  }
+  return undefined
+})
 
 export interface ToolPayload extends Schema.Schema.Type<typeof ToolPayload> {}
 export const ToolPayload = ToolPayloadBase.annotate({ identifier: "AdaptiveEvent.ToolPayload" }).check(

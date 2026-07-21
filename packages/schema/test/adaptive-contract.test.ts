@@ -166,6 +166,19 @@ describe("Adaptive recovery contracts", () => {
         ...event,
         data: {
           ...event.data,
+          input: {
+            ...event.data.input,
+            complete: false,
+            blob: `sha256:${"e".repeat(64)}`,
+          },
+        },
+      }),
+    ).toThrow()
+    expect(() =>
+      decode({
+        ...event,
+        data: {
+          ...event.data,
           input: { hash: event.data.input.hash, complete: true },
         },
       }),
@@ -184,6 +197,7 @@ describe("Adaptive recovery contracts", () => {
 
     expect(String(decodePath("src/retry.ts" as unknown))).toBe("src/retry.ts")
     expect(String(decodeGlob("src/**" as unknown))).toBe("src/**")
+    expect(() => decodePath("src/**" as unknown)).toThrow()
     for (const path of ["/tmp/secret", "../secret", "src/../../secret", "C:\\secret", "src//file", "./src"]) {
       expect(() => decodePath(path as unknown)).toThrow()
       expect(() => decodeGlob(path as unknown)).toThrow()

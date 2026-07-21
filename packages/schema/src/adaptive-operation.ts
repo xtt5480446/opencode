@@ -20,6 +20,9 @@ const validRepositoryRelative = Schema.makeFilter<string>((value) => {
   }
   return undefined
 })
+const concreteRepositoryPath = Schema.makeFilter<string>((value) =>
+  /[*?[\]{}]/.test(value) ? "Expected a concrete repository path without glob syntax" : undefined,
+)
 
 export const AssignmentID = Schema.String.annotate({ identifier: "AdaptiveOperation.AssignmentID" })
   .check(Schema.isPattern(/^aas_[0-9A-Za-z]{26}$/))
@@ -39,6 +42,7 @@ export type EvidenceRef = typeof EvidenceRef.Type
 
 export const RepositoryPath = Schema.String.annotate({ identifier: "AdaptiveOperation.RepositoryPath" })
   .check(validRepositoryRelative)
+  .check(concreteRepositoryPath)
   .pipe(Schema.brand("AdaptiveOperation.RepositoryPath"))
 export type RepositoryPath = typeof RepositoryPath.Type
 
